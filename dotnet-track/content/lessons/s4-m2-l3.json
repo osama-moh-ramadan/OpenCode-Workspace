@@ -1,0 +1,313 @@
+{
+  "id": "s4-m2-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nفيه مشكلة بتحصل في كل نظام بيكتب في قاعدة بيانات وبينشر رسالة — وغالبًا بتبان بعد شهر في الإنتاج:\n**مشكلة الكتابة المزدوجة (dual write)**. مفيش طريقة تعمل «احفظ في القاعدة وانشر للوسيط» كعملية ذرّية واحدة،\nلأنهم نظامين مختلفين. النتيجة: رسائل ضائعة (التزام ثم انهيار قبل النشر) أو رسائل شبحية (نشر ثم rollback).\n\nالحل عملي وممل ومضمون: **Outbox** — اكتب الرسالة في جدول داخل نفس قاعدة البيانات ونفس المعاملة،\nومُرسِل مستقل يقرأ الجدول وينشر. التسليم يبقى **at-least-once**، وده بيفرض على المستهلك **Inbox/idempotency**.\n\nالدرس ده: التصميم الكامل (جداول، مُرسِل، إعادة محاولة، DLQ)، ومقارنة بالحلول الجاهزة (MassTransit)،\nوالحقيقة عن «exactly-once».\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Dual Write Problem",
+          "def": "تعديل قاعدة البيانات ونشر رسالة لا يمكن أن يكونا ذرّيين → فقد أو تكرار عند الفشل في المنتصف."
+        },
+        {
+          "term": "Outbox",
+          "def": "جدول في نفس قاعدة البيانات تُكتب فيه الرسائل **داخل معاملة البيانات**. مُرسِل مستقل ينشرها لاحقًا."
+        },
+        {
+          "term": "Inbox / Deduplication",
+          "def": "جدول/منطق عند المستهلك يسجّل معرّفات الرسائل المعالَجة — يحمي من أثر إعادة التسليم."
+        },
+        {
+          "term": "At-most-once",
+          "def": "قد تُفقد الرسالة ولا تُكرر (نشر بلا تأكيد). نادرًا مقبول."
+        },
+        {
+          "term": "At-least-once",
+          "def": "لا تُفقد، لكن قد تُكرر. ★ النمط الواقعي لكل الأنظمة الموثوقة — ويتطلب idempotency."
+        },
+        {
+          "term": "Exactly-once",
+          "def": "**شبه مستحيل عبر نظامين**. الموجود فعلًا: تسليم مكرر + معالجة idempotent = «effectively once»."
+        },
+        {
+          "term": "MessageId / CorrelationId",
+          "def": "معرّف فريد للرسالة (لإلغاء التكرار) ومعرف يربط العملية عبر الخدمات (للتتبع)."
+        },
+        {
+          "term": "DLQ (Dead Letter Queue)",
+          "def": "مصير الرسائل اللي فشلت بعد كل المحاولات — مع تنبيه وأداة إعادة تشغيل."
+        },
+        {
+          "term": "Polling مقابل CDC",
+          "def": "استطلاع الجدول دوريًا (بسيط) مقابل قراءة سجل المعاملات مثل Debezium (أدق وأقل تأخير، وأعقد تشغيليًا)."
+        },
+        {
+          "term": "Backoff",
+          "def": "زيادة فترة إعادة المحاولة تدريجيًا (مثلاً 1s, 5s, 25s…) مع jitter لمنع التزامن."
+        },
+        {
+          "term": "Visibility Timeout",
+          "def": "مدة «يختفي» فيها العمل عن بقية النسخ أثناء معالجته (بديل `SKIP LOCKED`)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) السيناريوهان اللي بيكسروا النظام"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "الفشل قبل/بعد النشر",
+      "code": "\n// ═══ النمط الساذج ═══\nawait db.SaveChangesAsync(ct);                    // ① الالتزام\nawait bus.PublishAsync(new OrderPlaced(order), ct); // ② النشر\n\n// السيناريو أ: انهيار/انقطاع شبكة بين ① و ②\n//   → الطلب محفوظ في القاعدة، **والشحن لم يُجدول أبدًا**.\n//   → العميل دفع والطلب اختفى من النظام. (أصعب نوع bugs: بلا سجل وبلا أثر)\n\n// ═══ النمط الساذج المعكوس ═══\nawait bus.PublishAsync(new OrderPlaced(order), ct); // ① النشر\nawait db.SaveChangesAsync(ct);                    // ② الالتزام (فشل!)\n\n// السيناريو ب: النشر نجح ثم فشل الالتزام (قيد/تعارض/مهلة)\n//   → **رسالة شبحية**: المستهلكين عالجوا طلبًا غير موجود.\n//   → مخزون نقص، إشعار اتبعت، وفاتورة اتعملت — لطلب وهمي.\n\n// ═══ الحل: Outbox (ذرّي بحكم كونه في نفس القاعدة) ═══\nawait using var tx = await db.Database.BeginTransactionAsync(ct);\ndb.Orders.Add(order);                              // البيانات\ndb.OutboxMessages.Add(OutboxMessage.Of(order));    // الرسالة **في نفس المعاملة**\nawait db.SaveChangesAsync(ct);\nawait tx.CommitAsync(ct);                          // ★ إما الاثنين أو لا شيء\n// ثم: مُرسِل مستقل يقرأ الجدول وينشر (at-least-once)\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) الجداول والفهارس"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "db/012_outbox_inbox.sql",
+      "title": "outbox عند المنتج + inbox عند المستهلك",
+      "code": "\n-- ═══ OUTBOX (في قاعدة المنتج) ═══\nCREATE TABLE IF NOT EXISTS messaging.outbox (\n    id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    message_id    uuid         NOT NULL UNIQUE,          -- ★ لإلغاء التكرار عند المستهلك\n    correlation_id uuid        NULL,                     -- تتبع العملية عبر الخدمات\n    type          text         NOT NULL,                 -- \"order.placed\"\n    payload       jsonb        NOT NULL,\n    headers       jsonb        NOT NULL DEFAULT '{}',\n    created_at    timestamptz  NOT NULL DEFAULT now(),\n    available_at  timestamptz  NOT NULL DEFAULT now(),   -- ★ للـbackoff (لا تنشر قبل كده)\n    attempts      int          NOT NULL DEFAULT 0,\n    sent_at       timestamptz  NULL,\n    last_error    text         NULL\n);\n\n-- فهرس المُرسِل: «أقدم الرسائل المتاحة غير المرسلة»\nCREATE INDEX ix_outbox_pending ON messaging.outbox (available_at, id)\n    WHERE sent_at IS NULL;                                -- ★ فهرس جزئي: صغير وسريع\n\n-- فهرس التنظيف\nCREATE INDEX ix_outbox_sent ON messaging.outbox (sent_at) WHERE sent_at IS NOT NULL;\n\n-- ═══ INBOX (في قاعدة المستهلك) — سجل ما عولج ═══\nCREATE TABLE IF NOT EXISTS messaging.inbox (\n    message_id    uuid PRIMARY KEY,\n    type          text NOT NULL,\n    processed_at  timestamptz NOT NULL DEFAULT now()\n);\nCREATE INDEX ix_inbox_processed ON messaging.inbox (processed_at);\n\n-- ═══ DLQ: ما فشل بعد كل المحاولات ═══\nCREATE TABLE IF NOT EXISTS messaging.dead_letter (\n    id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    message_id   uuid NOT NULL,\n    type         text NOT NULL,\n    payload      jsonb NOT NULL,\n    attempts     int NOT NULL,\n    last_error   text NOT NULL,\n    failed_at    timestamptz NOT NULL DEFAULT now(),\n    resolved_at  timestamptz NULL                          -- ★ يُملأ عند إعادة التشغيل الناجحة\n);\nCREATE INDEX ix_dlq_open ON messaging.dead_letter (failed_at) WHERE resolved_at IS NULL;\n\n-- ═══ المراقبة: عمر أقدم رسالة (أهم رقم تشغيلي) ═══\n-- SELECT extract(epoch FROM now() - min(created_at)) AS outbox_lag_seconds\n-- FROM messaging.outbox WHERE sent_at IS NULL;\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3) المُرسِل: آمن مع عدة نسخ"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Infrastructure/Messaging/OutboxDispatcher.cs",
+      "title": "SKIP LOCKED + backoff + محاولات + DLQ",
+      "code": "\npublic sealed class OutboxDispatcher(\n    IServiceScopeFactory scopes, IMessageBus bus, ILogger<OutboxDispatcher> log, TimeProvider time)\n    : BackgroundService\n{\n    private const int BatchSize = 50;\n    private const int MaxAttempts = 8;\n    private static readonly TimeSpan Idle = TimeSpan.FromMilliseconds(400);\n\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        log.LogInformation(\"outbox dispatcher started\");\n\n        while (!stoppingToken.IsCancellationRequested)\n        {\n            try\n            {\n                var processed = await RunBatchAsync(stoppingToken);\n                if (processed == 0) await Task.Delay(Idle, stoppingToken);   // لا تدوير ساخن\n            }\n            catch (OperationCanceledException) { break; }\n            catch (Exception ex)\n            {\n                log.LogError(ex, \"outbox batch failed; backing off\");\n                OutboxMetrics.Errors.Add(1);\n                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);\n            }\n        }\n    }\n\n    private async Task<int> RunBatchAsync(CancellationToken ct)\n    {\n        await using var scope = scopes.CreateAsyncScope();\n        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();\n        await using var connection = await db.Database.OpenConnectionAsync(ct);\n\n        // ① احجز دفعة **بلا تنافس بين النسخ**: FOR UPDATE SKIP LOCKED (درس 2.3.x)\n        // ② UPDATE … RETURNING في عبارة واحدة = حجز + تحديث ذرّي\n        const string Sql = \"\"\"\n            UPDATE messaging.outbox\n            SET attempts = attempts + 1\n            WHERE id IN (\n                SELECT id FROM messaging.outbox\n                WHERE sent_at IS NULL AND available_at <= now()\n                ORDER BY available_at, id\n                LIMIT @Batch\n                FOR UPDATE SKIP LOCKED\n            )\n            RETURNING id, message_id, correlation_id, type, payload, headers, attempts;\n            \"\"\";\n\n        var batch = (await connection.QueryAsync<OutboxRow>(\n            new CommandDefinition(Sql, new { Batch = BatchSize }, commandTimeout: 10, cancellationToken: ct))).ToList();\n\n        if (batch.Count == 0) return 0;\n\n        foreach (var row in batch)\n        {\n            try\n            {\n                await bus.PublishAsync(\n                    new OutgoingMessage(row.MessageId, row.CorrelationId, row.Type, row.Payload, row.Headers), ct);\n\n                // ★ مع Dapper، الـCancellationToken يمر عبر CommandDefinition\n                await connection.ExecuteAsync(new CommandDefinition(\n                    \"UPDATE messaging.outbox SET sent_at = now(), last_error = NULL WHERE id = @Id\",\n                    new { row.Id }, cancellationToken: ct));\n\n                OutboxMetrics.Published.Add(1, new(\"type\", row.Type));\n            }\n            catch (Exception ex) when (ex is not OperationCanceledException)\n            {\n                await HandleFailureAsync(connection, row, ex, ct);\n            }\n        }\n\n        OutboxMetrics.Lag.Record(batch.Count, new(\"phase\", \"batch\"));\n        return batch.Count;\n    }\n\n    private async Task HandleFailureAsync(\n        IDbConnection connection, OutboxRow row, Exception ex, CancellationToken ct)\n    {\n        OutboxMetrics.Errors.Add(1, new(\"type\", row.Type));\n\n        if (row.Attempts >= MaxAttempts)\n        {\n            // ★ بعد كل المحاولات: DLQ + تنبيه (لا دوران لانهائي)\n            const string dlqSql = \"\"\"\n                INSERT INTO messaging.dead_letter (message_id, type, payload, attempts, last_error)\n                VALUES (@MessageId, @Type, @Payload::jsonb, @Attempts, @Error)\n                ON CONFLICT DO NOTHING;\n                UPDATE messaging.outbox SET sent_at = now(), last_error = @Error WHERE id = @Id;\n                \"\"\";\n            await connection.ExecuteAsync(new CommandDefinition(dlqSql,\n                new { row.MessageId, row.Type, row.Payload, row.Attempts, Error = Truncate(ex.Message), row.Id },\n                cancellationToken: ct));\n\n            log.LogError(ex, \"message {MessageId} ({Type}) moved to DLQ after {Attempts} attempts\",\n                row.MessageId, row.Type, row.Attempts);\n            return;\n        }\n\n        // ✓ backoff أُسّي + jitter: 1s, 2s, 4s… (ويمنع تزامن كل النسخ)\n        var delay = TimeSpan.FromSeconds(Math.Pow(2, row.Attempts - 1))\n                    + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 500));\n\n        await connection.ExecuteAsync(new CommandDefinition(\n            \"UPDATE messaging.outbox SET available_at = now() + @Delay, last_error = @Error WHERE id = @Id\",\n            new { Delay = delay, Error = Truncate(ex.Message), row.Id }, cancellationToken: ct));\n\n        log.LogWarning(ex, \"publish failed for {MessageId}; retry {Attempt}/{Max} in {Delay}\",\n            row.MessageId, row.Attempts, MaxAttempts, delay);\n    }\n\n    private static string Truncate(string s) => s.Length <= 2000 ? s : s[..2000];\n    private sealed record OutboxRow(long Id, Guid MessageId, Guid? CorrelationId, string Type,\n                                    string Payload, string Headers, int Attempts);\n}\n\npublic static class OutboxMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Infrastructure.outbox\", \"1.0.0\");\n    public static readonly Counter<long> Published = Meter.CreateCounter<long>(\"outbox.published\");\n    public static readonly Counter<long> Errors = Meter.CreateCounter<long>(\"outbox.errors\");\n    public static readonly Histogram<long> Lag = Meter.CreateHistogram<long>(\"outbox.batch.size\", unit: \"messages\");\n    public static readonly ObservableGauge<double> OldestAgeSeconds =\n        Meter.CreateObservableGauge(\"outbox.oldest_age_seconds\", () => 0d, unit: \"s\",\n            description: \"عمر أقدم رسالة غير مرسلة — أهم مؤشر صحة (يُحسب من القاعدة)\");\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "تفاصيل صغيرة بتحدد نجاح التصميم",
+      "md": "\n- **فهرس جزئي** `WHERE sent_at IS NULL` — وإلا المُرسِل بيمسح ملايين الصفوف المرسلة كل دورة.\n- **التنظيف**: مهمة دورية تحذف/أرشف الرسائل المرسلة (مثلاً أقدم من 7 أيام) + `VACUUM`.\n  من غيرها الجدول بيكبر والأداء بينهار (وده أشهر سبب لتدهور outbox في الإنتاج).\n- **`FOR UPDATE SKIP LOCKED`** ضروري لو عندك أكتر من نسخة — وإلا هتنشر نفس الرسالة مرات.\n- **لا تنشر داخل المعاملة**: النشر بعد الالتزام (زي ما هنا). لو نشرت جوه المعاملة،\n  المعاملة هتطول على زمن الشبكة (أقفال أطول) ولو فشلت المعاملة بعد النشر → رسالة شبحية.\n- **الترتيب**: outbox بيضمن ترتيب الإرسال داخل الجدول (بالـid). لو محتاج ترتيبًا صارمًا لكل stream،\n  اجعل المُرسِل أحادي الخيط لكل مفتاح (partition by aggregate id) أو استخدم وسيطًا يدعم الترتيب.\n- **راقب `oldest_age_seconds`** مش عدد الرسائل: رقم واحد يقولك «فيه حاجة واقفة».\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) المستهلك: Inbox وidempotency"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Shipping/Messaging/InboxConsumer.cs",
+      "title": "إلغاء تكرار + معالجة ذرّية مع تغيير البيانات",
+      "code": "\npublic sealed class InboxConsumer(ShippingDbContext db, IMessageBus bus, ILogger<InboxConsumer> log)\n{\n    /// <summary>\n    /// ★ القاعدتان معًا:\n    ///   ① إلغاء التكرار في **نفس معاملة** تغيير البيانات (وإلا سقطت بين الخطوتين)\n    ///   ② لو الرسالة سبق معالجتها → أكّد التسليم (ack) ولا تُعد التنفيذ\n    /// </summary>\n    public async Task HandleAsync(IncomingMessage message, CancellationToken ct)\n    {\n        await using var tx = await db.Database.BeginTransactionAsync(ct);\n\n        // ① هل سبق معالجتها؟ (INSERT ذرّي: لو اتكرر المعرّف → المعاملة تفشل بصراع فريد)\n        var inserted = await db.Database.ExecuteSqlInterpolatedAsync($\"\"\"\n            INSERT INTO messaging.inbox (message_id, type) VALUES ({message.MessageId}, {message.Type})\n            ON CONFLICT (message_id) DO NOTHING\n            \"\"\", ct);\n\n        if (inserted == 0)\n        {\n            log.LogInformation(\"duplicate {MessageId} ({Type}) — skipped\", message.MessageId, message.Type);\n            await tx.CommitAsync(ct);\n            await bus.AcknowledgeAsync(message, ct);            // ✓ أكّد عشان ما تفضل تتكرر\n            MessagingMetrics.Duplicates.Add(1, new(\"type\", message.Type));\n            return;\n        }\n\n        // ② نفّذ الأثر (idempotent بطبيعته كمان — دفاع مزدوج)\n        switch (message.Type)\n        {\n            case \"order.placed\":\n                var placed = message.Deserialize<OrderPlaced>();\n                await ScheduleShipmentAsync(placed, ct);\n                break;\n\n            case \"order.cancelled\":\n                await CancelShipmentAsync(message.Deserialize<OrderCancelled>(), ct);\n                break;\n\n            default:\n                log.LogDebug(\"unknown type {Type} — ignored\", message.Type);\n                break;                                          // ✓ تجاهل صريح (لا فشل) للأنواع الجديدة\n        }\n\n        await db.SaveChangesAsync(ct);\n        await tx.CommitAsync(ct);\n        await bus.AcknowledgeAsync(message, ct);\n    }\n\n    /// <summary>idempotent حتى بلا inbox: لو الشحنة موجودة → لا تفعل شيئًا.</summary>\n    private async Task ScheduleShipmentAsync(OrderPlaced e, CancellationToken ct)\n    {\n        if (await db.Shipments.AnyAsync(s => s.OrderId == e.OrderId, ct)) return;\n\n        db.Shipments.Add(Shipment.Schedule(e.OrderId, e.ShippingAddress, e.Total));\n        MessagingMetrics.Handled.Add(1, new(\"type\", \"order.placed\"));\n    }\n\n    private async Task CancelShipmentAsync(OrderCancelled e, CancellationToken ct)\n    {\n        var shipment = await db.Shipments.FirstOrDefaultAsync(s => s.OrderId == e.OrderId, ct);\n        if (shipment is null || shipment.Status == ShipmentStatus.Cancelled) return;   // ✓ idempotent\n        shipment.Cancel(e.Reason);\n    }\n}\n\npublic static class MessagingMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Infrastructure.messaging\", \"1.0.0\");\n    public static readonly Counter<long> Handled = Meter.CreateCounter<long>(\"messages.handled\");\n    public static readonly Counter<long> Duplicates = Meter.CreateCounter<long>(\"messages.duplicates\");\n    public static readonly Counter<long> Failed = Meter.CreateCounter<long>(\"messages.failed\");\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "التنفيذ",
+        "الجهد",
+        "المزايا",
+        "القيود",
+        "إمتى"
+      ],
+      "rows": [
+        [
+          "**يدوي** (زي أعلاه)",
+          "متوسط (~300 سطر)",
+          "تحكم كامل، بلا اعتماديات، سهل الفهم",
+          "بتكتب الصيانة (تنظيف، DLQ، مراقبة) بنفسك",
+          "لو عندك جدول outbox واحد ووسيط واحد"
+        ],
+        [
+          "**MassTransit Outbox**",
+          "منخفض",
+          "مدمج مع EF Core، retries/DLQ/مقاييس جاهزة، مدعوم",
+          "يربطك بنموذج MassTransit (consumers/sagas)",
+          "★ الخيار الأسرع قيمة لو بتستخدم MassTransit أصلًا"
+        ],
+        [
+          "**CDC (Debezium)**",
+          "عالي",
+          "بلا استطلاع (تأخير أقل)، بلا تحميل على القاعدة، يلتقط أي تغيير",
+          "بنية تحتية إضافية (Kafka/Connect) وخبرة تشغيلية",
+          "أنظمة كبيرة، تدفقات بيانات، عدد جداول كبير"
+        ],
+        [
+          "**وسيط بمعاملات (Kafka transactions)**",
+          "عالي",
+          "ذرّية عبر قواعد ووسائط محددة",
+          "قيود قوية، وتعقيد تشغيلي",
+          "نادرًا يستحق لتطبيق واحد"
+        ],
+        [
+          "**بلا outbox (نشر مباشر)**",
+          "صفر",
+          "بسيط",
+          "✗ رسائل ضائعة/شبحية عند أي فشل",
+          "نموذج أولي فقط، أو لو الفقد مقبول صراحة"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "الحقيقة عن «exactly-once»",
+      "md": "\nمفيش تسليم exactly-once عبر نظامين مستقلين (دي نتيجة نظرية مش قصور أدوات):\nأي تأكيد تسليم ممكن يُفقد، فيُعاد الإرسال.\n\nاللي موجود عمليًا: **at-least-once delivery + idempotent processing = effectively-once effect**.\n\n**3 طرق لعمل المعالجة idempotent:**\n1. **Inbox** (جدول معرّفات) — الأشمل، ويحتاج تنظيفًا دوريًا (احتفظ بفترة ≥ أقصى مدة إعادة تسليم).\n2. **Idempotency طبيعية** — العملية نفسها لا تتأثر بالتكرار (`UPDATE … SET status='cancelled' WHERE id=@id`).\n   ★ الأفضل لو ممكن: بلا جداول إضافية وبلا تنظيف.\n3. **مفتاح عمل فريد** — قيد فريد على (`OrderId`, `Type`) في جدول الأثر؛ التكرار يفشل بصراع ويُبتلع.\n\nاستخدم 2 أو 3 لما ينطبقوا، و1 لما الأثر معقد (نداء خارجي، حساب مبلغ، إنشاء كيان).\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "اختبارات الموثوقية (اللي بتثبت التصميم فعلًا)",
+      "code": "\npublic class OutboxReliabilityTests(PostgresFixture db) : IClassFixture<PostgresFixture>\n{\n    [Fact]\n    public async Task Message_is_written_atomically_with_data()\n    {\n        await using var ctx = db.CreateContext();\n        var order = TestData.NewOrder();\n\n        await ctx.Database.CreateExecutionStrategy().ExecuteAsync(async () =>\n        {\n            await using var tx = await ctx.Database.BeginTransactionAsync();\n            ctx.Orders.Add(order);\n            ctx.Outbox.Add(OutboxMessage.Of(\"order.placed\", order));\n            await ctx.SaveChangesAsync();\n            await tx.CommitAsync();\n        });\n\n        var messages = await ctx.Outbox.Where(m => m.Type == \"order.placed\").ToListAsync();\n        messages.Should().ContainSingle();\n        messages[0].SentAt.Should().BeNull(\"المُرسِل لسه ما اشتغلش\");\n    }\n\n    [Fact]\n    public async Task Rollback_removes_both_data_and_message()\n    {\n        await using var ctx = db.CreateContext();\n        try\n        {\n            await using var tx = await ctx.Database.BeginTransactionAsync();\n            ctx.Orders.Add(TestData.NewOrder());\n            ctx.Outbox.Add(OutboxMessage.Of(\"order.placed\", TestData.NewOrder()));\n            await ctx.SaveChangesAsync();\n            throw new InvalidOperationException(\"فشل مفتعل بعد الحفظ\");\n        }\n        catch (InvalidOperationException) { /* متوقع */ }\n\n        (await ctx.Outbox.CountAsync()).Should().Be(0, \"لا رسالة شبحية بعد rollback\");\n    }\n\n    [Fact]\n    public async Task Dispatcher_does_not_deliver_same_message_to_two_workers()\n    {\n        await db.SeedOutboxAsync(count: 20);\n\n        // ★ نسختان تعملان بالتوازي — نفس السيناريو في الإنتاج\n        var (a, b) = (new List<Guid>(), new List<Guid>());\n        await Task.WhenAll(\n            CollectAsync(a), CollectAsync(b));\n\n        a.Concat(b).Should().HaveCount(20, \"كل رسالة تُحجز مرة واحدة فقط\");\n        a.Intersect(b).Should().BeEmpty(\"لا تكرار بين النسختين (SKIP LOCKED)\");\n    }\n\n    [Fact]\n    public async Task Failed_message_is_retried_with_backoff_then_goes_to_dlq()\n    {\n        await db.SeedOutboxAsync(count: 1);\n        var bus = new FailingBus();                       // يفشل دائمًا\n\n        for (var i = 0; i < 9; i++) await new OutboxDispatcher(db.Scopes, bus, NullLogger, db.Time)\n            .RunSingleBatchForTestAsync();                // نقطة اختبار داخلية\n\n        var dlq = await db.GetDeadLettersAsync();\n        dlq.Should().ContainSingle();\n        dlq[0].Attempts.Should().BeGreaterThanOrEqualTo(8);\n        bus.PublishCount.Should().BeGreaterThan(1, \"أُعيدت المحاولة فعلًا\");\n    }\n\n    [Fact]\n    public async Task Duplicate_delivery_is_processed_once()\n    {\n        await using var ctx = db.CreateContext();\n        var message = IncomingMessage.Of(\"order.placed\", TestData.OrderPlacedPayload());\n        var consumer = new InboxConsumer(ctx, new RecordingBus(), NullLogger);\n\n        await consumer.HandleAsync(message, CancellationToken.None);\n        await consumer.HandleAsync(message, CancellationToken.None);      // ★ إعادة تسليم\n        await consumer.HandleAsync(message, CancellationToken.None);\n\n        (await ctx.Shipments.CountAsync()).Should().Be(1, \"الشحن جُدول مرة واحدة رغم 3 تسليمات\");\n    }\n\n    private Task CollectAsync(List<Guid> sink) => Task.CompletedTask;    // يجمع ما حجزه عامل واحد\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أفهم مشكلة الكتابة المزدوجة وأكتب الرسائل في outbox داخل نفس معاملة البيانات.",
+        "أبني مُرسِلًا آمنًا مع عدة نسخ (`SKIP LOCKED`) بـbackoff وحد محاولات وDLQ وتنظيف دوري.",
+        "أجعل المستهلك idempotent (inbox أو منطق طبيعي أو قيد فريد) مع ack بعد الالتزام.",
+        "أختبر الموثوقية: ذرّية، rollback، تكرار تسليم، فشل ونسخة احتياطية، وقياس عمر أقدم رسالة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "انهيار بعد `SaveChanges` وقبل `Publish` — النتيجة بلا outbox؟",
+          "options": [
+            "لا شيء",
+            "البيانات محفوظة والرسالة ضائعة للأبد → آثار جانبية لم تحدث (شحن/إشعار) وبلا أثر في السجل",
+            "تُعاد الرسالة تلقائيًا",
+            "البيانات تُرجع"
+          ],
+          "answer": 1,
+          "explain": "أصعب نوع أعطال: صامت. Outbox يخلي الرسالة جزءًا من المعاملة، فالمُرسِل هيلاقيها بعد إعادة التشغيل."
+        },
+        {
+          "q": "ليه النشر لازم يكون **بعد** الالتزام مش جوه المعاملة؟",
+          "options": [
+            "أسرع",
+            "النشر جوه المعاملة يطيل الأقفال على زمن الشبكة، ولو فشل الالتزام بعد النشر تنتج رسالة شبحية",
+            "الوسيط لا يدعم المعاملات",
+            "ممنوع تقنيًا"
+          ],
+          "answer": 1,
+          "explain": "القاعدة: غيّر البيانات + اكتب الرسالة ذرّيًا، ثم انشر. لو النشر فشل، الرسالة لسه في الجدول وهتُعاد."
+        },
+        {
+          "q": "at-least-once معناه…",
+          "options": [
+            "لا تكرار",
+            "لا فقد، لكن التكرار متوقع → المستهلك لازم يكون idempotent",
+            "ترتيب مضمون",
+            "تسليم فوري"
+          ],
+          "answer": 1,
+          "explain": "ده العقد الواقعي لكل الأنظمة الموثوقة (RabbitMQ/Kafka/Service Bus). صمّم على إن التكرار هيحصل."
+        },
+        {
+          "q": "جدول outbox فيه 40 مليون صف (كلها مرسلة) والمُرسِل بقى بطيء. السبب؟",
+          "options": [
+            "Postgres بطيء",
+            "مفيش تنظيف + الفهرس مش جزئيًا → كل دورة تمسح/تفهرس صفوفًا ميتة؛ الحل: فهرس `WHERE sent_at IS NULL` + أرشفة/حذف دوري",
+            "الحجم الطبيعي للوسيط",
+            "لازم Redis"
+          ],
+          "answer": 1,
+          "explain": "outbox من غير تنظيف بيتدهور ببطء لحد ما يبقى أزمة. أضف مهمة دورية (حذف/أرشفة أقدم من N أيام) من اليوم الأول."
+        },
+        {
+          "q": "inbox consumer: الرسالة اتعالجت قبل كده. التصرف؟",
+          "options": [
+            "نفّذها تاني (idempotent على أي حال)",
+            "اعترف بالتسليم (ack) وتخطَّ التنفيذ، وسجّل مقياس duplicates — وإلا الرسالة هتفضل ترجع",
+            "ارمي استثناء",
+            "احذفها من الوسيط يدويًا"
+          ],
+          "answer": 1,
+          "explain": "لو ما عملتش ack، الوسيط هيعيد تسليمها للأبد. التخطي + الاعتراف هو المسار الصحيح، مع مقياس يوريك حجم التكرار."
+        },
+        {
+          "q": "نظام فيه outbox + inbox — ده exactly-once؟",
+          "options": [
+            "نعم",
+            "لا: التسليم at-least-once (قد يتكرر) لكن **الأثر** مرة واحدة — «effectively once»",
+            "at-most-once",
+            "بلا ضمان"
+          ],
+          "answer": 1,
+          "explain": "الفرق مهم في المقابلات: exactly-once delivery شبه مستحيل عبر نظامين؛ exactly-once processing (effect) ممكن."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "outbox كامل بموثوقية مثبتة",
+          "md": "طبّق outbox في مشروعك: جدول بفهرس جزئي، كتابة في معاملة البيانات، مُرسِل بـ`SKIP LOCKED` وbackoff وDLQ، تنظيف دوري، و3 مقاييس (published/errors/oldest_age). أثبت السلوك باختبارات.",
+          "criteria": [
+            "اختبار: البيانات والرسالة يُحفظان معًا أو لا يُحفظان (rollback)",
+            "اختبار: عاملان متوازيان لا يسلمان نفس الرسالة مرتين",
+            "اختبار: فشل متكرر → DLQ بعد حد المحاولات مع رسالة خطأ محفوظة",
+            "مهمة تنظيف (حذف/أرشفة المرسلة أقدم من N أيام) + `VACUUM`/تحليل",
+            "مقياس `oldest_age_seconds` + تنبيه لو تجاوز حدًا (مثلًا 30s)",
+            "لا نشر داخل المعاملة (مراجعة كود)"
+          ],
+          "hint": "لو المُرسِل بياخد رسائل قديمة بالغلط: تأكد إن `available_at` بيُحدَّث في الـbackoff، وإن الفهرس على `(available_at, id) WHERE sent_at IS NULL`."
+        },
+        {
+          "id": "t2",
+          "title": "مستهلك idempotent بحالة فشل واقعية",
+          "md": "ابنِ مستهلكًا لحدث من موديول/خدمة تانية مع inbox (أو idempotency طبيعية)، واختبر: إعادة تسليم 3 مرات، تسليم قديم بعد تسليم أحدث (ترتيب معكوس)، ورسالة بنوع غير معروف.",
+          "criteria": [
+            "إعادة التسليم 3 مرات → أثر واحد (اختبار يثبت عدد الصفوف)",
+            "ack بعد الالتزام (لا ack قبل نجاح المعالجة)",
+            "ترتيب معكوس لا يُفسد الحالة (إصدار/تاريخ في الحدث + شرط في UPDATE)",
+            "نوع غير معروف → تجاهل + سجل debug (لا فشل ولا DLQ)",
+            "قرار مكتوب: inbox ولا idempotency طبيعية ولا قيد فريد — وليه"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Outbox pattern — microservices.io",
+          "url": "https://microservices.io/patterns/data/transactional-outbox.html"
+        },
+        {
+          "label": "Idempotent receiver",
+          "url": "https://microservices.io/patterns/communication-style/idempotent-receiver.html"
+        },
+        {
+          "label": "MassTransit — Outbox",
+          "url": "https://masstransit.io/documentation/configuration/outbox"
+        },
+        {
+          "label": "Debezium — Outbox event router",
+          "url": "https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html"
+        },
+        {
+          "label": "PostgreSQL — SELECT FOR UPDATE SKIP LOCKED",
+          "url": "https://www.postgresql.org/docs/current/sql-select.html"
+        },
+        {
+          "label": "Azure Architecture — Scheduler Agent Supervisor",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/scheduler-agent-supervisor"
+        }
+      ]
+    }
+  ]
+}

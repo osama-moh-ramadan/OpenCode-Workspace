@@ -1,0 +1,280 @@
+{
+  "id": "s3-m2-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nالنمط التقليدي للكتابة في EF Core — حمّل الكيانات، عدّلها، `SaveChanges` — ممتاز لصف أو صفين.\nلكنه كارثة لتغيير 50 ألف صف: بتجلب بيانات عبر الشبكة، بتبني snapshots لكل كيان، وبتستهلك ذاكرة وGC.\n\n**`ExecuteUpdate`/`ExecuteDelete`** بيغيروا المعادلة: عبارة `UPDATE`/`DELETE` واحدة بتتنفذ **داخل** قاعدة البيانات،\nبلا نقل بيانات وبلا change tracking. الدرس ده: الاستخدام الآمن، الحدود اللي لازم تعرفها (تجاوز الـvalidation\nوالـauditing وconcurrency tokens)، واختيار الأداة الصح للـbulk insert.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "`ExecuteUpdate`/`ExecuteUpdateAsync`",
+          "def": "يترجم الاستعلام + `SetProperty` لعبارة UPDATE واحدة؛ يرجع عدد الصفوف المتأثرة."
+        },
+        {
+          "term": "`ExecuteDelete`/`ExecuteDeleteAsync`",
+          "def": "نفس الفكرة للحذف — DELETE واحدة بلا تحميل."
+        },
+        {
+          "term": "Affected Rows",
+          "def": "عدد الصفوف المتأثرة. **لازم تفحصه**: هو إشارة النجاح/التعارض الوحيدة."
+        },
+        {
+          "term": "Server-side update",
+          "def": "التغيير بيحدث في القاعدة — البيانات ما بتمرّش على التطبيق (توفير شبكة وذاكرة)."
+        },
+        {
+          "term": "Change Tracker bypass",
+          "def": "الكيانات المتتبَّعة في نفس الـDbContext ما بتتحدثش → تصبح قديمة (stale)."
+        },
+        {
+          "term": "Interceptor bypass",
+          "def": "`SaveChanges` interceptors والـauditing وأحداث الـdomain **لا تعمل** — لازم تعوّضها صراحة."
+        },
+        {
+          "term": "Concurrency token bypass",
+          "def": "لا فحص `xmin`/`RowVersion` → احمِ نفسك بشرط `WHERE` صريح."
+        },
+        {
+          "term": "Bulk insert",
+          "def": "إدراج ضخم: `COPY` (Postgres) أو دفعات أو مكتبات خارجية — `AddRange` وحده لا يكفي لمئات الآلاف."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) الاستخدام الصحيح: WHERE حارس + فحص الصفوف"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Stock/BulkStockOps.cs",
+      "title": "تحديث جماعي آمن ومشروط",
+      "code": "\npublic sealed class StockOperations(AppDbContext db, ILogger<StockOperations> log)\n{\n    /// <summary>\n    /// ✗ بلا ExecuteUpdate: تحميل 5,000 كيان + تعديل + حفظ (ثوانٍ وذاكرة ضخمة)\n    /// ✓ عبارة واحدة، بلا نقل بيانات\n    /// </summary>\n    public async Task<int> MarkAbandonedAsCancelledAsync(TimeSpan olderThan, CancellationToken ct)\n    {\n        var cutoff = TimeProvider.System.GetUtcNow() - olderThan;\n        var now = TimeProvider.System.GetUtcNow();\n\n        var affected = await db.Orders\n            .Where(o => o.Status == OrderStatus.Abandoned && o.CreatedAt < cutoff)\n            .ExecuteUpdateAsync(s => s\n                .SetProperty(o => o.Status, OrderStatus.Cancelled)\n                .SetProperty(o => o.UpdatedAt, now)                       // ★ الـaudit يدويًا\n                .SetProperty(o => o.CancelReason, \"abandoned-timeout\"),\n                ct);\n\n        log.LogInformation(\"cancelled {Affected} abandoned orders (cutoff={Cutoff})\", affected, cutoff);\n        return affected;\n    }\n\n    /// <summary>\n    /// ★ الحارس في WHERE: خصم مشروط بتوفر المخزون — وفحص الصفوف المتأثرة هو دليل النجاح.\n    /// ده بيعوّض غياب concurrency token في ExecuteUpdate.\n    /// </summary>\n    public async Task<bool> TryDecrementStockAsync(Guid productId, int quantity, CancellationToken ct)\n    {\n        var affected = await db.Products\n            .Where(p => p.Id == productId && p.Stock >= quantity)          // ← الشرط الحاسم\n            .ExecuteUpdateAsync(s => s\n                .SetProperty(p => p.Stock, p => p.Stock - quantity)        // حساب من العمود نفسه\n                .SetProperty(p => p.UpdatedAt, TimeProvider.System.GetUtcNow()),\n                ct);\n\n        if (affected == 0)\n        {\n            // إما المنتج غير موجود أو المخزون غير كافٍ — ميّز بينهما لو الرسالة تهم المستخدم\n            var exists = await db.Products.AnyAsync(p => p.Id == productId, ct);\n            if (!exists) throw new NotFoundException(\"Product\", productId);\n\n            log.LogWarning(\"insufficient stock product={ProductId} requested={Qty}\", productId, quantity);\n            return false;\n        }\n\n        return true;\n    }\n\n    /// <summary>تحديث جماعي بحد أعلى للحماية من «UPDATE بلا WHERE».</summary>\n    public async Task<int> RepriceCategoryAsync(Guid categoryId, decimal factor, int maxRows, CancellationToken ct)\n    {\n        if (factor is <= 0 or > 10) throw new ArgumentOutOfRangeException(nameof(factor));\n\n        // ✓ حد صريح: نعدّ أولًا، ونرفض لو النطاق أوسع من المتوقع (حماية من خطأ في الشرط)\n        var candidates = await db.Products.CountAsync(p => p.CategoryId == categoryId, ct);\n        if (candidates > maxRows)\n            throw new ConflictException(\"Category\", categoryId,\n                $\"التغيير سيشمل {candidates} منتجًا (الحد {maxRows}) — نفّذه كمهمة خلفية\");\n\n        var affected = await db.Products\n            .Where(p => p.CategoryId == categoryId)\n            .ExecuteUpdateAsync(s => s\n                .SetProperty(p => p.Price, p => p.Price * factor)\n                .SetProperty(p => p.UpdatedAt, TimeProvider.System.GetUtcNow()),\n                ct);\n\n        await db.Database.ExecuteSqlInterpolatedAsync(\n            $\"SELECT pg_notify('catalog_changed', {categoryId.ToString()})\", ct);   // ← إبطال كاش (درس Redis)\n\n        return affected;\n    }\n\n    /// <summary>حذف جماعي — بنفس قواعد الحذر (WHERE صريح + فحص الصفوف + سجل).</summary>\n    public async Task<int> PurgeCancelledOlderThanAsync(DateTimeOffset before, CancellationToken ct)\n    {\n        var affected = await db.Orders\n            .Where(o => o.Status == OrderStatus.Cancelled && o.UpdatedAt < before)\n            .ExecuteDeleteAsync(ct);\n\n        log.LogInformation(\"purged {Affected} cancelled orders older than {Before}\", affected, before);\n        return affected;\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "ما اللي بيتم تجاوزه؟ (أخطر جزء في الدرس)",
+      "md": "\n`ExecuteUpdate` بيتجاوز كل اللي بيحصل في `SaveChanges`:\n\n| بيتجاوز | الأثر | التعويض |\n|---|---|---|\n| **قواعد الـDomain والـinvariants** | تحديث ممكن يكسر قاعدة عمل (خصم على منتج مقفل) | شروط `WHERE` صريحة + استخدم الكيانات للتغييرات المنطقية |\n| **الـValidation (FluentValidation/annotations)** | قيم غير صالحة بتدخل القاعدة | قيود القاعدة (CHECK/NOT NULL) + تحقق في الـservice |\n| **Concurrency tokens (`xmin`/`RowVersion`)** | فقد تحديثات متزامنة بصمت | شرط الإصدار في `WHERE` + فحص `affected` |\n| **`SaveChanges` interceptors / الـaudit** | `UpdatedAt`/`UpdatedBy` لا يُحدَّث | `SetProperty` صريح + سجل (log) بالعملية |\n| **أحداث الـDomain / outbox** | مستهلكون لا يعرفون بالتغيير | `pg_notify`/رسالة صريحة بعد الالتزام |\n| **الكاش** | بيانات قديمة مخزّنة | إبطال مقصود بعد الالتزام |\n\nالقاعدة: **`ExecuteUpdate` للتغييرات الميكانيكية الجماعية** (حالة، سعر، تنظيف) —\n**مش** للعمليات اللي فيها منطق عمل (إنشاء طلب، دفع، حجز مخزون مع قواعد).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) داخل معاملة + مع الـChange Tracker"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "المشاركة في معاملة واحدة، وتجنّب الكيانات القديمة",
+      "code": "\npublic sealed class BatchShipService(AppDbContext db, ILogger<BatchShipService> log)\n{\n    public async Task ShipPendingAsync(Guid warehouseId, CancellationToken ct)\n    {\n        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);\n        try\n        {\n            // ① قراءة للتحقق (كيانات أو projection)\n            var pending = await db.Orders\n                .Where(o => o.WarehouseId == warehouseId && o.Status == OrderStatus.Ready)\n                .Select(o => o.Id)\n                .Take(500)\n                .ToListAsync(ct);\n\n            if (pending.Count == 0) { await tx.CommitAsync(ct); return; }\n\n            // ② تحديث جماعي بعبارة واحدة (بلا تحميل الكيانات)\n            var updated = await db.Orders\n                .Where(o => pending.Contains(o.Id) && o.Status == OrderStatus.Ready)   // ← إعادة الفحص (سباق)\n                .ExecuteUpdateAsync(s => s\n                    .SetProperty(o => o.Status, OrderStatus.Shipped)\n                    .SetProperty(o => o.ShippedAt, TimeProvider.System.GetUtcNow())\n                    .SetProperty(o => o.UpdatedAt, TimeProvider.System.GetUtcNow()), ct);\n\n            // ③ كتابة رسالة outbox في **نفس** المعاملة (تسليم مضمون بلا فقد)\n            db.OutboxMessages.Add(new OutboxMessage\n            {\n                Id = Guid.NewGuid(),\n                Type = \"orders.shipped.batch\",\n                Payload = JsonSerializer.Serialize(new { warehouseId, count = updated, orderIds = pending }),\n                CreatedAt = DateTimeOffset.UtcNow,\n            });\n            await db.SaveChangesAsync(ct);\n\n            await tx.CommitAsync(ct);\n            log.LogInformation(\"shipped {Updated} orders from warehouse {WarehouseId}\", updated, warehouseId);\n\n            // ★ لو فيه كيانات متتبَّعة في نفس الـcontext من قبل التحديث الجماعي:\n            //   قيمها بقت قديمة. افصلها أو استخدم context منفصل للقراءة التالية.\n            db.ChangeTracker.Clear();\n        }\n        catch\n        {\n            await tx.RollbackAsync(CancellationToken.None);\n            throw;\n        }\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "حدود تقنية لازم تعرفها",
+      "md": "\n- **لا يعمل مع `Include`** — التحديث على الاستعلام نفسه (ضمّ عبر `Where` على navigation مدعوم بحسب الحالة).\n- **`SetProperty` بيشتغل على أعمدة** — لا نداءات دوال .NET اعتباطية؛ استخدم تعبيرات قابلة للترجمة (حساب على العمود، `DateTime` عبر provider، EF Core 10 بيدعم lambdas عادية).\n- **الكيانات المحمّلة مسبقًا لا تتحدث** → `ChangeTracker.Clear()` أو context منفصل.\n- **لا أحداث ولا interceptors** (الجدول أعلاه).\n- **`ExecuteUpdate` داخل حلقة** = نفي الغرض. اجمع الشرط في عبارة واحدة.\n- **مع `EnableRetryOnFailure`**: لو استخدمت معاملة يدوية، لفّها في `CreateExecutionStrategy().ExecuteAsync(...)` (فخ معروف من درس المعاملات).\n- **Query filters بتُطبَّق** (ممتاز للـtenancy) — لكن تحقق باختبار، ولا تفترض.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Bulk insert: اختيار الأداة بحسب الحجم"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الحجم",
+        "الأداة",
+        "ملاحظات"
+      ],
+      "rows": [
+        [
+          "1-100 صف",
+          "`Add`/`AddRange` + `SaveChangesAsync`",
+          "الأسهل، مع tracking وvalidation — كافي تمامًا"
+        ],
+        [
+          "100-5,000 صف",
+          "`AddRange` + `SaveChanges` + دفعات (`MaxBatchSize`)",
+          "قلّل حجم الدفعة لو الذاكرة/GC ارتفع"
+        ],
+        [
+          "5,000-100,000 صف",
+          "`COPY` (Npgsql `BeginBinaryImport`) أو multi-row INSERT",
+          "بلا tracking؛ الأسرع على Postgres"
+        ],
+        [
+          ">100,000 صف / دوري",
+          "مهمة خلفية + `COPY` على دفعات",
+          "اعزل عن مسار الطلب (درس BackgroundService)"
+        ],
+        [
+          "تحديث جماعي (مش إدراج)",
+          "`ExecuteUpdateAsync`",
+          "بلا نقل بيانات إطلاقًا"
+        ],
+        [
+          "حذف جماعي",
+          "`ExecuteDeleteAsync`",
+          "انتبه للقيود (FK) والأداء على جداول كبيرة"
+        ],
+        [
+          "عمليات معقدة (merge/upsert)",
+          "SQL خام (`INSERT … ON CONFLICT`) أو مكتبة bulk",
+          "upsert في عبارة واحدة أرخص بكثير"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Upsert بعبارة واحدة (بدل اقرأ-ثم-احفظ)",
+      "code": "\n// ✗ نمط مكلف وسباق: قراءة ثم إدراج/تحديث (يتطلب قفلًا أو إعادة محاولة)\nvar existing = await db.Products.FirstOrDefaultAsync(p => p.Sku == sku, ct);\nif (existing is null) { db.Products.Add(product); } else { existing.Price = product.Price; }\nawait db.SaveChangesAsync(ct);\n\n// ✓ upsert ذرّي: INSERT … ON CONFLICT (Postgres) — عبارة واحدة، بلا سباق\nvar affected = await db.Database.ExecuteSqlInterpolatedAsync($\"\"\"\n    INSERT INTO products (id, sku, name, price, stock, updated_at)\n    VALUES ({product.Id}, {product.Sku}, {product.Name}, {product.Price}, {product.Stock}, now())\n    ON CONFLICT (sku) DO UPDATE\n        SET price      = EXCLUDED.price,\n            stock      = EXCLUDED.stock,\n            name       = EXCLUDED.name,\n            updated_at = now()\n    \"\"\", ct);\n\n// SQL Server المقابل: MERGE (بحذر من سباقات MERGE المعروفة) أو UPDLOCK + HOLDLOCK داخل معاملة\n// ولاحظ: ExecuteSqlInterpolated بيحوّل القيم لـparameters تلقائيًا (لا دمج نصوص)\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "مقارنة أداء: أرقام نموذجية لإدراج 50,000 صف (Postgres، جهاز تطوير)",
+      "code": "\n// الأداة                                  الزمن        الذاكرة المخصّصة   ملاحظات\n// ───────────────────────────────────────  ───────────  ─────────────────  ─────────────────────────\n// Add + SaveChanges لكل صف                 ~180 s       عالية جدًا         ✗ 50k round-trip + 50k transaction\n// AddRange + SaveChanges (مرة واحدة)       ~38 s        ~600 MB            tracking + snapshots + batch inserts\n// AddRange بدفعات 1,000 + SaveChanges      ~22 s        ~120 MB            أفضل ذاكرة، لسه tracking\n// بلا tracking: db.AddRange ثم SaveChanges ~22 س        نفسها              (tracking مطلوب للإدراج — لا فرق كبير)\n// Dapper multi-row INSERT (دفعات 500)      ~9 s         ~35 MB             SQL ثابت + parameters\n// Npgsql COPY (BeginBinaryImport)          ~2.5 s       ~20 MB             ✓ الأسرع — بلا SQL نصي\n//\n// الخلاصة: الفرق بين الأسوأ والأفضل ≈ 70 مرة. القرار يعتمد على الحجم والتكرار.\n// ★ قِس على بياناتك وأجهزتك — الأرقام دي اتجاهية، مش مرجعية.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) اختبارات الكتابات الجماعية"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "اختبارات حقيقية على Postgres (لا InMemory)",
+      "code": "\n[Collection(\"Postgres\")]\npublic sealed class BulkOperationsTests(PostgresFixture db) : IAsyncLifetime\n{\n    public ValueTask InitializeAsync() => new(db.ResetAsync().AsTask());\n    public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n\n    [Fact]\n    public async Task Decrement_stock_fails_when_insufficient_without_going_negative()\n    {\n        await using (var ctx = db.CreateContext())\n        {\n            ctx.Products.Add(new Product { Id = productId, Sku = \"W-1\", Name = \"Widget\", Price = 10m, Stock = 3 });\n            await ctx.SaveChangesAsync();\n        }\n\n        var ops = new StockOperations(db.CreateContext(), log);\n\n        (await ops.TryDecrementStockAsync(productId, 2, CancellationToken.None)).Should().BeTrue();\n        (await ops.TryDecrementStockAsync(productId, 5, CancellationToken.None)).Should().BeFalse();\n\n        await using var verify = db.CreateContext();\n        var stock = await verify.Products.Where(p => p.Id == productId).Select(p => p.Stock).SingleAsync();\n        stock.Should().Be(1);                                  // ✓ لا سالب ولا تجاوز\n    }\n\n    [Fact]\n    public async Task ExecuteUpdate_respects_tenant_query_filter()\n    {\n        // ★ يثبت إن التحديث الجماعي لا يمس مستأجرًا آخر\n        await using var ctx = db.CreateContext(tenantId: tenantA);\n        ctx.Products.AddRange(\n            new Product { Id = Guid.NewGuid(), TenantId = tenantA, Sku = \"A\", Price = 10m },\n            new Product { Id = Guid.NewGuid(), TenantId = tenantB, Sku = \"B\", Price = 10m });\n        await ctx.SaveChangesAsync();\n\n        var affected = await ctx.Products.ExecuteUpdateAsync(\n            s => s.SetProperty(p => p.Price, 20m), CancellationToken.None);\n\n        affected.Should().Be(1);\n        var bPrice = await db.CreateContext(tenantId: tenantB).Products\n            .Where(p => p.TenantId == tenantB).Select(p => p.Price).SingleAsync();\n        bPrice.Should().Be(10m);                               // لم يُمَس\n    }\n\n    [Fact]\n    public async Task Bulk_cancel_participates_in_transaction_and_rolls_back()\n    {\n        await using var ctx = db.CreateContext();\n        await using var tx = await ctx.Database.BeginTransactionAsync();\n\n        await ctx.Orders.Where(o => o.Status == OrderStatus.Abandoned)\n                        .ExecuteUpdateAsync(s => s.SetProperty(o => o.Status, OrderStatus.Cancelled));\n\n        await tx.RollbackAsync();\n\n        var stillAbandoned = await ctx.Orders.CountAsync(o => o.Status == OrderStatus.Abandoned);\n        stillAbandoned.Should().BeGreaterThan(0);              // ✓ لا تغيير بعد التراجع\n    }\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أستخدم `ExecuteUpdate`/`ExecuteDelete` للتغييرات الميكانيكية الجماعية بشرط `WHERE` حارس وفحص للصفوف.",
+        "أعوّض ما يُتجاوز: audit، concurrency، أحداث/ـoutbox، وإبطال الكاش.",
+        "أختار أداة الإدراج الضخم بحسب الحجم (`AddRange` ← دفعات ← `COPY`/upsert).",
+        "أختبر الكتابات الجماعية على قاعدة حقيقية (تعارض، عزل مستأجرين، rollback)."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "`ExecuteUpdateAsync` رجّع 0. إيه التصرف؟",
+          "options": [
+            "اعمل commit عادي",
+            "افحص السبب (الشرط الحارس لم يتحقق/المورد غير موجود) وتعامل معه كحالة عمل صريحة",
+            "أعد المحاولة 10 مرات",
+            "ارمِ 500"
+          ],
+          "answer": 1,
+          "explain": "0 صفوف متأثرة ليست خطأً تقنيًا — هي غالبًا إشارة عمل (مخزون غير كافٍ، حالة تغيّرت). ميّز الحالات برسائل مختلفة."
+        },
+        {
+          "q": "ليه لازم تحدّث `UpdatedAt` بنفسك مع `ExecuteUpdate`؟",
+          "options": [
+            "متطلب ترجمة",
+            "لأن `SaveChanges` interceptors والـauditing لا تعمل في هذا المسار",
+            "لأن EF لا يعرف الوقت",
+            "لتسريع الاستعلام"
+          ],
+          "answer": 1,
+          "explain": "كل ما هو مبني على SaveChanges (audit، أحداث، outbox) يتجاوز. عوّضه صراحة أو استخدم المسار التقليدي."
+        },
+        {
+          "q": "تحديث سعر 50 ألف منتج — أنهي طريقة؟",
+          "options": [
+            "تحميل الكيانات وتعديلها وحفظها",
+            "`ExecuteUpdateAsync` بشرط وفحص للصفوف (ومهمة خلفية لو الحجم كبير)",
+            "حذف وإعادة إدراج",
+            "Dapper لكل صف"
+          ],
+          "answer": 1,
+          "explain": "عبارة واحدة داخل القاعدة، بلا نقل بيانات. ولو هياخد وقتًا طويلًا: نقله لمهمة خلفية بدفعات (درس الجدولة)."
+        },
+        {
+          "q": "بعد `ExecuteUpdate`، الكيانات المحمّلة في نفس الـDbContext…؟",
+          "options": [
+            "تُحدَّث تلقائيًا",
+            "تبقى قديمة (stale) — `ChangeTracker.Clear()` أو context منفصل قبل القراءة التالية",
+            "تسبب استثناء",
+            "تُحذف"
+          ],
+          "answer": 1,
+          "explain": "التحديث حدث في القاعدة فقط. القراءة من الـtracker هترجع قيم ما قبل التحديث → باج صامت."
+        },
+        {
+          "q": "إدراج 500 ألف صف في استيراد ليلي — الأداة الأنسب؟",
+          "options": [
+            "`AddRange` + `SaveChanges` مرة واحدة",
+            "مهمة خلفية مع `COPY` binary على دفعات (وعزل عن مسار الطلب)",
+            "Dapper صفًا صفًا",
+            "`ExecuteUpdate`"
+          ],
+          "answer": 1,
+          "explain": "`COPY` أسرع بعشرات المرات، والدفعات تحمي الذاكرة، والمهمة الخلفية تعزل الأثر عن المستخدمين."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "تحويل مسار جماعي لـExecuteUpdate",
+          "md": "اختار عملية في مشروعك بتحمّل كيانات وتعدّلها (تنظيف، تغيير حالة، تسعير) وحوّلها لـ`ExecuteUpdateAsync` بشرط حارس وفحص للصفوف وتعويض للـaudit. قِس الزمن والذاكرة قبل/بعد على 10 آلاف صف.",
+          "criteria": [
+            "شرط `WHERE` يضمن الأمان (لا تحديث أوسع من المقصود) + حد أقصى للحجم",
+            "`UpdatedAt`/`UpdatedBy` مضبوطة صراحة",
+            "قياس مسجل: زمن قبل/بعد وعدد الصفوف",
+            "إبطال كاش/إشعار بعد الالتزام (لو فيه كاش على البيانات دي)",
+            "3 اختبارات: نجاح، شرط حارس فاشل (0 صفوف)، rollback داخل معاملة"
+          ],
+          "hint": "لو الاختبارات على InMemory/SQLite بتفشل: `ExecuteUpdate` يحتاج مزوّدًا علائقيًا حقيقيًا — استخدم Testcontainers (Postgres)."
+        },
+        {
+          "id": "t2",
+          "title": "استيراد ضخم",
+          "md": "ابنِ مسار استيراد (CSV/JSON) لجدول كبير باستخدام upsert ذرّي (`ON CONFLICT`) أو `COPY`، داخل مهمة خلفية بدفعات، مع تقرير نتيجة (مدرج/محدّث/مرفوض) ومعالجة أخطاء الصفوف دون إيقاف الاستيراد.",
+          "criteria": [
+            "50 ألف صف تُستورد في أقل من 15 ثانية على جهازك (رقم مسجل)",
+            "صف تالف لا يوقف الاستيراد ويُبلَّغ في التقرير",
+            "الاستيراد idempotent (تشغيله مرتين لا يكرر البيانات)",
+            "يعمل كمهمة خلفية (202 + تقدّم) مش داخل مسار الطلب"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "EF Core — ExecuteUpdate / ExecuteDelete",
+          "url": "https://learn.microsoft.com/ef/core/saving/execute-insert-update-delete"
+        },
+        {
+          "label": "EF Core — Bulk operations guidance",
+          "url": "https://learn.microsoft.com/ef/core/performance/"
+        },
+        {
+          "label": "EF Core — Raw SQL",
+          "url": "https://learn.microsoft.com/ef/core/querying/raw-sql"
+        },
+        {
+          "label": "PostgreSQL — INSERT ON CONFLICT (upsert)",
+          "url": "https://www.postgresql.org/docs/current/sql-insert.html"
+        },
+        {
+          "label": "Npgsql — COPY / binary import",
+          "url": "https://www.npgsql.org/doc/copy.html"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,250 @@
+{
+  "id": "s2-m3-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nلما تطبيقك بينشر في Kubernetes أو behind load balancer، فيه سؤالان بسيطان بيحددا استقرار النظام:\n**«هل العملية حية؟»** (liveness) و**«هل تقدر تستقبل شغل دلوقتي؟»** (readiness).\n\nالخلط بينهم كارثة عملية: لو فحص الـliveness بيفحص قاعدة البيانات، أي بطء في القاعدة = إعادة تشغيل\nلكل النسخ في نفس الوقت = **restart storm** وانقطاع كامل. الدرس ده بيعلمك الفصل الصحيح، والفحوصات\nالمفيدة، وإزاي تعرض الحالة بأمان.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Liveness",
+          "def": "«العملية حية وغير معلّقة». فحص **رخيص وذاتي** — لا تبعيات خارجية. فشله = إعادة تشغيل."
+        },
+        {
+          "term": "Readiness",
+          "def": "«جاهز لاستقبال طلبات». يفحص التبعيات الحرجة. فشله = إزالة من الـload balancer (بدون إعادة تشغيل)."
+        },
+        {
+          "term": "Startup",
+          "def": "«خلص إقلاع؟» للمهام البطيئة (migrations، تحميل كاش). يحمي الفحصين التانيين أثناء البدء."
+        },
+        {
+          "term": "`HealthCheckResult`",
+          "def": "`Healthy` / `Degraded` (شغال بجودة أقل) / `Unhealthy` (لا يصلح للاستخدام)."
+        },
+        {
+          "term": "Tags / Predicate",
+          "def": "تحديد أنهي فحوصات تدخل في أنهي endpoint (`live`, `ready`, `db`, `external`)."
+        },
+        {
+          "term": "`HealthCheckOptions.ResponseWriter`",
+          "def": "كتابة الاستجابة بنفسك (JSON منظم بدل نص خام)."
+        },
+        {
+          "term": "Probe",
+          "def": "فحص دوري من المنصة (K8s/load balancer) لمسار الـhealth."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Api package Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore\ndotnet add Shop.Api package AspNetCore.HealthChecks.NpgSql\ndotnet add Shop.Api package AspNetCore.HealthChecks.Redis\ndotnet add Shop.Api package AspNetCore.HealthChecks.Rabbitmq\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Health/HealthSetup.cs",
+      "title": "فحوصات مصنّفة بوسوم (المفتاح كله هنا)",
+      "code": "\nusing Microsoft.Extensions.Diagnostics.HealthChecks;\n\npublic static class HealthSetup\n{\n    public static IServiceCollection AddAppHealth(this IServiceCollection services, IConfiguration config)\n    {\n        services.AddHealthChecks()\n            // ── LIVENESS: ذاتي ورخيص. ✗ لا تبعيات خارجية — وإلا كل بطء = إعادة تشغيل\n            .AddCheck(\"self\", () => HealthCheckResult.Healthy(\"process alive\"), tags: [\"live\"])\n            .AddCheck<ThreadPoolStarvationCheck>(\"threadpool\", tags: [\"live\"])\n\n            // ── READINESS: التبعيات اللي من غيرها الخدمة لا تنفع\n            .AddNpgSql(\n                config.GetConnectionString(\"Default\")!,\n                name: \"postgres\",\n                healthQuery: \"SELECT 1;\",\n                timeout: TimeSpan.FromSeconds(2),          // ✓ لا تترك فحصًا بلا سقف\n                tags: [\"ready\", \"db\"])\n            .AddDbContextCheck<AppDbContext>(\"dbcontext\", tags: [\"ready\", \"db\"])\n            .AddRedis(\n                config.GetConnectionString(\"Redis\")!,\n                name: \"redis\",\n                timeout: TimeSpan.FromSeconds(2),\n                tags: [\"ready\", \"cache\"])\n\n            // ── تبعيات خارجية: Degraded مش Unhealthy (الخدمة لسه تنفع لقراءات من الكاش)\n            .AddCheck<PaymentGatewayHealthCheck>(\"payment-gateway\", tags: [\"external\", \"payments\"])\n\n            // ── حداثة المهام الدورية (من درس الجدولة)\n            .AddCheck<JobFreshnessHealthCheck>(\"jobs-freshness\", tags: [\"ready\", \"jobs\"]);\n\n        return services;\n    }\n\n    public static IEndpointRouteBuilder MapHealthEndpoints(this IEndpointRouteBuilder app)\n    {\n        // ✓ عام ورخيص: المنصة تسأله كل ثوانٍ\n        app.MapHealthChecks(\"/health/live\", new HealthCheckOptions\n        {\n            Predicate = reg => reg.Tags.Contains(\"live\"),\n            ResponseWriter = HealthWriter.Json,\n            ResultStatusCodes =\n            {\n                [HealthStatus.Healthy] = StatusCodes.Status200OK,\n                [HealthStatus.Degraded] = StatusCodes.Status200OK,     // لسه حي\n                [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable,\n            },\n        }).AllowAnonymous().WithTags(\"Health\").ExcludeFromDescription();\n\n        // ★ داخلي فقط: يكشف أسماء التبعيات — لا تعرضه للإنترنت\n        app.MapHealthChecks(\"/health/ready\", new HealthCheckOptions\n        {\n            Predicate = reg => reg.Tags.Contains(\"ready\"),\n            ResponseWriter = HealthWriter.Json,\n            ResultStatusCodes =\n            {\n                [HealthStatus.Healthy] = StatusCodes.Status200OK,\n                [HealthStatus.Degraded] = StatusCodes.Status200OK,\n                [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable,\n            },\n        }).RequireAuthorization(Policies.AdminOnly).WithTags(\"Health\");\n\n        // تفاصيل كاملة للتشخيص (دعم/تحقيق) — خلف مصادقة ودون تخزين\n        app.MapHealthChecks(\"/health/detail\", new HealthCheckOptions\n        {\n            Predicate = _ => true,\n            ResponseWriter = HealthWriter.DetailedJson,\n        }).RequireAuthorization(Policies.AdminOnly).WithTags(\"Health\");\n\n        return app;\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Health/HealthWriter.cs",
+      "title": "استجابة JSON منظمة + تنقية الأسرار",
+      "code": "\nusing System.Text.Json;\nusing Microsoft.Extensions.Diagnostics.HealthChecks;\n\npublic static class HealthWriter\n{\n    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);\n\n    /// <summary>ملخص بلا تفاصيل — آمن نسبيًا ويكفي للمنصة والمراقبة.</summary>\n    public static Task Json(HttpContext ctx, HealthReport report) => Write(ctx, report, detailed: false);\n\n    /// <summary>تفاصيل لكل فحص — للتشخيص فقط وخلف مصادقة.</summary>\n    public static Task DetailedJson(HttpContext ctx, HealthReport report) => Write(ctx, report, detailed: true);\n\n    private static async Task Write(HttpContext ctx, HealthReport report, bool detailed)\n    {\n        ctx.Response.ContentType = \"application/json; charset=utf-8\";\n        ctx.Response.Headers.CacheControl = \"no-store\";\n\n        var payload = new\n        {\n            status = report.Status.ToString(),\n            totalDurationMs = Math.Round(report.TotalDuration.TotalMilliseconds, 1),\n            timestamp = DateTimeOffset.UtcNow,\n            checks = detailed\n                ? report.Entries.Select(e => new\n                {\n                    name = e.Key,\n                    status = e.Value.Status.ToString(),\n                    description = e.Value.Description,\n                    durationMs = Math.Round(e.Value.Duration.TotalMilliseconds, 1),\n                    tags = e.Value.Tags,\n                    // ★ لا تُرجع Data كما هي: قد تحتوي connection strings أو تفاصيل داخلية\n                    data = Sanitize(e.Value.Data),\n                })\n                : report.Entries\n                    .Where(e => e.Value.Status != HealthStatus.Healthy)     // المشاكل فقط\n                    .Select(e => new { name = e.Key, status = e.Value.Status.ToString(), description = e.Value.Description }),\n        };\n\n        await ctx.Response.WriteAsync(JsonSerializer.Serialize(payload, Options));\n    }\n\n    private static Dictionary<string, object?> Sanitize(IReadOnlyDictionary<string, object> data)\n    {\n        string[] blocked = [\"connectionstring\", \"connection\", \"password\", \"secret\", \"token\", \"host\", \"uri\", \"query\"];\n        return data\n            .Where(kv => !blocked.Any(b => kv.Key.Contains(b, StringComparison.OrdinalIgnoreCase)))\n            .ToDictionary(kv => kv.Key, kv => (object?)kv.Value);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "فحوصات مخصصة: اللي بيكشف المشاكل فعلًا"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Health/CustomChecks.cs",
+      "title": "timeout صريح + كاش + Degraded بدل Unhealthy",
+      "code": "\n/// <summary>\n/// استنزاف الـthread pool = تطبيق «حي» لكنه ما بيردش. فحص بيكشفه مبكرًا.\n/// </summary>\npublic sealed class ThreadPoolStarvationCheck : IHealthCheck\n{\n    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct)\n    {\n        ThreadPool.GetAvailableThreads(out var worker, out _);\n        ThreadPool.GetMaxThreads(out var maxWorker, out _);\n        var usedRatio = 1.0 - (double)worker / maxWorker;\n\n        var data = new Dictionary<string, object>\n        {\n            [\"availableWorkerThreads\"] = worker,\n            [\"maxWorkerThreads\"] = maxWorker,\n            [\"usedRatio\"] = Math.Round(usedRatio, 3),\n        };\n\n        var result = usedRatio > 0.95 ? HealthCheckResult.Unhealthy(\"استنزاف thread pool\", data: data)\n                   : usedRatio > 0.80 ? HealthCheckResult.Degraded(\"ضغط على thread pool\", data: data)\n                   : HealthCheckResult.Healthy(data: data);\n\n        return Task.FromResult(result);\n    }\n}\n\n/// <summary>\n/// تبعية خارجية: فحص بطيء = فحص يضر. كاش النتيجة + timeout صريح.\n/// ★ الإطار نفسه لا يفرض timeout عامًا على الفحوصات. بعض حزم المجتمع بتوفر\n    ///   معامل `timeout` (مثل AddRedis/AddNpgSql) — حدده دائمًا، وإلا لفّ الفحص بنفسك كما هنا.\n/// </summary>\npublic sealed class PaymentGatewayHealthCheck(IHttpClientFactory http, IMemoryCache cache) : IHealthCheck\n{\n    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);\n    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(2);\n\n    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct)\n    {\n        var cached = await cache.GetOrCreateAsync(\"health:payment-gateway\", async entry =>\n        {\n            entry.AbsoluteExpirationRelativeToNow = CacheTtl;\n            return await ProbeAsync(ct);\n        });\n\n        return cached ?? HealthCheckResult.Degraded(\"لا توجد نتيجة فحص\");\n    }\n\n    private async Task<HealthCheckResult> ProbeAsync(CancellationToken ct)\n    {\n        try\n        {\n            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);\n            timeout.CancelAfter(Timeout);                                  // ✓ timeout صريح\n\n            using var client = http.CreateClient(\"payment-gateway\");\n            var started = TimeProvider.System.GetTimestamp();\n            using var response = await client.GetAsync(\"/health\", timeout.Token);\n            var elapsed = TimeProvider.System.GetElapsedTime(started);\n\n            return response.IsSuccessStatusCode\n                ? HealthCheckResult.Healthy($\"gateway reachable in {elapsed.TotalMilliseconds:F0}ms\")\n                : HealthCheckResult.Degraded($\"gateway returned {(int)response.StatusCode}\");\n                // ✓ Degraded مش Unhealthy: خدمة الدفع واقعة ≠ خدمتي كلها غير صالحة\n        }\n        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)\n        {\n            return HealthCheckResult.Degraded(\"gateway غير متاح\", exception: ex);\n        }\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "restart storm: أشهر خطأ في الـhealth checks",
+      "md": "\nلو `/health/live` بيفحص قاعدة البيانات، فأي انقطاع/بطء في القاعدة بيعمل:\nكل النسخ تفشل في الـliveness → المنصة **تعيد تشغيلها كلها في نفس اللحظة** →\nالنسخ بتحاول الاتصال بالقاعدة أثناء الإقلاع (migrations/kاش) → فشل أطول → إعادة تشغيل تانية.\nالنتيجة: انقطاع كامل من مشكلة جزئية.\n\nالقاعدة الذهبية:\n- **liveness = ذاتي فقط** (العملية بتشتغل، thread pool مش مستنزف).\n- **readiness = التبعيات** (قاعدة، كاش، طابور). فشله بيشيل النسخة من التوزيع **بدون** إعادة تشغيل.\n- التبعيات الخارجية غير الحرجة = **Degraded**.\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "filename": "deploy/shop-api.yaml",
+      "title": "ربط المسارات بالـprobes في Kubernetes",
+      "code": "\nlivenessProbe:\n  httpGet: { path: /health/live, port: 8080 }\n  initialDelaySeconds: 10\n  periodSeconds: 15\n  timeoutSeconds: 2          # ← أقل من أي فحص بطيء محتمل\n  failureThreshold: 3        # 3 إخفاقات = إعادة تشغيل (لا تعيد التشغيل من أول فشل)\n\nreadinessProbe:\n  httpGet: { path: /health/ready, port: 8080 }\n  periodSeconds: 10\n  timeoutSeconds: 3\n  failureThreshold: 2        # إزالة سريعة من التوزيع\n  successThreshold: 1\n\nstartupProbe:                # ★ يحمي التطبيق البطيء في الإقلاع (migrations, warm cache)\n  httpGet: { path: /health/live, port: 8080 }\n  periodSeconds: 5\n  failureThreshold: 30       # حتى 150 ثانية للإقلاع\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المسار",
+        "الفحوصات",
+        "من يسأله",
+        "عند الفشل"
+      ],
+      "rows": [
+        [
+          "/health/live",
+          "ذاتية فقط (`self`, `threadpool`)",
+          "liveness probe",
+          "إعادة تشغيل النسخة"
+        ],
+        [
+          "/health/ready",
+          "التبعيات الحرجة (`db`, `cache`, `jobs`)",
+          "readiness probe / load balancer",
+          "إزالة من التوزيع (بلا إعادة تشغيل)"
+        ],
+        [
+          "/health/startup",
+          "ذاتي",
+          "startup probe",
+          "يؤخر الفحصين الآخرين حتى اكتمال الإقلاع"
+        ],
+        [
+          "/health/detail",
+          "كل الفحوصات + بياناتها",
+          "الدعم/التحقيق (خلف admin)",
+          "لا شيء — للتشخيص"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أخطاء عملية",
+      "md": "\n- **فحص بطيء بلا timeout** → الـprobe بيتعلّق ويحكم على النسخة بالموت وهي شغالة. حدد timeout أقل من timeout الـprobe.\n- **فحص بيتنفذ كل 10 ثواني على كل نسخة وبيضرب خدمة خارجية** → حمل بلا معنى. كاش النتيجة 30 ثانية.\n- **تسريب تفاصيل** → `HealthReport.Data` ممكن يحتوي connection string. نقّيه (زي `Sanitize` أعلاه) واحمِ المسارات التفصيلية.\n- **`ExcludeFromDescription` منسي** → مسارات الـhealth تظهر في OpenAPI العام (ضجيج + كشف بنية).\n- **لا مراقبة** → حوّل النتيجة لـmetric (`health.check.status` بوسوم) وأنذِر على سلسلة Degraded، مش على أول فشل.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أفرّق بين liveness وreadiness وstartup وأعرف أثر كل فشل على المنصة.",
+        "أصنّف الفحوصات بوسوم وأربط كل مسار بمجموعة الفحوصات المناسبة.",
+        "أكتب فحوصات مخصصة بـtimeout صريح وكاش و`Degraded` للتبعيات غير الحرجة.",
+        "أعرض JSON منظمًا بلا تسريب أسرار، وأحمي المسارات التفصيلية، وأحوّل الحالة لـmetric."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه `/health/live` ما يفحصش قاعدة البيانات؟",
+          "options": [
+            "عشان الأداء فقط",
+            "لأن فشل القاعدة هيسبب إعادة تشغيل كل النسخ معًا (restart storm) بدل عزل المشكلة",
+            "لأن المنصة لا تدعمه",
+            "لأن القاعدة ليست مهمة"
+          ],
+          "answer": 1,
+          "explain": "liveness معناه «العملية محتاجة إعادة تشغيل؟». بطء تبعية خارجية مش سبب لإعادة تشغيل تطبيقك."
+        },
+        {
+          "q": "فشل `/health/ready` بيعمل إيه في Kubernetes؟",
+          "options": [
+            "إعادة تشغيل الـpod",
+            "إزالة الـpod من الـService endpoints (لا يصله ترافيك) حتى ينجح الفحص",
+            "حذف الـpod",
+            "لا شيء"
+          ],
+          "answer": 1,
+          "explain": "ده بالظبط اللي عايزينه: النسخة تبقى حية وتعالج مشكلتها، بس ما تستقبلش طلبات."
+        },
+        {
+          "q": "خدمة الدفع واقعة. أنهي حالة أنسب للفحص؟",
+          "options": [
+            "Unhealthy",
+            "Degraded — الخدمة لسه تقدر تخدم القراءات/الطلبات غير المعتمدة على الدفع",
+            "Healthy",
+            "حذف الفحص"
+          ],
+          "answer": 1,
+          "explain": "`Unhealthy` في readiness هيشيلك من التوزيع بالكامل. `Degraded` بيعكس الحقيقة ويسمح باستمرار الخدمة الجزئية."
+        },
+        {
+          "q": "ليه الـcaching مهم في فحص تبعية خارجية؟",
+          "options": [
+            "لتقليل حجم الاستجابة",
+            "الـprobes بتسأل كل نسخ كل ثوانٍ — بلا كاش هتعمل هجوم DoS على التبعية بنفسك",
+            "لتسريع الإقلاع",
+            "لتقليل الـmetrics"
+          ],
+          "answer": 1,
+          "explain": "10 نسخ × كل 10 ثواني = طلب/ثانية على خدمة خارجية لمجرد الفحص. كاش 30 ثانية بيقللها 30 مرة."
+        },
+        {
+          "q": "إيه فائدة `startupProbe`؟",
+          "options": [
+            "يسرّع الإقلاع",
+            "يحمي تطبيقًا بطيء البدء (migrations/warm cache) من القتل بفحص liveness مبكر",
+            "يستبدل readiness",
+            "يفحص قاعدة البيانات"
+          ],
+          "answer": 1,
+          "explain": "بينجح أول مرة، الفحصين التانيين يبدأوا. من غيره `initialDelaySeconds` تخمين هش."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "فحوصات صحية صحيحة",
+          "md": "نفّذ `/health/live` (ذاتي فقط)، `/health/ready` (قاعدة + كاش + حداثة المهام)، و`/health/detail` (خلف admin) مع JSON منظم وتنقية للأسرار. أضف فحصًا مخصصًا واحدًا على الأقل (thread pool أو تبعية خارجية بـtimeout وكاش).",
+          "criteria": [
+            "وقف قاعدة البيانات → `/health/live` يرجع 200 و`/health/ready` يرجع 503 (اختبره فعلًا)",
+            "`/health/detail` يتطلب دور admin ولا يظهر connection strings (افحص الاستجابة)",
+            "كل فحص خارجي له timeout ≤ 3 ثوانٍ وكاش للنتيجة",
+            "المسارات مستثناة من OpenAPI (`ExcludeFromDescription`)",
+            "زمن استجابة `/health/live` أقل من 20ms"
+          ],
+          "hint": "لاختبار «وقف القاعدة»: لو بتستخدم Testcontainers من المرحلة 1، `await container.StopAsync()` في اختبار integration هو أسهل طريقة لإثبات سلوك readiness."
+        },
+        {
+          "id": "t2",
+          "title": "مراقبة قابلة للتنبيه",
+          "md": "حوّل نتائج الفحوصات لـmetric بوسوم (`health.check.status{name, status}`) واكتب قاعدة تنبيه واحدة مفيدة (مثال: readiness فاشل في ≥50% من النسخ لمدة دقيقتين). وثّق أنهي مسار يستخدمه أي probe في نشرتك.",
+          "criteria": [
+            "metric منشور ويمكن قراءته محليًا (Prometheus/OTel)",
+            "قاعدة تنبيه مكتوبة مع سبب واضح وإجراء مطلوب",
+            "خرائط الـprobes موثقة (مسار/فترة/failureThreshold)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Health checks in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/host-and-deploy/health-checks"
+        },
+        {
+          "label": "Kubernetes — liveness/readiness/startup probes",
+          "url": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/"
+        },
+        {
+          "label": "AspNetCore.Diagnostics.HealthChecks",
+          "url": "https://github.com/Xabaril/AspNetCore.Diagnostics.HealthChecks"
+        },
+        {
+          "label": ".NET metrics with System.Diagnostics.Metrics",
+          "url": "https://learn.microsoft.com/dotnet/core/diagnostics/metrics-instrumentation"
+        }
+      ]
+    }
+  ]
+}

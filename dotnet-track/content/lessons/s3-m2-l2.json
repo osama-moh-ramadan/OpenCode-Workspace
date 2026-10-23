@@ -1,0 +1,354 @@
+{
+  "id": "s3-m2-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nEF Core 10 مش «إصدار فيه تحسينات» — فيه أدوات بتغيّر طريقة نمذجتك للبيانات:\n**Complex types** (قيم مركّبة بلا جدول ولا مفتاح)، **optional complex types**، **JSON mapping** محسّن،\n**`LeftJoin`/`RightJoin`** في LINQ، **Named query filters**، و**`ExecuteUpdate` على أعمدة JSON** وبلامدا عادية.\n\nالدرس ده بيفرّق بوضوح بين **APIs مستقرة من إصدارات سابقة** (تعلّمها بثقة) و**جديد EF Core 10**\n(تعلّم الفكرة، وتحقق من الأسماء الدقيقة في توثيق إصدارك) — وده منهج صحي لأي إصدار جديد.\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "قاعدة التعامل مع ميزات الإصدار الجديد",
+      "md": "\nلكل ميزة جديدة اتبع الترتيب:\n1. اقرأ **What's new in EF Core 10** و**Breaking changes** أولًا.\n2. جرّبها في **فرع تجريبي** على قاعدة حقيقية (مش SQLite/InMemory).\n3. افحص الـSQL المولّد — ميزة جديدة لا تستحق الاعتماد لو ولّدت SQL سيئًا.\n4. اقرأ ملاحظات الأداء/القيود في التوثيق.\n5. وثّق القرار في ADR: استخدمناها فين، وليه، وإيه البديل لو اتغيرت.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Complex Type",
+          "def": "نوع قيمة مركّب (عنوان، مبلغ، نطاق تاريخ) مخزّن كأعمدة في جدول الكيان — بلا مفتاح ولا جدول ولا تنقّل."
+        },
+        {
+          "term": "Optional Complex Type",
+          "def": "(EF Core 10) complex type ممكن يكون `null` بالكامل — يُخزَّن بأعمدة nullable أو عمود JSON."
+        },
+        {
+          "term": "Owned Entity",
+          "def": "كيان مملوك له هوية خاصة في النموذج (وبيدعم تنقّل ومجموعات) — أثقل من complex type."
+        },
+        {
+          "term": "`ToJson()`",
+          "def": "تخزين كيان مملوك/مجموعة كعمود JSON بدل أعمدة مفردة."
+        },
+        {
+          "term": "Query Filter",
+          "def": "شرط implicit على النوع. في EF Core 10 فيه تطور نحو **فلاتر مسماة** قابلة للتفعيل/التعطيل بالاسم."
+        },
+        {
+          "term": "`LeftJoin` / `RightJoin`",
+          "def": "(EF Core 10) ضمّ خارجي صريح في LINQ بدل حيل `GroupJoin` + `SelectMany` + `DefaultIfEmpty`."
+        },
+        {
+          "term": "Primitive Collections",
+          "def": "(EF Core 8+) `List<string>`/`int[]` كعمود واحد، و`Contains` تُترجم لـ`ANY`/`IN` بمعاملات."
+        },
+        {
+          "term": "Vector Search",
+          "def": "بحث بالتشابه على embeddings — `pgvector` لـPostgres، و`VECTOR_DISTANCE()` في SQL Server 2025."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) Complex types: نمذجة أنظف بلا جداول زائدة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Domain/ValueObjects.cs",
+      "title": "أنواع قيمة حقيقية (records/structs)",
+      "code": "\n/// <summary>قيمة مركّبة: لا هوية، ولا جدول، ولا مفتاح — أعمدة في جدول الكيان.</summary>\npublic readonly record struct Address(\n    string Street, string City, string Country, string? PostalCode)\n{\n    public static Address Empty => new(\"\", \"\", \"\", null);\n    public bool IsEmpty => string.IsNullOrWhiteSpace(City) && string.IsNullOrWhiteSpace(Street);\n}\n\npublic readonly record struct Money(decimal Amount, string Currency)\n{\n    public static Money Zero(string currency) => new(0m, currency);\n    public Money Add(Money other) =>\n        other.Currency == Currency\n            ? this with { Amount = Amount + other.Amount }\n            : throw new InvalidOperationException($\"لا يمكن جمع {Currency} مع {other.Currency}\");\n}\n\npublic readonly record struct DateRange(DateTimeOffset From, DateTimeOffset To)\n{\n    public bool Contains(DateTimeOffset at) => at >= From && at < To;\n    public TimeSpan Duration => To - From;\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Infrastructure/Persistence/OrderConfiguration.cs",
+      "title": "التكوين: أعمدة مسطّحة بأسماء واضحة",
+      "code": "\npublic sealed class OrderConfiguration : IEntityTypeConfiguration<Order>\n{\n    public void Configure(EntityTypeBuilder<Order> b)\n    {\n        b.ToTable(\"orders\");\n\n        // ── complex type: أعمدة في نفس الجدول (بلا join، بلا جدول منفصل)\n        b.ComplexProperty(o => o.ShippingAddress, address =>\n        {\n            address.Property(a => a.Street).HasColumnName(\"ship_street\").HasMaxLength(200).IsRequired();\n            address.Property(a => a.City).HasColumnName(\"ship_city\").HasMaxLength(80).IsRequired();\n            address.Property(a => a.Country).HasColumnName(\"ship_country\").HasMaxLength(2).IsRequired();\n            address.Property(a => a.PostalCode).HasColumnName(\"ship_postal\").HasMaxLength(16);\n        });\n\n        b.ComplexProperty(o => o.Total, money =>\n        {\n            money.Property(m => m.Amount).HasColumnName(\"total\").HasPrecision(18, 2);\n            money.Property(m => m.Currency).HasColumnName(\"currency\").HasMaxLength(3).IsFixedLength();\n        });\n\n        // ── optional complex type (EF Core 10): null بالكامل لو العنوان لم يُحدَّد\n        b.ComplexProperty(o => o.BillingAddress);\n\n        // ── مجموعة مملوكة كعمود JSON (بلا جدول lines)\n        b.OwnsMany(o => o.AuditTrail, audit => audit.ToJson(\"audit_json\"));\n\n        b.HasIndex(o => o.Status);\n        b.HasIndex(o => new { o.CustomerId, o.CreatedAt });\n    }\n}\n\n// الاستعلام: نفس سهولة الأعمدة العادية — ويُدفع للـSQL كترشيح/فرز عادي\nvar cairoOrders = await db.Orders\n    .Where(o => o.ShippingAddress.City == \"Cairo\")\n    .OrderByDescending(o => o.Total.Amount)\n    .Select(o => new { o.Id, o.Total.Amount, o.ShippingAddress.City })\n    .Take(20)\n    .ToListAsync(ct);\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الخيار",
+        "التخزين",
+        "إمتى",
+        "التكلفة"
+      ],
+      "rows": [
+        [
+          "أعمدة مفردة",
+          "عمود لكل حقل",
+          "حقل مستقل بذاته",
+          "بلا"
+        ],
+        [
+          "**Complex type**",
+          "أعمدة مسطّحة في جدول الكيان",
+          "قيمة مركّبة مطلوبة في الفرز/الفلترة (عنوان، مبلغ)",
+          "بلا join — ★ الأفضل غالبًا"
+        ],
+        [
+          "Optional complex type (EF 10)",
+          "أعمدة nullable أو JSON",
+          "قيمة مركّبة اختيارية بالكامل",
+          "تحقق من التمثيل في SQL"
+        ],
+        [
+          "Owned entity (أعمدة)",
+          "جدول الكيان + تنقّل",
+          "محتاجة هوية/تنقّل في النموذج",
+          "أثقل قليلًا في التكوين"
+        ],
+        [
+          "Owned entity (`ToJson`)",
+          "عمود JSON واحد",
+          "بنية متغيرة/مجموعات صغيرة لا تُفلتر بكثرة",
+          "الفلترة داخل JSON أبطأ"
+        ],
+        [
+          "جدول منفصل (1:1)",
+          "جدول + FK",
+          "بيانات كبيرة/نادرة الوصول أو صلاحيات مختلفة",
+          "join لكل قراءة"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) Query filters: soft delete وmulti-tenancy"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Infrastructure/Persistence/AppDbContext.cs",
+      "title": "فلاتر implicit — والنمط الآمن لتمرير السياق",
+      "code": "\npublic sealed class AppDbContext(DbContextOptions<AppDbContext> options, ITenantContext tenant)\n    : DbContext(options)\n{\n    public DbSet<Order> Orders => Set<Order>();\n    public DbSet<Product> Products => Set<Product>();\n\n    protected override void OnModelCreating(ModelBuilder b)\n    {\n        b.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);\n\n        // ★ لا تلتقط قيمة ثابتة وقت بناء النموذج — التقط **السياق** ( DbContext instance)\n        //   وإلا كل الطلبات هتشوف نفس المستأجر (باج multi-tenancy كارثي)\n        b.Entity<Order>().HasQueryFilter(o => !o.IsDeleted && o.TenantId == tenant.TenantId);\n        b.Entity<Product>().HasQueryFilter(p => !p.IsDeleted && p.TenantId == tenant.TenantId);\n    }\n\n    /// <summary>الحفظ: امنع التسريب عبر كتابة كيان بمستأجر خاطئ.</summary>\n    public override Task<int> SaveChangesAsync(CancellationToken ct = default)\n    {\n        foreach (var entry in ChangeTracker.Entries<ITenantOwned>())\n        {\n            if (entry.State == EntityState.Added) entry.Entity.TenantId = tenant.TenantId;\n            else if (entry.Entity.TenantId != tenant.TenantId)\n                throw new InvalidOperationException(\"محاولة تعديل كيان يخص مستأجرًا آخر\");\n        }\n\n        foreach (var entry in ChangeTracker.Entries<ISoftDeletable>())\n            if (entry.State == EntityState.Deleted)\n            {\n                entry.State = EntityState.Modified;              // soft delete بدل حذف فعلي\n                entry.Entity.DeletedAt = DateTimeOffset.UtcNow;\n            }\n\n        return base.SaveChangesAsync(ct);\n    }\n}\n\n// الاستخدام: قراءة عادية → الفلتر يُطبَّق تلقائيًا\nvar visible = await db.Orders.CountAsync(ct);\n\n// ولأغراض إدارية/ترحيل: تجاهل صريح ومقصود (مع تفويض!)\nvar allIncludingDeleted = await db.Orders\n    .IgnoreQueryFilters()                     // ★ يتجاهل **كل** الفلاتر — انتبه لـsoft delete كمان\n    .Where(o => o.TenantId == tenantId)        // ← عوّض الشرط يدويًا\n    .ToListAsync(ct);\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "فخاخ query filters",
+      "md": "\n- **`IgnoreQueryFilters()` بيتجاهل الكل** (soft delete + tenancy) — لو استخدمته لأغراض إدارية، أعد الشروط يدويًا وصريحة.\n- **التقاط قيمة ثابتة في الـfilter** (مثل `HasQueryFilter(o => o.TenantId == _currentTenantId)` بقيمة نُسخَت وقت البناء) → تسريب بين المستأجرين. التقط **الـDbContext/خدمة** مش القيمة.\n- **العلاقات المطلوبة (required navigation)**: لو فلتر أخفى الطرف التابع، EF ممكن يرجّع `null` في تنقّل مطلوب أو يحذّر من «optional/required mismatch». راجع التحذيرات في اللوجات.\n- **الفلاتر لا تُطبَّق على الكيانات المحمّلة من الـChange Tracker** — كيان مُحمّل مسبقًا بيفضل في الذاكرة حتى لو بقى مخالفًا للفلتر.\n- **`ExecuteUpdate`/`ExecuteDelete` بتحترم الفلاتر** (ميزة مهمة: ما تعدّلش صفوف مستأجر تاني) — لكن تحقق منها في اختباراتك.\n- **Named query filters (EF Core 10)**: الفكرة إنك تعرّف أكثر من فلتر باسم وتفعّل/تعطّل بالاسم بدل `IgnoreQueryFilters()` الشامل. تحقّق من الأسماء الدقيقة للـAPI في توثيق EF Core 10 قبل الاعتماد عليها.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Joins صريحة وPrimitive Collections"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "قبل EF 10 (حيلة) وبعده (صريح)",
+      "code": "\n// ═══ ما قبل EF Core 10: left join بحيلة GroupJoin + SelectMany + DefaultIfEmpty ═══\nvar before = await db.Orders\n    .GroupJoin(db.Payments, o => o.Id, p => p.OrderId, (o, payments) => new { o, payments })\n    .SelectMany(x => x.payments.DefaultIfEmpty(), (x, payment) => new\n    {\n        x.o.Id,\n        x.o.Total,\n        PaidAt = (DateTimeOffset?)payment!.PaidAt,          // null لو مفيش دفعة\n        PaymentRef = payment == null ? null : payment.Reference,\n    })\n    .ToListAsync(ct);\n\n// ═══ EF Core 10: LeftJoin / RightJoin صريح (أوضح وأقرب للـSQL) ═══\n// راجع التوقيع الدقيق في توثيق إصدارك — الفكرة: ضمّ خارجي بدون حيل\nvar after = await db.Orders\n    .LeftJoin(db.Payments, o => o.Id, p => p.OrderId, (o, p) => new\n    {\n        OrderId = o.Id,\n        o.Total,\n        PaidAt = (DateTimeOffset?)p.PaidAt,\n        p.Reference,\n    })\n    .ToListAsync(ct);\n// SQL المولّد: LEFT JOIN payments p ON p.order_id = o.id\n\n// ═══ Primitive collections (EF Core 8+): مصفوفة قيم كعمود واحد ═══\npublic sealed class Product\n{\n    public List<string> Tags { get; set; } = [];            // ← عمود واحد (array/jsonb)\n    public int[] Sizes { get; set; } = [];\n}\n\n// Contains تُترجم لاستعلام معاملات آمن (بلا بناء نصي)\nvar tagged = await db.Products\n    .Where(p => p.Tags.Contains(\"new-arrival\"))\n    .ToListAsync(ct);\n\n// ومجموعات من الذاكرة تُمرَّر كمعامل واحد (بدل IN ضخم)\nvar ids = new[] { id1, id2, id3 };\nvar matching = await db.Products.Where(p => ids.Contains(p.Id)).ToListAsync(ct);\n\n// عمليات على المجموعة في SQL\nvar anyTagged = await db.Products\n    .Where(p => p.Tags.Any(t => t.StartsWith(\"sale\")))\n    .ToListAsync(ct);\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) JSON وExecuteUpdate على أعمدة JSON"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "عمود JSON أصلي + تحديث جزء منه من غير قراءة/كتابة كاملة",
+      "code": "\npublic sealed class OrderMetadata\n{\n    public string? Source { get; set; }                     // \"web\" | \"mobile\" | \"pos\"\n    public string? Campaign { get; set; }\n    public Dictionary<string, string> Attributes { get; set; } = [];\n}\n\npublic sealed class Order\n{\n    public OrderMetadata Metadata { get; set; } = new();\n}\n\n// التكوين: عمود JSON (في EF Core 10 فيه دعم أفضل لنوع json الأصلي في SQL Server/Postgres)\nb.OwnsOne(o => o.Metadata, m => m.ToJson(\"metadata\"));\n\n// القراءة والترشيح داخل JSON\nvar fromCampaign = await db.Orders\n    .Where(o => o.Metadata.Campaign == \"ramadan-2026\")\n    .ToListAsync(ct);\n\n// ★ EF Core 10: ExecuteUpdate على جزء من عمود JSON — بلا تحميل الكيانات وبلا إعادة كتابة العمود كله\nvar affected = await db.Orders\n    .Where(o => o.Metadata.Campaign == \"ramadan-2026\")\n    .ExecuteUpdateAsync(s => s.SetProperty(\n        o => o.Metadata.Campaign, \"ramadan-2026-extended\"), ct);\n\n// وبلامدا عادية (regular lambdas) في ExecuteUpdate — أسهل في القراءة وإعادة الاستخدام\nExpression<Func<Order, DateTimeOffset>> nowUtc = _ => TimeProvider.System.GetUtcNow();\nawait db.Orders\n    .Where(o => o.Status == OrderStatus.Abandoned)\n    .ExecuteUpdateAsync(s => s\n        .SetProperty(o => o.Status, OrderStatus.Cancelled)\n        .SetProperty(o => o.UpdatedAt, nowUtc), ct);\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "JSON في قاعدة علائقية: الحدود",
+      "md": "\n- **ممتاز لـ**: بيانات شبه بنيوية لا تُفلتر كثيرًا (metadata، سمات متغيرة، سجل تدقيق).\n- **سيئ لـ**: حقول بتتفلتر/بتتجمع/بتتربط باستمرار → أعمدة حقيقية + فهارس.\n- **الفهرسة**: في Postgres استخدم GIN على `jsonb` (`jsonb_path_ops`)، وفي SQL Server أعمدة محسوبة (computed columns) + فهارس عليها.\n- **`ExecuteUpdate` على JSON** بيتجنّب إعادة كتابة المستند كله، لكنه لسه بيعمل تحديث صف كامل على مستوى التخزين — قِس قبل ما تعتمد عليه في مسارات سخنة.\n- **التحقق**: JSON ما بيفرضش قيودًا (NOT NULL/UNIQUE/FK) → التحقق في التطبيق لازم يكون صارمًا.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) لمحة: Vector Search في .NET 10"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "بحث بالتشابه (RAG / توصيات) — الفكرة والحدود",
+      "code": "\n// الفكرة: خزّن embedding كعمود vector، وابحث بأقرب جار (ANN) بدل LIKE\npublic sealed class ProductEmbedding\n{\n    public Guid ProductId { get; init; }\n    public required float[] Embedding { get; init; }        // 1536 بُعد مثلًا\n}\n\n// Postgres + pgvector (الحزمة: Pgvector.EntityFrameworkCore)\n//   modelBuilder.Entity<ProductEmbedding>().Property(e => e.Embedding).HasColumnType(\"vector(1536)\");\nvar similar = await db.ProductEmbeddings\n    .OrderBy(e => e.Embedding.Distance(queryVector))         // L2 distance → فهرس HNSW/IVFFlat\n    .Take(10)\n    .Select(e => e.ProductId)\n    .ToListAsync(ct);\n\n// SQL Server 2025 + EF Core: دالة VECTOR_DISTANCE() مدمجة\n//   WHERE ... ORDER BY VECTOR_DISTANCE(embedding, @query, 'cosine')\n\n// ملاحظات عملية:\n// • الفهرس (HNSW/IVFFlat) ضروري — بدونه بحث كامل على الجدول\n// • الـembeddings بتتولّد خارج القاعدة (نموذج/خدمة) — راجع Microsoft.Extensions.AI\n// • الأبعاد والتطبيع (normalize) يحددان مقياس المسافة الصحيح (cosine مقابل L2)\n// • تحقق من دعم المزوّد وإصدار EF Core لديك قبل الاعتماد على API محدد\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الميزة",
+        "الحالة",
+        "الاستخدام العملي الآن"
+      ],
+      "rows": [
+        [
+          "Complex types (required)",
+          "مستقرة (EF 9+)",
+          "استخدمها بحرية لأنواع القيمة المركّبة"
+        ],
+        [
+          "Optional complex types",
+          "EF Core 10",
+          "جرّبها في فرع وتحقق من الـSQL والقيود"
+        ],
+        [
+          "`ToJson()` owned entities",
+          "مستقرة (EF 7+)",
+          "metadata/snapshots؛ تجنّبها للحقول المفلترة بكثرة"
+        ],
+        [
+          "Primitive collections",
+          "مستقرة (EF 8+)",
+          "`Tags.Contains(...)` بديل ممتاز لجداول ربط بسيطة"
+        ],
+        [
+          "`LeftJoin`/`RightJoin`",
+          "EF Core 10",
+          "بديل أوضح لحيلة `GroupJoin` — تحقق من التوقيع"
+        ],
+        [
+          "Named query filters",
+          "EF Core 10",
+          "تحكم أدق من `IgnoreQueryFilters()` الشامل — تحقق من الـAPI"
+        ],
+        [
+          "`ExecuteUpdate` (عادي وJSON)",
+          "مستقر + إضافات 10",
+          "الكتابات الجماعية (الدرس الجاي)"
+        ],
+        [
+          "Vector search",
+          "pgvector متاح / SQL Server 2025",
+          "RAG وتوصيات — يحتاج فهرس ANN"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أنمذج أنواع القيمة بـcomplex types بدل جداول أو أعمدة مفككة، وأعرف الفرق عن owned entities و`ToJson`.",
+        "أطبّق query filters للـsoft delete والـmulti-tenancy بالتقاط السياق (لا القيمة) وأفهم حدود `IgnoreQueryFilters()`.",
+        "أستخدم primitive collections وjoins صريحة وأتحقق من الـSQL المولّد.",
+        "أفرّق بين الميزات المستقرة وجديد EF Core 10 وأجرّب الجديد بمنهجية (فرع + قاعدة حقيقية + ADR)."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "عنوان شحن (شارع/مدينة/دولة) مطلوب في الفرز والفلترة — أنهي نمذجة أنسب؟",
+          "options": [
+            "جدول addresses منفصل بـFK",
+            "complex type بأعمدة مسطّحة في جدول الطلبات",
+            "عمود JSON",
+            "ثلاث أعمدة مفككة بلا نوع"
+          ],
+          "answer": 1,
+          "explain": "بلا join، وبلا هوية زائدة، والفلترة/الفرز يشتغلوا كأعمدة عادية. الجدول المنفصل يستحق لو العنوان مشترك بين كيانات كتير أو له سجل تغييرات."
+        },
+        {
+          "q": "`HasQueryFilter(o => o.TenantId == _tenantId)` حيث `_tenantId` قيمة نُسخت وقت بناء النموذج — النتيجة؟",
+          "options": [
+            "يعمل بشكل صحيح",
+            "كل الطلبات تشوف مستأجرًا واحدًا → تسريب بيانات بين المستأجرين",
+            "استثناء في الإقلاع",
+            "تجاهل الفلتر"
+          ],
+          "answer": 1,
+          "explain": "النموذج يُبنى مرة واحدة ويُخزَّن مؤقتًا. التقط **خدمة/سياق** (`tenant.TenantId`) مش قيمة، واختبر العزل بين مستأجرين."
+        },
+        {
+          "q": "`IgnoreQueryFilters()` في مسار إداري — الخطر؟",
+          "options": [
+            "بطء",
+            "يتجاهل كل الفلاتر معًا (soft delete + tenancy) → إعادة الشروط يدويًا ضرورية",
+            "يكسر الـtracking",
+            "لا خطر"
+          ],
+          "answer": 1,
+          "explain": "الحل: أعد شرط المستأجر صراحة بعد التجاهل، وضع المسار خلف تفويض إداري واختبار."
+        },
+        {
+          "q": "`List<string> Tags` كـprimitive collection مقابل جدول product_tags — إمتى تختار الأول؟",
+          "options": [
+            "دائمًا",
+            "لما الوسوم بلا كيان مستقل ولا علاقات إضافية والفلترة عليها بسيطة (`Contains`/`Any`)",
+            "لما الوسوم كتير جدًا",
+            "لا يصلح أبدًا"
+          ],
+          "answer": 1,
+          "explain": "لو الوسوم كيان له اسم/وصف/علاقات أو محتاج تجميعات عليها → جدول ربط. لو مجرد قيم → collection أبسط وأرخص."
+        },
+        {
+          "q": "ميزة جديدة في EF Core 10 عايز تستخدمها في الإنتاج. أول خطوة؟",
+          "options": [
+            "استخدمها مباشرة في مسار حرج",
+            "اقرأ What's new/Breaking changes، جرّبها في فرع على قاعدة حقيقية، افحص الـSQL المولّد، ووثّق القرار",
+            "انتظر الإصدار التالي",
+            "اسأل في منتدى"
+          ],
+          "answer": 1,
+          "explain": "منهجية، مش خوف. أغلب المفاجآت بتظهر في الـSQL المولّد والقيود (مش في الترجمة)."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "أنواع قيمة كـcomplex types",
+          "md": "حوّل قيمة مركّبة واحدة في مشروعك (عنوان/مبلغ/نطاق تاريخ) من أعمدة مفككة أو جدول منفصل إلى complex type مع أسماء أعمدة واضحة، وحدّث الـmigration والاختبارات. اختياري: جرّب optional complex type لو إصدارك يدعمه.",
+          "criteria": [
+            "النوع `readonly record struct` أو record في الـDomain (بلا اعتماد على EF)",
+            "الهجرة مطبقة والبيانات القديمة محفوظة (اختبار على نسخة من البيانات)",
+            "استعلام يفلتر أو يفرز على حقل داخل النوع يعمل ويُترجم لـSQL بسيط (احفظ الـSQL)",
+            "اختبارات الـDomain للنوع الجديد (منطق جمع/مقارنة)"
+          ],
+          "hint": "لو الـmigration حاولت إنشاء جدول جديد: تأكد إنك استخدمت `ComplexProperty` مش `OwnsOne` (الأخير ممكن يُكوّن جدول/أعمدة بحسب التكوين)."
+        },
+        {
+          "id": "t2",
+          "title": "Multi-tenancy أو soft delete بفلاتر",
+          "md": "طبّق query filter واحد على الأقل (soft delete أو tenant) بالتقاط السياق من خدمة، وأضف حماية في `SaveChangesAsync` ضد تعديل كيان لمستأجر آخر. اكتب اختبار عزل: مستأجر A لا يرى بيانات B في كل مسارات القراءة.",
+          "criteria": [
+            "الفلتر يلتقط خدمة/سياقًا لا قيمة ثابتة",
+            "اختبار عزل بين مستأجرين (أو بين محذوف/غير محذوف) ناجح",
+            "`IgnoreQueryFilters()` مستخدم في مسار إداري واحد فقط مع شروط معادة ومحمي بتفويض",
+            "مراجعة: هل الفلاتر مطبقة على `ExecuteUpdate`/`ExecuteDelete`؟ (اختبر)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "What's new in EF Core 10",
+          "url": "https://learn.microsoft.com/ef/core/what-is-new/ef-core-10.0/whatsnew"
+        },
+        {
+          "label": "EF Core 10 — Breaking changes",
+          "url": "https://learn.microsoft.com/ef/core/what-is-new/ef-core-10.0/breaking-changes"
+        },
+        {
+          "label": "Owned entity types & JSON",
+          "url": "https://learn.microsoft.com/ef/core/modeling/owned-entities"
+        },
+        {
+          "label": "Global query filters",
+          "url": "https://learn.microsoft.com/ef/core/querying/filters"
+        },
+        {
+          "label": "Primitive collections",
+          "url": "https://learn.microsoft.com/ef/core/querying/collections"
+        },
+        {
+          "label": "pgvector",
+          "url": "https://github.com/pgvector/pgvector"
+        }
+      ]
+    }
+  ]
+}

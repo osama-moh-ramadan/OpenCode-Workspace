@@ -1,0 +1,863 @@
+{
+  "id": "s7-m3-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "الهدف: **نظام المراحل 5/6 (خدمات + طوابير + حاويات + نشر على السحابة) بقى نظامًا مُدارًا**: تعرف إيه اللي بيحصل جواه لحظة بلحظة، بتتنبه على الأعراض مش الأسباب، عندك runbook لكل تنبيه بيصحي حد، بتدير الحادثة بأدوار واضحة، بتكتب تقريرًا بلا لوم بإجراءات بمالك وتاريخ — وكل ده **مسنود بأدلة قابلة للفحص**. وعلى نفس المسار: سلسلة توريد موقّعة بـSBOM مفحوص، قائمة فحص أمان تعمل كبوابة نشر، نموذج تهديدات بـSTRIDE مربوط باختبارات، ومسار بيانات شخصية (خريطة + تشفير + تصدير + حذف) يعمل فعلًا.\n\nالمشروع ده **مش كود جديد**: هو **تشغيل وأمان** النظام اللي بنيته. المُخرَج النهائي أربعة أشياء: (1) ملاحظة حية (traces/logs/metrics) على 3 خدمات على الأقل، (2) SLOs وتنبيهات multi-burn-rate مختبرة حيًا، (3) runbooks + سياسة حوادث + **تدريب عطل مُنفَّذ ومقيس** + postmortem بلا لوم، (4) بوابة أمان (SBOM/توقيع/قائمة فحص/تهديدات/حذف). وكل بند له **دليل محفوظ بتاريخ**."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات المشروع",
+      "items": [
+        {
+          "term": "Evidence (دليل)",
+          "def": "مخرَج أمر محفوظ بتاريخ يثبت إن البند اتنفذ فعلًا. القاعدة في المشروع ده: **لا دليل = لا بند متحقق**. الأدلة بتتجمع بـ`scripts/observability-evidence.sh` في مجلد `evidence/` بتاريخ UTC."
+        },
+        {
+          "term": "Drill (تدريب)",
+          "def": "كسر مُخطط لشيء في بيئة قريبة من الإنتاج، وتنفيذ الـrunbook حرفيًا، وقياس الأزمنة. الـrunbook غير المُختبر = تخمين، والـdrill هو الفرق بين «عندنا عملية» و«عندنا وثيقة»."
+        },
+        {
+          "term": "MTTD / MTTA / MTTR",
+          "def": "زمن الاكتشاف (من بدء العطل للتنبيه) · زمن الإقرار (من التنبيه لإنسان بيتدخل) · زمن الحل (لعودة الـSLI فوق الهدف). بتتقاس من **الخط الزمني** مش من الذاكرة."
+        },
+        {
+          "term": "Policy gate (بوابة سياسة)",
+          "def": "فحص آلي في الـCI/CD بيفشل النشر لو شرط أمان/جودة مش متحقق: ثغرة قابلة للإصلاح · صورة غير موقعة · بند قائمة فحص فاشل · نموذج تهديدات متقادم."
+        },
+        {
+          "term": "Acceptance evidence",
+          "def": "لكل معيار قبول في المشروع: أمر + مخرج متوقع + مكان الحفظ. ده اللي بيخلي التقييم موضوعي (لنفسك أو لحد تاني)."
+        },
+        {
+          "term": "Known-unknown",
+          "def": "حاجة عارف إنك ما تعرفها (مثال: «مش متأكد من أثر تشفير الحقل على زمن الاستجابة») — بتتكتب صراحةً في `CAPSTONE.md` مع خطة قياس. أخطر منها الـunknown-unknown اللي بيظهر في الـdrill."
+        },
+        {
+          "term": "Out-of-scope decision",
+          "def": "قرار مكتوب بإخراج بند من النطاق مع **السبب** و**المخاطرة المقبولة**. النطاق المكتوب هو الفرق بين مشروع يخلص ومشروع ما ينتهيش."
+        },
+        {
+          "term": "Golden path",
+          "def": "المسار الأساسي للمستخدم (تصفح → سلة → طلب → دفع → إشعار). كل الـSLIs والـdashboards والـrunbooks بتتمحور حوله — مش حول الموارد."
+        },
+        {
+          "term": "Immutable evidence",
+          "def": "أدلة ما بتتعدلش بعد الحادثة: لقطات لوحات · ملفات JSON · سجلات محفوظة. بتفرق في التحقيق والامتثال (7.2.5) — وبتخلي الـpostmortem قابل للتصديق."
+        },
+        {
+          "term": "Definition of Done (DoD)",
+          "def": "24 بندًا في آخر المشروع. البند «تم» لما الدليل موجود والأمر اتنفذ **اليوم** (مش لقطة من أسبوع)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① الشكل النهائي: من طلب المستخدم إلى قرار هندسي — وفي كل طبقة حارس"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "خريطة النظام (ارسم نسختك في CAPSTONE.md)",
+      "filename": "docs/capstone-map.txt",
+      "code": "  مستخدم\n    │ HTTPS\n    ▼\n ┌────────────┐     ┌──────────────┐     ┌───────────────┐\n │ ingress    │────▶│ orders-api   │────▶│ payments-wkr  │──▶ بوابة دفع\n │ (YARP)     │     │ (P1)         │     │ (P3)          │\n └────────────┘     └──────┬───────┘     └───────┬───────┘\n                           │ outbox              │\n                           ▼                     ▼\n                    ┌──────────────┐     ┌───────────────┐\n                    │ PostgreSQL   │     │ طابور رسائل   │──▶ notifications (P2)\n                    │ + audit      │     │               │\n                    └──────────────┘     └───────────────┘\n\n ── طبقة الملاحظة (7.1) ───────────────────────────────────────────────\n  كل خدمة: ServiceDefaults (traces+metrics+logs) بـOTLP\n        │\n        ▼\n  OTel Collector (memory_limiter → batch → حجب db.statement → tail sampling)\n        ├─ traces ──▶ Tempo/Jaeger ──▶ «أين ضاع الزمن؟»\n        ├─ metrics ─▶ Prometheus ───▶ «هل المستخدم متأثر؟»\n        └─ logs ────▶ Loki/Seq ─────▶ «لماذا حدث؟» + ربط بالـTraceId\n                            │\n                            ▼\n                     Grafana (لوحة RED + SLO + runtime)\n                            │\n                            ▼\n              قواعد SLO (recording) ──▶ تنبيهات burn-rate ──▶ Alertmanager\n                            │                    │\n                            │                    ▼\n                            │             runbook_url في كل تنبيه page\n                            ▼\n                     صفحة حالة + قناة حادثة (7.2.1)\n\n ── طبقة الأمان والتشغيل (7.2) ────────────────────────────────────────\n  CI: lockfile + NuGetAudit + gitleaks + اختبارات + SBOM (CycloneDX+SPDX)\n        │           └─ بوابة: ثغرة قابلة للإصلاح = فشل\n        ▼\n  توقيع keyless (cosign) + provenance (actions/attest) + SBOM attestation\n        │\n        ▼\n  CD: verify-image.sh (تثبيت الهوية) ──▶ admission policy في الـcluster\n        │                                        └─ بلا توقيع = Pod مرفوض\n        ▼\n  تشغيل: ترويسات + أقل صلاحيات + audit log + قائمة فحص قبل النشر\n        │\n        ▼\n  بيانات شخصية: خريطة بيانات + تشفير حقلي + blind index\n        │            + /me/export + /me/erasure (crypto-shredding)\n        ▼\n  تهديدات: DFD + STRIDE + جدول تهديدات ──▶ اختبار تكاملي لكل P0\n\n ── حلقة التعلم ───────────────────────────────────────────────────────\n  تنبيه ─▶ حادثة (أدوار) ─▶ تخفيف ─▶ تحقق بالأرقام ─▶ postmortem بلا لوم\n     ▲                                                        │\n     └──────────── إجراءات بمالك وتاريخ + runbook محدّث ◀──────┘\n"
+    },
+    {
+      "type": "callout",
+      "kind": "goal",
+      "title": "القواعد الست الحاكمة للمشروع (لو خالفت واحدة، المشروع ناقص)",
+      "md": "**① كل رقم من مقياس حقيقي**: ممنوع أرقام مكتوبة بإيدك في التقرير. كل نسبة نجاح/zمن/ميزانية أخطاء جاية من استعلام PromQL محفوظ كمخرَج.\n**② كل تنبيه page له runbook**: التنبيه يحمل `runbook_url` يشير لملف موجود فعلًا في الريبو. تنبيه بلا runbook = ضجيج.\n**③ كل إجراء له مالك وتاريخ**: في الـpostmortem وفي جدول التهديدات وفي خريطة البيانات — بلا مالك وتاريخ يبقى تمنيات.\n**④ لا بيانات شخصية في السجلات**: الإخفاء **قبل الكتابة**، ومُختبر بأمر/اختبار يثبت إن هاتفًا أو بطاقة ما بتظهرش.\n**⑤ كل تهديد P0 له اختبار**: الاختبار يحمل الـT-ID في اسمه. التهديد بدون اختبار = إجراء مضاد على الورق.\n**⑥ الأدلة محفوظة بتاريخ**: `evidence/YYYYMMDDTHHMM/` بمخرجات أوامر. الدليل القديم مش دليل على الحالة الحالية."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② النطاق: إيه اللي داخل وإيه اللي خارج (اكتبه قبل ما تبدأ)"
+    },
+    {
+      "type": "table",
+      "caption": "نطاق مُتفق عليه = مشروع يخلص. أي بند «خارج» له سبب ومخاطرة مكتوبة",
+      "head": [
+        "البند",
+        "داخل/خارج",
+        "الحد المطلوب",
+        "السبب (لو خارج)"
+      ],
+      "rows": [
+        [
+          "تتبع موزع عبر الخدمات",
+          "**داخل**",
+          "طلب واحد يُتتبع عبر ≥ 3 خدمات (HTTP + طابور + عامل خلفي)",
+          "—"
+        ],
+        [
+          "مقاييس RED + runtime",
+          "**داخل**",
+          "معدل/أخطاء/زمن لكل خدمة + 6 مقاييس runtime على الأقل",
+          "—"
+        ],
+        [
+          "لوجنج مركزي مع ربط بالتتبع",
+          "**داخل**",
+          "بحث بالـTraceId يرجع سجلات كل الخدمات + إخفاء PII مُختبر",
+          "—"
+        ],
+        [
+          "SLOs + تنبيهات burn-rate",
+          "**داخل**",
+          "SLI واحد أساسي + ثانوي لخدمة الطلبات · تنبيهان page + تنبيه ticket",
+          "—"
+        ],
+        [
+          "لوحات Grafana",
+          "**داخل**",
+          "لوحتان: RED للخدمة · SLO/ميزانية للنظام — مع متغيرات ونشر كـannotation",
+          "—"
+        ],
+        [
+          "Runbooks + سياسة حوادث",
+          "**داخل**",
+          "3 runbooks + سياسة أدوار ومستويات + قالب إعلان",
+          "—"
+        ],
+        [
+          "**تدريب عطل (Game Day)**",
+          "**داخل**",
+          "عطل واحد مُنفَّذ ومقيس (MTTD/MTTA/MTTR) + postmortem بلا لوم",
+          "—"
+        ],
+        [
+          "SBOM + توقيع + admission",
+          "**داخل**",
+          "CycloneDX للتطبيق والصورة + توقيع keyless + تحقق في CD (admission اختياري لو مفيش cluster)",
+          "لو مفيش cluster: التحقق في خطوة النشر + توثيق إن admission هو الخطوة الناقصة"
+        ],
+        [
+          "قائمة فحص أمان في CI",
+          "**داخل**",
+          "≥ 18 بندًا + تقرير + بوابة فشل",
+          "—"
+        ],
+        [
+          "نموذج تهديدات STRIDE",
+          "**داخل**",
+          "DFD + ≥ 12 تهديدًا + اختبار لكل P0",
+          "—"
+        ],
+        [
+          "مسار البيانات الشخصية",
+          "**داخل**",
+          "خريطة بيانات + تشفير حقل واحد على الأقل + export + erasure مُختبرين",
+          "—"
+        ],
+        [
+          "مراقبة مُدارة (Datadog/Grafana Cloud)",
+          "خارج",
+          "—",
+          "التكلفة + الهدف إتقان الأساس (OTLP/Prometheus). **مخاطرة**: ما تتعلمش خصوصيات المنصة المُدارة — تُعالج بقراءة توثيقها ساعة واحدة"
+        ],
+        [
+          "OpenTelemetry Profiling (البروفايل المستمر)",
+          "خارج",
+          "—",
+          "إشارة رابعة لسه بتتنضج، وقيمتها بتظهر في أنظمة أكبر. **مخاطرة**: ضعف رؤية استهلاك CPU داخل الدوال"
+        ],
+        [
+          "eBPF/مراقبة على مستوى النواة",
+          "خارج",
+          "—",
+          "يحتاج صلاحيات وأدوات خاصة بالـnode. **مخاطرة**: غياب رؤية الشبكة بين الخدمات"
+        ],
+        [
+          "SOC/SIEM كامل + كشف تسلل",
+          "خارج",
+          "—",
+          "نطاق أمن مؤسسي مش فريق منتج. **مخاطرة**: التنبيهات الأمنية بتفضل داخل نطاق التطبيق — تُعالج بتنبيهين أمنيين في Alertmanager"
+        ],
+        [
+          "امتثال قانوني رسمي (ترخيص/تصريح)",
+          "خارج",
+          "—",
+          "يحتاج مختصًا قانونيًا. **مخاطرة**: الهندسة جاهزة للإثبات بس القرار القانوني لسه — تُكتب في `CAPSTONE.md` كـknown-unknown"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ الجلسات الثماني (240 دقيقة) — كل جلسة بمُخرَج ودليل"
+    },
+    {
+      "type": "steps",
+      "title": "اشتغل بالترتيب: كل جلسة بتبني على اللي قبلها",
+      "items": [
+        {
+          "title": "الجلسة 1 (30د) — الوصلات: من صفر إشارة إلى تتبع متصل",
+          "md": "شغّل `docker compose` المراقبة (Collector + Prometheus + Grafana + Tempo/Jaeger + Loki/Seq)، فعّل ServiceDefaults في 3 خدمات (7.1.2)، وتأكد إن **طلبًا واحدًا** بيعمل trace بـspans متصلة عبر HTTP والطابور والعامل الخلفي.\n**المُخرَج**: `docker-compose.observability.yml` شغال + `collector-config.yaml` فيه memory_limiter أولًا وtail sampling.\n**الدليل**: `evidence/…/trace.json` فيه ≥ 3 spans بأسماء خدمات مختلفة وparent/child صحيح + لقطة من الـUI.\n**فشل متوقع**: spans مفصولة عند الطابور → تحتاج inject/extract صريح (7.1.2).",
+          "code": "# تحقق سريع إن الإشارات وصلت\ncurl -s \"http://localhost:9090/api/v1/label/__name__/values\" | jq -r '.data[]' \\\n  | grep -E '^(http_server_request_duration_seconds|shop_orders_placed)' | sort -u\n# هل التتبع وصل؟ (Jaeger/Tempo)\ncurl -s \"http://localhost:16686/api/services\" | jq .\n# هل السجلات وصلت؟ (Loki)\ncurl -s \"http://localhost:3100/loki/api/v1/labels\" | jq ."
+        },
+        {
+          "title": "الجلسة 2 (30د) — SLIs وقواعد التسجيل",
+          "md": "اختار SLI أساسيًا (نسبة نجاح الطلبات) وثانويًا (نسبة الطلبات تحت 300ms) لخدمة الطلبات، واكتب 5 recording rules (7.1.4/7.1.5) + وثيقة `docs/slo-orders.md` بحساب ميزانية الأخطاء.\n**المُخرَج**: `slo-rules.yml` + `docs/slo-orders.md` (الهدف 99.9% = 43.2 دقيقة/30 يومًا).\n**الدليل**: `promtool check rules` ناجح + مخرَج الاستعلام الفعلي لنسبة النجاح على 30 يومًا (أو على نافذتك المتاحة).",
+          "code": "promtool check rules monitoring/slo-rules.yml\npromql-check() { curl -sG \"http://localhost:9090/api/v1/query\" --data-urlencode \"query=$1\" | jq '.data.result[0].value[1]'; }\npromql-check 'job:sli_success:ratio_rate5m{job=\"orders-api\"}'\npromql-check 'histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{service_name=\"orders-api\"}[5m])))' "
+        },
+        {
+          "title": "الجلسة 3 (30د) — التنبيهات: page مقابل ticket + الاختبار الحي",
+          "md": "طبق multi-window multi-burn-rate (14.4× / 6× / 1×) + `alertmanager.yml` بالتجميع والكبت والصمت + تنبيهين أمنيين (محاولات رفض متكررة · تصدير كبير). وبعدين **اختبر كل تنبيه حيًا** بحقن عطل.\n**المُخرَج**: 3 تنبيهات SLO + 2 أمان + جدول قياس الضجيج (إشعارات/حادثة قبل وبعد التجميع).\n**الدليل**: لكل تنبيه: وقت الإطلاق · وقت الإشعار · وقت الاختفاء بعد الإصلاح (من سجلات Alertmanager) + `amtool check-config` ناجح.",
+          "code": "amtool check-config monitoring/alertmanager.yml\namtool config routes test --config-file=monitoring/alertmanager.yml \\\n  alertname=OrdersAvailabilityFastBurn severity=critical\n# حقن عطل 2% لمدة 10 دقائق (مسار اختبار في الخدمة) ثم راقب:\namtool alert query --alertmanager.url=http://localhost:9093 --expired"
+        },
+        {
+          "title": "الجلسة 4 (30د) — اللوجنج: ربط + إخفاء + تحكم وقت التشغيل",
+          "md": "Serilog إلى المخزن المركزي مع إثراء بـTraceId/SpanId (7.1.3) + CorrelationId في الاستجابة + سياسات إخفاء PII + endpoint تغيير المستوى مع watchdog.\n**المُخرَج**: بحث بالـTraceId يرجع سجلات من 3 خدمات مرتبة زمنيًا + اختبار يثبت الإخفاء.\n**الدليل**: استعلام Loki/Seq محفوظ + مخرَج اختبار الإخفاء + لقطة لتغيير المستوى ورجوعه تلقائيًا.",
+          "code": "# ربط سجلات الخدمات الثلاث بنفس التتبع\nTRACE_ID=$(curl -s \"http://localhost:9090/api/v1/query\" --data-urlencode \\\n  'query=trace_id_example' >/dev/null; echo \"<ضع TraceId من طلب حقيقي>\")\ncurl -sG \"http://localhost:3100/loki/api/v1/query_range\" \\\n  --data-urlencode \"query={service_name=~\\\".+\\\"} |= \\\"$TRACE_ID\\\"\" \\\n  --data-urlencode \"start=$(date -u -d '15 min ago' +%s)000000000\" \\\n  --data-urlencode \"end=$(date -u +%s)000000000\" | jq '.data.result | length'\n# إثبات الإخفاء: ابحث عن نمط هاتف مصري في آخر ساعة (لازم يرجع صفر)\ncurl -sG \"http://localhost:3100/loki/api/v1/query_range\" \\\n  --data-urlencode 'query={service_name=~\".+\"} |~ \"01[0125][0-9]{8}\"' \\\n  --data-urlencode \"start=$(date -u -d '1 hour ago' +%s)000000000\" \\\n  --data-urlencode \"end=$(date -u +%s)000000000\" | jq '[.data.result[].values[]] | length' "
+        },
+        {
+          "title": "الجلسة 5 (30د) — Runbooks وسياسة الحوادث",
+          "md": "اكتب 3 runbooks لأعلى 3 تنبيهات page عندك (تشخيص بأوامر حقيقية + جدول تخفيف + تحقق رقمي + تصعيد) + `docs/incident-response.md` بالأدوار والمستويات المرتبطة بالـburn-rate (7.2.1).\n**المُخرَج**: 3 ملفات runbook + سياسة حوادث + `runbook_url` في كل تنبيه page.\n**الدليل**: `grep -c runbook_url monitoring/*.yml` ≥ 3 + تحقق إن كل رابط يشير لملف موجود (`test -f`)."
+        },
+        {
+          "title": "الجلسة 6 (30د) — تدريب العطل (Game Day) والـpostmortem",
+          "md": "نفّذ `scripts/chaos-drill.sh`: اكسر حاجة (إيقاف تبعية / حقن أخطاء / خنق موارد)، ونفّذ الـrunbook **حرفيًا**، وقِس الأزمنة من سجلات حقيقية، واكتب postmortem بلا لوم ومرّره على `postmortem-lint.sh`.\n**المُخرَج**: سجل تدريب + `postmortems/<تاريخ>-<الوصف>.md` + ≥ 5 إجراءات بمالك وتاريخ.\n**الدليل**: MTTD/MTTA/MTTR محسوبة من تواقيت التنبيه والإقرار وعودة الـSLI + مخرَج الـlint ناجح + 3 خطوات في الـrunbook كانت غامضة وكيف عدّلتها.",
+          "code": "./scripts/chaos-drill.sh --scenario dependency-down --duration 8m --severity SEV2\n# ينفذ: لقطة قبل → كسر → قياس اكتشاف/إقرار/حل → لقطة بعد → ملف سجل بالتواقيت"
+        },
+        {
+          "title": "الجلسة 7 (30د) — سلسلة التوريد وبوابة الأمان",
+          "md": "ولّد SBOM مزدوج (تطبيق + صورة) وافحصه (7.2.2) + فعّل Dependabot بمجموعات + وقّع الصورة واربط provenance + تحقّق في CD + شغّل `pre-release-security-check.sh` (7.2.3) كبوابة.\n**المُخرَج**: `artifacts/sbom/…` + workflow توقيع/attestation + تقرير قائمة الفحص + جدول قرارات الثغرات (fix/VEX/ticket).\n**الدليل**: `trivy sbom` بمخرَج محفوظ + `cosign verify` بتثبيت الهوية ناجح + تقرير الفحص (عدد البنود الناجحة/الفاشلة) + قرار مكتوب لكل ثغرة متبقية.",
+          "code": "./scripts/sbom.sh\n./deploy/verify-image.sh sha256:<digest>\nBASE_URL=https://staging.example.com ./scripts/pre-release-security-check.sh"
+        },
+        {
+          "title": "الجلسة 8 (30د) — التهديدات والبيانات الشخصية",
+          "md": "جلسة STRIDE (7.2.4): DFD بحدود ثقة + ≥ 12 تهديدًا + **اختبار تكاملي لكل P0** (بـT-ID في الاسم) + فحص CI ضد تقادم الموديل. ثم (7.2.5): خريطة بيانات + تشفير حقل واحد بـAesGcm مع blind index + `/me/export` و`/me/erasure` مُختبرين + `docs/ropa.md`.\n**المُخرَج**: `docs/threat-model/…` + اختبارات + خريطة بيانات + مسار حذف يعمل + RoPA.\n**الدليل**: مخرَج الاختبارات (الأسماء فيها T-IDs) + إثبات حذف من ≥ 6 مخازن + اختبار إن فك التشفير فشل بعد إبطال المفتاح (crypto-shredding)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ الأدلة المطلوبة: «إزاي أثبت إني عملتها»"
+    },
+    {
+      "type": "table",
+      "caption": "24 دليلًا — كل واحد: أمر + مخرج متوقع. لو مش موجود، البند مش متحقق",
+      "head": [
+        "#",
+        "البند",
+        "الأمر/المصدر",
+        "المخرج المتوقع"
+      ],
+      "rows": [
+        [
+          "1",
+          "الإشارات الثلاث واصلة",
+          "`curl …/api/v1/label/__name__/values` + `curl …/api/services`",
+          "أسماء مقاييس `http_server_*` + خدمة واحدة على الأقل في التتبع"
+        ],
+        [
+          "2",
+          "تتبع متصل عبر 3 خدمات",
+          "ملف الـtrace (JSON) من الـUI/API",
+          "≥ 3 spans، أسماء خدمات مختلفة، سلسلة parent صحيحة"
+        ],
+        [
+          "3",
+          "الانتشار عبر الطابور",
+          "نفس الـtrace فيه span من العامل الخلفي",
+          "`ActivityKind.Consumer` مع نفس trace_id"
+        ],
+        [
+          "4",
+          "قواعد التسجيل صالحة",
+          "`promtool check rules monitoring/slo-rules.yml`",
+          "`SUCCESS` بلا أخطاء"
+        ],
+        [
+          "5",
+          "SLI فعلي",
+          "استعلام `job:sli_success:ratio_rate5m`",
+          "رقم بين 0 و1 من بيانات حقيقية (مش 1.0 ثابت بلا حركة)"
+        ],
+        [
+          "6",
+          "p95 من histogram",
+          "`histogram_quantile(0.95, sum by (le) (…))`",
+          "قيمة بالثواني معقولة (مثلًا 0.08–0.4)"
+        ],
+        [
+          "7",
+          "ميزانية الأخطاء",
+          "استعلام 30 يومًا + حساب في `docs/slo-orders.md`",
+          "نسبة محروقة + دقائق متبقية (43.2 دقيقة لهدف 99.9%)"
+        ],
+        [
+          "8",
+          "إعداد Alertmanager",
+          "`amtool check-config` + `config routes test`",
+          "config OK + المسار الصحيح (receiver) للتنبيه"
+        ],
+        [
+          "9",
+          "اختبار حي للتنبيه الحرج",
+          "حقن عطل 2% + سجل Alertmanager",
+          "إطلاق خلال دقائق · إشعار مجمّع · اختفاء خلال ~5 دقائق بعد الإصلاح"
+        ],
+        [
+          "10",
+          "اختبار حي للتنبيه البطيء",
+          "حقن عطل 0.7% لمدة ≥ 40 دقيقة",
+          "إطلاق (نافذة 6h) — أو تفسير لماذا النافذة تحتاج وقتًا أطول من التدريب"
+        ],
+        [
+          "11",
+          "قياس الضجيج",
+          "جدول قبل/بعد التجميع",
+          "إشعارات/حادثة انخفضت (مثال: 12 → 2)"
+        ],
+        [
+          "12",
+          "ربط السجلات بالتتبع",
+          "استعلام Loki/Seq بالـTraceId",
+          "سجلات من ≥ 3 خدمات لنفس الـtrace"
+        ],
+        [
+          "13",
+          "إخفاء PII",
+          "بحث بنمط هاتف/بطاقة في آخر ساعة",
+          "**0 نتائج** + مخرَج اختبار الوحدة للـredactor"
+        ],
+        [
+          "14",
+          "تغيير مستوى السجل وقت التشغيل",
+          "`curl -X POST /admin/logging` ثم انتظار الـwatchdog",
+          "المستوى اتغير · السجل اتكتب · رجع تلقائيًا بعد المهلة"
+        ],
+        [
+          "15",
+          "3 runbooks موجودة ومرتبطة",
+          "`grep -c runbook_url monitoring/*.yml` + `test -f` لكل رابط",
+          "≥ 3 وكل رابط لملف موجود"
+        ],
+        [
+          "16",
+          "سياسة الحوادث",
+          "`docs/incident-response.md`",
+          "4 مستويات + 4 أدوار + قالب إعلان + مسار خرق أمني"
+        ],
+        [
+          "17",
+          "تدريب العطل",
+          "سجل `scripts/chaos-drill.sh`",
+          "MTTD/MTTA/MTTR بتواقيت حقيقية + ما الذي كُسر"
+        ],
+        [
+          "18",
+          "postmortem بلا لوم",
+          "`scripts/postmortem-lint.sh postmortems/…`",
+          "ناجح: خط زمني ≥ 5 · إجراءات بأعمدة كاملة · بلا لغة لوم"
+        ],
+        [
+          "19",
+          "SBOM مزدوج + فحص",
+          "`./scripts/sbom.sh`",
+          "ملفا CycloneDX (تطبيق/صورة) + مخرَج `trivy sbom`"
+        ],
+        [
+          "20",
+          "توقيع وتحقق",
+          "`cosign verify … --certificate-identity-regexp …`",
+          "تحقق ناجح بالـdigest مع تثبيت الهوية والـworkflow"
+        ],
+        [
+          "21",
+          "قائمة فحص الأمان",
+          "`BASE_URL=… ./scripts/pre-release-security-check.sh`",
+          "تقرير Markdown + عدد ناجح/فاشل + معالجة أو استثناء موثق"
+        ],
+        [
+          "22",
+          "نموذج التهديدات + اختبارات",
+          "`docs/threat-model/threats.md` + `dotnet test --filter T0`",
+          "≥ 12 تهديدًا + اختبار ناجح لكل P0"
+        ],
+        [
+          "23",
+          "مسار الحذف",
+          "اختبار تكاملي لـ`/me/erasure`",
+          "اختفاء من ≥ 6 مخازن + فشل فك التشفير بعد إبطال المفتاح"
+        ],
+        [
+          "24",
+          "مسار التصدير + RoPA",
+          "`GET /me/export` + `docs/ropa.md`",
+          "JSON ببيانات المستخدم الحالي فقط + ≥ 3 أغراض معالجة موثقة"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "scripts/observability-evidence.sh — اجمع الأدلة الـ24 في مجلد بتاريخ",
+      "filename": "scripts/observability-evidence.sh",
+      "code": "#!/usr/bin/env bash\n# يجمع أدلة المشروع في evidence/<UTC timestamp>/ — دليل واحد لكل بند.\n# كل قسم مستقل: لو أمر فشل، يكمل الباقي ويسجل الفشل (الدليل الناقص يظهر بوضوح).\nset -uo pipefail\n\nSTAMP=\"$(date -u +%Y%m%dT%H%M%S)\"\nEV=\"evidence/$STAMP\"\nmkdir -p \"$EV\"\n\nPROM=\"${PROM:-http://localhost:9090}\"\nLOKI=\"${LOKI:-http://localhost:3100}\"\nJAEGER=\"${JAEGER:-http://localhost:16686}\"\nAM=\"${AM:-http://localhost:9093}\"\nBASE_URL=\"${BASE_URL:-https://staging.example.com}\"\n\nlog() { printf '%s | %s\\n' \"$(date -u +%H:%M:%S)\" \"$*\" | tee -a \"$EV/index.txt\"; }\nrun() { # run <اسم الدليل> <الأمر...>\n  local name=\"$1\"; shift\n  log \"[$name] $*\"\n  if \"$@\" > \"$EV/$name.txt\" 2>&1; then\n    log \"[$name] OK -> $EV/$name.txt\"\n  else\n    log \"[$name] FAIL (كود $?) -> $EV/$name.txt\"\n  fi\n}\n\n# ── 1) الإشارات ───────────────────────────────────────────────────────\nrun 01-metric-names curl -sG \"$PROM/api/v1/label/__name__/values\"\nrun 02-trace-services curl -s \"$JAEGER/api/services\"\nrun 03-loki-labels curl -s \"$LOKI/loki/api/v1/labels\"\n\n# ── 2) SLIs والأرقام ───────────────────────────────────────────────────\nrun 04-sli-success bash -c \"curl -sG '$PROM/api/v1/query' --data-urlencode 'query=job:sli_success:ratio_rate5m'\"\nrun 05-p95 bash -c \"curl -sG '$PROM/api/v1/query' --data-urlencode 'query=histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{service_name=\\\"orders-api\\\"}[5m])))'\"\nrun 06-budget-burned bash -c \"curl -sG '$PROM/api/v1/query' --data-urlencode 'query=1 - (sum(increase(shop_orders_placed_total{status=\\\"failed\\\"}[30d])) / sum(increase(shop_orders_placed_total[30d])))'\"\nrun 07-cardinality bash -c \"curl -sG '$PROM/api/v1/query' --data-urlencode 'query=prometheus_tsdb_head_series'\"\n\n# ── 3) التنبيهات ──────────────────────────────────────────────────────\nrun 08-promtool-rules promtool check rules monitoring/slo-rules.yml\nrun 09-promtool-alerts promtool check rules monitoring/security-rules.yml\nrun 10-amtool-config amtool check-config monitoring/alertmanager.yml\nrun 11-active-alerts curl -s \"$AM/api/v2/alerts\"\n\n# ── 4) السجلات ────────────────────────────────────────────────────────\n# حساب الزمن بشكل محمول (GNU date وBSD/macOS date)\npast_ns() {  # past_ns <ثوانٍ للخلف>\n  local t=$(( $(date -u +%s) - $1 ))\n  ( date -u -d \"@$t\" +%s 2>/dev/null || date -u -r \"$t\" +%s )000000000\n}\nSTART=\"$(past_ns 3600)\"\nEND=\"$(date -u +%s)000000000\"\nrun 12-log-volume bash -c \"curl -sG '$LOKI/loki/api/v1/query' --data-urlencode 'query=sum(count_over_time({service_name=~\\\".+\\\"}[1h]))'\"\n# إثبات الإخفاء: لا أرقام هواتف مصرية في آخر ساعة\nrun 13-pii-scan bash -c \"curl -sG '$LOKI/loki/api/v1/query_range' --data-urlencode 'query={service_name=~\\\".+\\\"} |~ \\\"01[0125][0-9]{8}\\\"' --data-urlencode 'start=$START' --data-urlencode 'end=$END'\"\n\n# ── 5) التشغيل ────────────────────────────────────────────────────────\nrun 14-runbook-links bash -c \"grep -rn 'runbook_url' monitoring/ | wc -l\"\nrun 15-runbook-files bash -c \"for f in \\$(grep -rhoE 'docs/runbooks/[A-Za-z0-9._-]+' monitoring/ | sort -u); do test -f \\\"\\$f\\\" && echo \\\"OK \\$f\\\" || echo \\\"MISSING \\$f\\\"; done\"\nrun 16-postmortem-lint bash -c \"ls postmortems/*.md 2>/dev/null | head -1 | xargs -r ./scripts/postmortem-lint.sh\"\n\n# ── 6) الأمان ─────────────────────────────────────────────────────────\nrun 17-sbom-app bash -c \"test -f artifacts/sbom/orders-api.cdx.json && jq '.components | length' artifacts/sbom/orders-api.cdx.json\"\nrun 18-sbom-image bash -c \"test -f artifacts/sbom/image.cdx.json && jq '.components | length' artifacts/sbom/image.cdx.json\"\nrun 19-trivy-sbom bash -c \"trivy sbom artifacts/sbom/orders-api.cdx.json --severity HIGH,CRITICAL --format table\"\nrun 20-security-checklist bash -c \"BASE_URL='$BASE_URL' REPORT='$EV/20-checklist.md' ./scripts/pre-release-security-check.sh\"\nrun 21-threat-model bash -c \"grep -cE '^\\|\\s*T-[0-9]{3}\\s*\\|' docs/threat-model/threats.md\"\n\n# ── 7) الاختبارات ─────────────────────────────────────────────────────\nrun 22-tests-threats bash -c \"dotnet test --filter FullyQualifiedName~T0 --logger 'console;verbosity=normal' --no-build\"\nrun 23-tests-privacy bash -c \"dotnet test --filter FullyQualifiedName~Privacy --logger 'console;verbosity=normal' --no-build\"\nrun 24-tests-observability bash -c \"dotnet test --filter FullyQualifiedName~Observability --logger 'console;verbosity=normal' --no-build\"\n\nlog \"اكتمل الجمع: $EV\"\necho \"\"\necho \"== ملخص (الفشل لازم يكون صفرًا أو موثقًا) ==\"\ngrep -c FAIL \"$EV/index.txt\" | sed 's/^/بنود فاشلة: /'\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ اختبارات على المراقبة والأمان نفسه (مش على كود الأعمال)"
+    },
+    {
+      "type": "text",
+      "md": "أهم درس في المرحلة دي: **المراقبة اللي مش مُختبرة بتكذب بهدوء**. الاختبارات دي بتشتغل على تطبيق حقيقي (WebApplicationFactory + Testcontainers من 1.2.5) وبتثبت إن الإشارات والأمان والخصوصية **موجودة فعلًا** — فأي انحدار مستقبلي بيتكشف في CI بدل ما يتكشف في حادثة."
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "tests/Shop.ObservabilityTests/Invariants.cs — قواعد المراقبة والأمان مفروضة باختبارات",
+      "filename": "tests/Shop.ObservabilityTests/Invariants.cs",
+      "code": "using System.Collections.Concurrent;\nusing System.Diagnostics;\nusing System.Globalization;\nusing System.IdentityModel.Tokens.Jwt;\nusing System.Net;\nusing System.Net.Http.Headers;\nusing System.Net.Http.Json;\nusing System.Security.Claims;\nusing System.Security.Cryptography;\nusing System.Text;\nusing Microsoft.AspNetCore.Mvc.Testing;\nusing Microsoft.EntityFrameworkCore;\nusing Microsoft.Extensions.DependencyInjection;\nusing Microsoft.IdentityModel.Tokens;\nusing Serilog;\nusing Serilog.Core;\nusing Serilog.Events;\nusing Shouldly;\nusing Shop.Infrastructure.Persistence;\nusing Shop.Infrastructure.Privacy;\nusing Shop.Infrastructure.Security;\nusing Xunit;\n\nnamespace Shop.ObservabilityTests;\n\n/// <summary>\n/// يجمع الـactivities عبر ActivityListener — مستقل تمامًا عن إعداد التطبيق،\n/// فلا يتعارض مع الـexporter الإنتاجي (7.1.2).\n/// ملاحظة: Sample لازم يرجع AllDataAndRecorded وإلا السمات ما تتسجلش.\n/// </summary>\npublic sealed class ActivityCollectorFixture : IDisposable\n{\n    private readonly ActivityListener _listener;\n\n    public ConcurrentQueue<Activity> Activities { get; } = new();\n\n    public ActivityCollectorFixture()\n    {\n        _listener = new ActivityListener\n        {\n            ShouldListenTo = src =>\n                src.Name.StartsWith(\"Shop.\", StringComparison.Ordinal)\n                || src.Name.StartsWith(\"Microsoft.AspNetCore.Hosting\", StringComparison.Ordinal)\n                || src.Name.StartsWith(\"System.Net.Http\", StringComparison.Ordinal),\n            Sample = (ref ActivityCreationOptions<ActivityContext> _) =>\n                ActivitySamplingResult.AllDataAndRecorded,\n            ActivityStopped = activity => Activities.Enqueue(activity),\n        };\n        ActivitySource.AddActivityListener(_listener);\n    }\n\n    public void Reset()\n    {\n        while (Activities.TryDequeue(out _)) { }\n    }\n\n    /// <summary>ينتظر العدد المطلوب (أو نهاية المهلة) ويرجع ما تجمع.</summary>\n    public IReadOnlyList<Activity> WaitFor(int count, int timeoutMs = 10_000)\n    {\n        var deadline = Environment.TickCount64 + timeoutMs;\n        while (Environment.TickCount64 < deadline && Activities.Count < count)\n        {\n            Thread.Sleep(50);\n        }\n\n        return Activities.ToArray();\n    }\n\n    public void Dispose() => _listener.Dispose();\n}\n\n/// <summary>\n/// ثوابت المشروع: لو اختبار فشل هنا فالمراقبة/الأمان/الخصوصية انكسرت بصمت.\n/// الأسماء تحمل معرفات التهديدات (T-xxx) من docs/threat-model/threats.md.\n/// </summary>\npublic sealed class ObservabilityInvariants(\n    WebApplicationFactory<Program> factory,\n    ActivityCollectorFixture collector)\n    : IClassFixture<WebApplicationFactory<Program>>, IClassFixture<ActivityCollectorFixture>\n{\n    // ── المراقبة ────────────────────────────────────────────────────────\n    [Fact]\n    public async Task Traced_Request_Produces_Shop_Span_Without_Identifiers_In_Tags()\n    {\n        collector.Reset();\n        using var client = factory.CreateClient();\n\n        await client.GetAsync(\"/health\");                      // مستثنى من التتبع\n        await client.GetAsync(\"/catalog/items?cursor=0\");      // يجب أن يُتتبع\n\n        var spans = collector.WaitFor(2);\n        var catalog = spans.FirstOrDefault(a =>\n            a.OperationName.Contains(\"catalog\", StringComparison.OrdinalIgnoreCase));\n\n        catalog.ShouldNotBeNull(\"لا يوجد span لمسار الكتالوج — التتبع غير مفعّل على هذا المسار\");\n        // service.name سمة مورد (resource) في OTLP، مش سمة على الـactivity — تُفحص في الـCollector\n        catalog!.GetTagItem(\"http.response.status_code\").ShouldBe(200);\n        // لا معرّفات في السمات: انفجار cardinality (7.1.1)\n        catalog.TagObjects.ShouldNotContain(t => t.Key is \"user_id\" or \"customer_id\" or \"order_id\");\n    }\n\n    [Fact]\n    public async Task Health_Endpoint_Is_Not_Traced()\n    {\n        collector.Reset();\n        using var client = factory.CreateClient();\n        await client.GetAsync(\"/health\");\n        await client.GetAsync(\"/alive\");\n\n        collector.WaitFor(1).ShouldNotContain(a =>\n            a.OperationName.Contains(\"/health\", StringComparison.OrdinalIgnoreCase)\n            || a.OperationName.Contains(\"/alive\", StringComparison.OrdinalIgnoreCase));\n    }\n\n    [Fact]\n    public async Task Queue_Consumer_Joins_The_Same_Trace_As_Producer()\n    {\n        collector.Reset();\n        using var client = factory.CreateClient();\n\n        var placed = await client.PostAsJsonAsync(\"/orders\", new { sku = \"SKU-1\", qty = 1 });\n        placed.StatusCode.ShouldBeOneOf(HttpStatusCode.Accepted, HttpStatusCode.Created);\n\n        var spans = collector.WaitFor(6, timeoutMs: 15_000);\n        var producer = spans.FirstOrDefault(a => a.Kind == ActivityKind.Producer);\n        var consumer = spans.FirstOrDefault(a => a.Kind == ActivityKind.Consumer);\n\n        producer.ShouldNotBeNull(\"لا span من نوع Producer — النشر عبر الطابور بلا تحقق (7.1.2)\");\n        consumer.ShouldNotBeNull(\"لا span من نوع Consumer — العامل لا يستخرج السياق\");\n        consumer!.TraceId.ShouldBe(producer!.TraceId);\n    }\n\n    [Fact]\n    public async Task Response_Contains_CorrelationId_Header()\n    {\n        using var client = factory.CreateClient();\n        var res = await client.GetAsync(\"/catalog/items?cursor=0\");\n\n        res.Headers.TryGetValues(\"X-Correlation-Id\", out var values).ShouldBeTrue();\n        values!.First().ShouldNotBeNullOrWhiteSpace();\n    }\n\n    // ── الأمان (7.2.3) ──────────────────────────────────────────────────\n    [Fact]\n    public async Task Security_Headers_Are_Present_With_Nonce_Based_Csp()\n    {\n        using var client = factory.CreateClient();\n        var res = await client.GetAsync(\"/catalog/items?cursor=0\");\n\n        res.Headers.TryGetValues(\"X-Content-Type-Options\", out var nosniff).ShouldBeTrue();\n        nosniff!.ShouldContain(\"nosniff\");\n\n        res.Headers.TryGetValues(\"Content-Security-Policy\", out var cspValues).ShouldBeTrue();\n        var csp = string.Join(\" \", cspValues!);\n        csp.ShouldNotContain(\"unsafe-inline\");      // unsafe-inline يلغي معظم قيمة CSP\n        csp.ShouldContain(\"nonce-\");\n        csp.ShouldContain(\"frame-ancestors 'none'\");\n\n        res.Headers.TryGetValues(\"Referrer-Policy\", out _).ShouldBeTrue();\n    }\n\n    [Fact]\n    public async Task Error_Response_Is_ProblemDetails_Without_Internal_Details()\n    {\n        using var client = factory.CreateClient();\n        var res = await client.GetAsync(\"/definitely-not-a-route\");\n\n        res.StatusCode.ShouldBe(HttpStatusCode.NotFound);\n        res.Content.Headers.ContentType?.MediaType.ShouldBe(\"application/problem+json\");\n\n        var body = await res.Content.ReadAsStringAsync();\n        body.ShouldNotContain(\"at Shop.\");\n        body.ShouldNotContain(\"Stack trace\");\n        body.ShouldNotContain(\"Password=\");\n    }\n\n    [Fact]\n    public async Task T001_User_Cannot_Read_Another_Users_Order()\n    {\n        // تهديد T-001 (إفصاح / IDOR) — الإجراء المضاد: فحص ملكية المورد\n        using var alice = factory.CreateAuthenticatedClient(\"alice\");\n        using var bob = factory.CreateAuthenticatedClient(\"bob\");\n\n        var created = await alice.PostAsJsonAsync(\"/orders\", new { sku = \"SKU-1\", qty = 1 });\n        created.StatusCode.ShouldBeOneOf(HttpStatusCode.Created, HttpStatusCode.Accepted);\n        var location = created.Headers.Location?.ToString() ?? \"/orders/mine/last\";\n\n        var stolen = await bob.GetAsync(location);\n        stolen.StatusCode.ShouldBeOneOf(HttpStatusCode.Forbidden, HttpStatusCode.NotFound);\n    }\n\n    [Fact]\n    public async Task Sensitive_Operations_Are_Audited_With_Actor_From_Token()\n    {\n        using var client = factory.CreateAuthenticatedClient(\"alice\");\n        await client.PostAsJsonAsync(\"/orders\", new { sku = \"SKU-1\", qty = 1 });\n\n        // نقرأ جدول التدقيق مباشرة (7.2.3) — append-only وبلا endpoint تعديل\n        using var scope = factory.Services.CreateScope();\n        var db = scope.ServiceProvider.GetRequiredService<ShopDbContext>();\n\n        var row = await db.AuditEntries\n            .AsNoTracking()\n            .Where(a => a.Action == \"Created\" && a.EntityType == \"Order\")\n            .OrderByDescending(a => a.Id)\n            .FirstOrDefaultAsync();\n\n        row.ShouldNotBeNull(\"لا صف تدقيق للعملية — الـinterceptor غير مسجّل\");\n        row!.ActorId.ShouldBe(\"alice\");     // من التوكن، لا من مدخلات الطلب\n        row.ActorType.ShouldBe(\"user\");\n        row.CorrelationId.ShouldNotBeNullOrWhiteSpace();\n    }\n\n    // ── الخصوصية (7.2.5) ────────────────────────────────────────────────\n    [Fact]\n    public void PiiRedactionEnricher_Hides_Phone_Card_And_Email_In_Message_And_Properties()\n    {\n        var events = new List<LogEvent>();\n        using var log = new LoggerConfiguration()\n            .MinimumLevel.Debug()\n            .Enrich.With(new PiiRedactionEnricher())      // من 7.1.3\n            .WriteTo.Sink(new CollectingSink(events))\n            .CreateLogger();\n\n        log.Information(\"customer {Phone} paid with {Card} ({Email})\",\n            \"01012345678\", \"4242424242424242\", \"mona@example.com\");\n\n        events.ShouldNotBeEmpty();\n        var rendered = string.Join(\"\\n\", events.Select(Render));\n        rendered.ShouldNotContain(\"01012345678\");\n        rendered.ShouldNotContain(\"4242424242424242\");\n        rendered.ShouldNotContain(\"mona@example.com\");\n        // الإخفاء لازم يشمل السمات المهيكلة، لا نص الرسالة فقط\n        rendered.ShouldContain(\"pii.detected\");\n    }\n\n    private static string Render(LogEvent e)\n    {\n        var message = e.RenderMessage(CultureInfo.InvariantCulture);\n        var props = string.Join(\" \", e.Properties.Select(kv => $\"{kv.Key}={kv.Value}\"));\n        return message + \" \" + props;\n    }\n\n    [Fact]\n    public async Task Erasure_Covers_All_Stores_And_Invalidates_The_Subject_Key()\n    {\n        using var client = factory.CreateAuthenticatedClient(\"alice\");\n        var subject = await client.GetFromJsonAsync<MeDto>(\"/customers/me\");\n        subject.ShouldNotBeNull();\n\n        // نفترض تصميم مفتاح لكل مستخدم (شرط crypto-shredding — 7.2.5)\n        var enc = factory.Services.GetRequiredService<IFieldEncryptor>();\n        var cipher = enc.EncryptFor(subject!.Id, \"01012345678\", KeyPurpose.CustomerContact);\n        enc.DecryptFor(subject.Id, cipher, KeyPurpose.CustomerContact).ShouldBe(\"01012345678\");\n\n        var requested = await client.PostAsJsonAsync(\"/me/erasure\", new { reason = \"test\" });\n        requested.StatusCode.ShouldBe(HttpStatusCode.Accepted);\n        var ack = await requested.Content.ReadFromJsonAsync<ErasureAck>();\n\n        // الطلب المكرر لازم يرجع نفس المرجع (idempotency)\n        var again = await client.PostAsJsonAsync(\"/me/erasure\", new { reason = \"test\" });\n        var ack2 = await again.Content.ReadFromJsonAsync<ErasureAck>();\n        ack2!.Reference.ShouldBe(ack!.Reference);\n\n        var status = await client.PollUntilAsync<ErasureStatusDto>(\n            $\"/me/erasure/{ack.Reference}\", s => s.State is \"completed\" or \"partially_failed\",\n            TimeSpan.FromSeconds(30));\n\n        status.State.ShouldBe(\"completed\");\n        status.Stores.Count.ShouldBeGreaterThanOrEqualTo(6);\n        status.Stores.ShouldAllBe(x => x.Outcome == \"done\");\n\n        // crypto-shredding: بعد إبطال المفتاح، فك التشفير يفشل — والنسخ الاحتياطية بقت بلا قيمة\n        Should.Throw<CryptographicException>(\n            () => enc.DecryptFor(subject.Id, cipher, KeyPurpose.CustomerContact));\n    }\n\n    [Fact]\n    public async Task Export_Returns_Only_The_Current_Users_Data()\n    {\n        using var alice = factory.CreateAuthenticatedClient(\"alice\");\n        using var bob = factory.CreateAuthenticatedClient(\"bob\");\n        await bob.PostAsJsonAsync(\"/customers/me\", new { fullName = \"Bob\", email = \"bob@example.com\" });\n\n        var json = await alice.GetStringAsync(\"/me/export\");\n        json.ShouldContain(\"alice\", Case.Insensitive);\n        json.ShouldNotContain(\"bob@example.com\");   // لا تسرب بين المستخدمين\n    }\n}\n\n// ── أدوات مساعدة للاختبار ───────────────────────────────────────────────\ninternal sealed class CollectingSink(List<LogEvent> sink) : ILogEventSink\n{\n    public void Emit(LogEvent logEvent) => sink.Add(logEvent);\n}\n\npublic sealed record MeDto(Guid Id, string FullName, string Email);\npublic sealed record ErasureAck(string Reference);\npublic sealed record ErasureStatusDto(string Reference, string State, List<StoreResultDto> Stores);\npublic sealed record StoreResultDto(string Store, string Action, string Outcome);\n\npublic static class TestHttpExtensions\n{\n    public static HttpClient CreateAuthenticatedClient(\n        this WebApplicationFactory<Program> factory, string subject)\n    {\n        var client = factory.CreateClient();\n        client.DefaultRequestHeaders.Authorization =\n            new AuthenticationHeaderValue(\"Bearer\", TestTokens.For(subject));\n        return client;\n    }\n\n    public static async Task<T> PollUntilAsync<T>(\n        this HttpClient client, string url, Func<T, bool> predicate, TimeSpan timeout)\n        where T : class\n    {\n        var deadline = DateTime.UtcNow + timeout;\n        while (DateTime.UtcNow < deadline)\n        {\n            var value = await client.GetFromJsonAsync<T>(url);\n            if (value is not null && predicate(value))\n            {\n                return value;\n            }\n\n            await Task.Delay(250);\n        }\n\n        throw new TimeoutException(\"لم يتحقق الشرط على \" + url + \" خلال \" + timeout);\n    }\n}\n\n/// <summary>\n/// توكنات اختبار موقعة بمفتاح اختبار — لازم إعدادات الاختبار في التطبيق تتحقق\n/// من نفس المفتاح (2.2.7). لا تستخدم هذا المفتاح في أي بيئة حقيقية.\n/// </summary>\ninternal static class TestTokens\n{\n    private static readonly SymmetricSecurityKey Key = new(\n        Encoding.UTF8.GetBytes(\n            Environment.GetEnvironmentVariable(\"TEST_JWT_SIGNING_KEY\")\n            ?? throw new InvalidOperationException(\"عيّن TEST_JWT_SIGNING_KEY (32 حرفًا على الأقل)\")));\n\n    public static string For(string subject) => new JsonWebTokenHandler().CreateToken(\n        new SecurityTokenDescriptor\n        {\n            Subject = new ClaimsIdentity(\n            [\n                new Claim(\"sub\", subject),\n                new Claim(ClaimTypes.Name, subject),\n                new Claim(\"role\", \"customer\"),\n            ]),\n            Expires = DateTime.UtcNow.AddMinutes(10),\n            Issuer = \"shop-tests\",\n            Audience = \"shop-api\",\n            SigningCredentials = new SigningCredentials(Key, SecurityAlgorithms.HmacSha256),\n        });\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "scripts/chaos-drill.sh — تدريب عطل مقيس (Game Day)",
+      "filename": "scripts/chaos-drill.sh",
+      "code": "#!/usr/bin/env bash\n# تدريب عطل: يكسر شيئًا محددًا، يقيس الأزمنة من مصادر حقيقية، ويحفظ سجلًا.\n# الاستخدام:\n#   ./scripts/chaos-drill.sh --scenario dependency-down --duration 8m --severity SEV2\n# السيناريوهات: dependency-down | error-injection | cpu-throttle | pod-kill | queue-backlog\nset -uo pipefail\n\nSCENARIO=\"dependency-down\"; DURATION=\"8m\"; SEVERITY=\"SEV2\"; NS=\"${NS:-shop}\"\nwhile [[ $# -gt 0 ]]; do\n  case \"$1\" in\n    --scenario) SCENARIO=\"$2\"; shift 2 ;;\n    --duration) DURATION=\"$2\"; shift 2 ;;\n    --severity) SEVERITY=\"$2\"; shift 2 ;;\n    --namespace) NS=\"$2\"; shift 2 ;;\n    *) echo \"خيار غير معروف: $1\"; exit 2 ;;\n  esac\ndone\n\nSTAMP=\"$(date -u +%Y%m%dT%H%M%S)\"\nEV=\"evidence/drill-$STAMP\"; mkdir -p \"$EV\"\nPROM=\"${PROM:-http://localhost:9090}\"; AM=\"${AM:-http://localhost:9093}\"\ncase \"$DURATION\" in\n  *m) SECS=$(( ${DURATION%m} * 60 )) ;;\n  *s) SECS=${DURATION%s} ;;\n  *)  echo \"مدة غير مفهومة: $DURATION (استخدم 8m أو 90s)\"; exit 2 ;;\nesac\n\necho \"== تدريب: $SCENARIO · الخطورة $SEVERITY · المدة $DURATION ==\" | tee \"$EV/drill.md\"\necho \"- البداية (UTC): $(date -u +%FT%TZ)\" | tee -a \"$EV/drill.md\"\n\n# 0) لقطة قبل (أساس المقارنة — لازم قبل الكسر مش بعده)\ncurl -sG \"$PROM/api/v1/query\" --data-urlencode \\\n  'query=job:sli_success:ratio_rate5m{job=\"orders-api\"}' > \"$EV/before-sli.json\"\ncurl -s \"$AM/api/v2/alerts\" > \"$EV/before-alerts.json\"\n\nbreak_it() {\n  case \"$SCENARIO\" in\n    dependency-down)\n      # إيقاف تبعية (Redis/PostgreSQL) — السيناريو الأكثر واقعية\n      kubectl -n \"$NS\" scale statefulset/redis --replicas=0 ;;\n    error-injection)\n      # حقن نسبة فشل عبر علم ميزة (أدق من كسر حاجة حقيقية)\n      kubectl -n \"$NS\" set env deploy/orders-api FAULT_INJECT_ERROR_RATE=0.05 ;;\n    cpu-throttle)\n      kubectl -n \"$NS\" patch deploy orders-api --type=json \\\n        -p '[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/resources/limits/cpu\",\"value\":\"50m\"}]' ;;\n    pod-kill)\n      kubectl -n \"$NS\" delete pod -l app=orders-api --grace-period=0 --force ;;\n    queue-backlog)\n      kubectl -n \"$NS\" scale deploy/outbox-dispatcher --replicas=0 ;;\n    *) echo \"سيناريو غير معروف: $SCENARIO\"; return 2 ;;\n  esac\n}\n\nrestore_it() {\n  case \"$SCENARIO\" in\n    dependency-down) kubectl -n \"$NS\" scale statefulset/redis --replicas=1 ;;\n    error-injection) kubectl -n \"$NS\" set env deploy/orders-api FAULT_INJECT_ERROR_RATE- ;;\n    cpu-throttle)    kubectl -n \"$NS\" patch deploy orders-api --type=json \\\n                       -p '[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/resources/limits/cpu\",\"value\":\"500m\"}]' ;;\n    pod-kill)        kubectl -n \"$NS\" rollout restart deploy/orders-api ;;\n    queue-backlog)   kubectl -n \"$NS\" scale deploy/outbox-dispatcher --replicas=2 ;;\n  esac\n}\n\necho \"- الكسر: $(date -u +%FT%TZ)\" | tee -a \"$EV/drill.md\"\nbreak_it || { echo \"فشل تنفيذ الكسر\"; exit 1; }\n\n# 1) زمن الاكتشاف: أول تنبيه حرج بعد الكسر\nDETECTED=\"\"\nfor i in $(seq 1 60); do\n  sleep 10\n  ACTIVE=$(curl -s \"$AM/api/v2/alerts\" | jq -r '[.[] | select(.status.state==\"active\" and .labels.severity==\"critical\")] | length')\n  if [[ \"${ACTIVE:-0}\" -gt 0 ]]; then DETECTED=\"$(date -u +%FT%TZ)\"; break; fi\ndone\ncurl -s \"$AM/api/v2/alerts\" > \"$EV/during-alerts.json\"\n\n# 2) نفّذ الـrunbook يدويًا/آليًا هنا — سجّل كل خطوة بوقتها في $EV/timeline.md\necho \"- نفّذ الـrunbook الآن وسجّل الخطوات في $EV/timeline.md (وقت لكل خطوة)\" | tee -a \"$EV/drill.md\"\necho \"- انتظار مدة التدريب: $DURATION\" | tee -a \"$EV/drill.md\"\nsleep \"$SECS\"\n\necho \"- الاستعادة: $(date -u +%FT%TZ)\" | tee -a \"$EV/drill.md\"\nrestore_it\n\n# 3) زمن الحل: أول مرة يرجع الـSLI فوق الهدف لمدة 5 دقائق متصلة\nRECOVERED=\"\"\nfor i in $(seq 1 90); do\n  sleep 10\n  OK=$(curl -sG \"$PROM/api/v1/query\" --data-urlencode \\\n    'query=(job:sli_success:ratio_rate5m{job=\"orders-api\"} > 0.999)' | jq '.data.result | length')\n  if [[ \"${OK:-0}\" -gt 0 ]]; then RECOVERED=\"$(date -u +%FT%TZ)\"; break; fi\ndone\n\ncurl -sG \"$PROM/api/v1/query\" --data-urlencode \\\n  'query=job:sli_success:ratio_rate5m{job=\"orders-api\"}' > \"$EV/after-sli.json\"\n\n{\n  echo \"\"\n  echo \"## الأزمنة (من مصادر حقيقية)\"\n  echo \"- الاكتُشف (أول تنبيه حرج): ${DETECTED:-لم يُكتشف خلال 10 دقائق ← فجوة مراقبة}\"\n  echo \"- استُعيد (SLI فوق الهدف): ${RECOVERED:-لم يستعد خلال 15 دقيقة ← فجوة تخفيف}\"\n  echo \"- التنبيهات النشطة أثناء التدريب: $(jq 'length' \"$EV/during-alerts.json\" 2>/dev/null || echo '?')\"\n  echo \"\"\n  echo \"## مطلوب يدويًا بعد التدريب\"\n  echo \"- [ ] MTTA من سجل الإقرار في Alertmanager/PagerDuty\"\n  echo \"- [ ] 3 خطوات في الـrunbook كانت غامضة/خاطئة + التعديل\"\n  echo \"- [ ] postmortem (7.2.1) + postmortem-lint.sh\"\n} | tee -a \"$EV/drill.md\"\n\necho \"السجل: $EV/drill.md\"\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑥ 12 وضع فشل متوقع في المشروع — وإزاي تتعامل"
+    },
+    {
+      "type": "table",
+      "caption": "دي الأخطاء اللي بتحصل فعلًا لأول مرة (كلها قابلة للحل في دقائق لو عارفها)",
+      "head": [
+        "#",
+        "العرض",
+        "السبب الحقيقي",
+        "العلاج"
+      ],
+      "rows": [
+        [
+          "1",
+          "الـspans مفصولة: كل خدمة بتعمل trace مستقل",
+          "السياق مش منتشر عبر الطابور (HTTP بينتشر تلقائيًا، الطوابير لأ)",
+          "inject/extract صريح بـW3C traceparent + `ActivityKind.Producer/Consumer` (7.1.2) — والاختبار رقم 3 بيكشفه"
+        ],
+        [
+          "2",
+          "المقاييس مش ظاهرة في Prometheus",
+          "خطأ في المنفذ/البروتوكول: OTLP gRPC 4317 مقابل HTTP 4318، أو `OTEL_EXPORTER_OTLP_ENDPOINT` غير مضبوط",
+          "راجع `otelcol --config` + سجلات الـCollector (`--set=service.telemetry.logs.level=debug`) + تأكد من مسار `/api/v1/otlp/v1/metrics` لو مستقبل Prometheus"
+        ],
+        [
+          "3",
+          "عدد السلاسل (series) انفجر",
+          "معرّفات (user_id/order_id) في سمات المقاييس → cardinality",
+          "احذف السمة من المقاييس (خليها في السجلات/التتبع) + `CardinalityLimit` في الـview + راقب `prometheus_tsdb_head_series`"
+        ],
+        [
+          "4",
+          "التنبيه الحرج ما اشتغلش رغم عطل واضح",
+          "النافذة الطويلة (1h) لسه ما امتلاتش، أو العطل أقصر من المطلوب",
+          "للاختبار: عطل مستمر ≥ 10 دقائق بنسبة ≥ 2% — واحسب الـburn-rate يدويًا قبل ما تلوم القاعدة (7.1.5)"
+        ],
+        [
+          "5",
+          "التنبيه ما اختفاش بعد الإصلاح",
+          "نافذة الـ5m بتفضل فيها البيانات السيئة، أو `for` طويلة",
+          "ده سلوك متوقع (يختفي خلال ~5 دقائق) — لو أطول، راجع النوافذ و`keep_firing_for`"
+        ],
+        [
+          "6",
+          "إشعارات كتير لحادثة واحدة",
+          "بلا تجميع/كبت في Alertmanager",
+          "`group_by` + `group_wait` + `repeat_interval` + قواعد inhibition (7.1.5) — وقِس الضجيج قبل وبعد"
+        ],
+        [
+          "7",
+          "السجلات من غير TraceId",
+          "الـenricher مش مفعّل أو `UseSerilogRequestLogging` قبل الـmiddleware الخطأ",
+          "فعّل `Activity.Current` في الـenricher وتأكد من الترتيب: CorrelationId → Serilog request logging (7.1.3)"
+        ],
+        [
+          "8",
+          "أرقام هاتف/بطاقة ظاهرة في السجلات",
+          "destructuring policy ناقصة أو كائن مُمرَّر كاملًا للسجل",
+          "`PiiDestructuringPolicy` + `PiiRedactionEnricher` + اختبار (رقم 9) يفشل لو ظهر نمط"
+        ],
+        [
+          "9",
+          "لوحة Grafana فاضية رغم وجود البيانات",
+          "اسم المقياس بعد ترجمة OTLP: `_total` للعدادات و`_seconds`/`_bytes` للوحدات",
+          "اسأل Prometheus عن الأسماء الفعلية (`/api/v1/label/__name__/values`) وعدّل الاستعلام — الخطأ الأشهر في المرحلة دي (7.1.4)"
+        ],
+        [
+          "10",
+          "الـCollector بيعيد التشغيل أو بيستهلك ذاكرة ضخمة",
+          "`memory_limiter` مش أول معالج في الـpipeline، أو `batch` بحجم كبير",
+          "رتّب المعالجات: memory_limiter → (sampling) → batch، وحدد `limit_mib`/`spike_limit_mib` (7.1.2)"
+        ],
+        [
+          "11",
+          "SBOM ناقص أو بلا حزم نظامية",
+          "اتولد من شجرة المصدر بدل الصورة المبنية",
+          "ولّد الاثنين: `dotnet-CycloneDX` للتطبيق + `syft <image>` للصورة (7.2.2)"
+        ],
+        [
+          "12",
+          "مسار الحذف «نجح» لكن البيانات لسه في الكاش/الفهرس",
+          "التنفيذ غطى القاعدة فقط (أسهل مخزن)",
+          "اجمع المخازن في قائمة صريحة + اختبار يثبت الاختفاء من ≥ 6 مخازن (7.2.5) + تنبيه عند `partially_failed`"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑦ معايير التسليم (Definition of Done) — 24 بندًا"
+    },
+    {
+      "type": "checkpoints",
+      "title": "المشروع تمّ لما كل بند تحقق بدليل",
+      "items": [
+        "**تتبع متصل**: طلب واحد يُتتبع عبر ≥ 3 خدمات بما فيها مستهلك الطابور (دليل 2/3).",
+        "**استثناء الصحة**: `/health` و`/alive` مش متتبعين ولا في السجلات المركزية (دليل 1 + اختبار).",
+        "**مقاييس RED**: معدل/أخطاء/زمن (p95 من histogram) لكل خدمة (دليل 5/6).",
+        "**مقاييس runtime**: ≥ 6 من (GC heap · gen2 · thread pool · connections · exceptions · timer) معروضة (دليل 1).",
+        "**cardinality تحت السيطرة**: `prometheus_tsdb_head_series` مستقر + بلا معرّفات في السمات (دليل 7 + اختبار).",
+        "**Collector مضبوط**: memory_limiter أولًا + حجب `db.statement`/`authorization` + tail sampling (ملف محفوظ).",
+        "**SLI/SLO موثقان**: `docs/slo-orders.md` بالهدف وحساب الميزانية واستعلامات 30 يومًا (دليل 7).",
+        "**قواعد تسجيل**: ≥ 5 recording rules و`promtool check rules` ناجح (دليل 4).",
+        "**تنبيهات burn-rate**: 14.4× page · 6× page · 1× ticket — واختبار حي لكل واحد (دليل 9/10).",
+        "**Alertmanager**: تجميع + كبت + صمت + `amtool check-config` ناجح + مسار لكل تنبيه (دليل 8).",
+        "**runbook_url** في كل تنبيه page، وكل رابط لملف موجود (دليل 15).",
+        "**3 runbooks**: تشخيص بأوامر حقيقية + جدول تخفيف + تحقق رقمي + تصعيد (دليل 15).",
+        "**لوجنج مركزي**: بحث بالـTraceId يرجع سجلات ≥ 3 خدمات (دليل 12).",
+        "**لا PII في السجلات**: بحث بأنماط هاتف/بطاقة يرجع 0 + اختبار (دليل 13).",
+        "**تحكم وقت التشغيل**: تغيير المستوى + watchdog + سجل تغيير (دليل 14).",
+        "**لوحتان Grafana**: RED للخدمة + SLO/ميزانية للنظام، مع annotation للنشر (ملفات JSON محفوظة).",
+        "**سياسة حوادث**: مستويات مربوطة بالـburn-rate + 4 أدوار + قالب إعلان + مسار خرق (دليل 16).",
+        "**تدريب عطل مُنفَّذ**: MTTD/MTTA/MTTR من تواقيت حقيقية + 3 فجوات في الـrunbook مُصلحة (دليل 17).",
+        "**postmortem بلا لوم**: خط زمني ≥ 8 أحداث + ≥ 5 إجراءات بمالك وتاريخ وتذكرة + `postmortem-lint.sh` ناجح (دليل 18).",
+        "**SBOM مزدوج مفحوص** + جدول قرارات الثغرات (fix/VEX/ticket) + Dependabot بمجموعات (دليل 19).",
+        "**توقيع + provenance + تحقق في CD** بتثبيت الهوية والـworkflow (دليل 20) — أو admission policy لو عندك cluster.",
+        "**قائمة فحص أمان**: ≥ 18 بندًا تعمل كبوابة في CI + تقرير + استثناءات موثقة (دليل 21).",
+        "**نموذج تهديدات**: DFD بحدود ثقة + ≥ 12 تهديدًا + اختبار تكاملي لكل P0 بـT-ID في الاسم + فحص CI ضد التقادم (دليل 22).",
+        "**البيانات الشخصية**: خريطة بيانات + تشفير حقل بـAesGcm مع blind index + `/me/export` و`/me/erasure` مُختبرين (≥ 6 مخازن + crypto-shredding) + `docs/ropa.md` (دليل 23/24)."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "معايير التقييم (لو بتقيّم نفسك أو بتعرضه على حد) — 7 محاور × 3 مستويات",
+      "head": [
+        "المحور",
+        "مقبول (60%)",
+        "جيد (80%)",
+        "ممتاز (100%)"
+      ],
+      "rows": [
+        [
+          "**التغطية**",
+          "إشارة واحدة (سجلات) على خدمة واحدة",
+          "الإشارات الثلاث على خدمتين",
+          "الإشارات الثلاث على ≥ 3 خدمات + طابور + عامل خلفي، والربط بينها يعمل"
+        ],
+        [
+          "**دقة الأرقام**",
+          "أرقام تقريبية بلا مصدر",
+          "أرقام من استعلامات صحيحة",
+          "كل رقم من استعلام محفوظ + فهم لترجمة أسماء OTLP + حدود histogram مناسبة"
+        ],
+        [
+          "**التنبيهات**",
+          "تنبيه واحد على سبب (CPU/ذاكرة)",
+          "تنبيه على الأعراض + تجميع",
+          "multi-window multi-burn-rate + inhibition + صمت + اختبار حي + قياس ضجيج قبل/بعد"
+        ],
+        [
+          "**التشغيل**",
+          "runbook واحد نظري",
+          "3 runbooks + سياسة حوادث",
+          "+ تدريب عطل مُنفَّذ ومقيس + postmortem بلا لوم + إجراءات بمالك وتاريخ + مراجعة التنبيهات"
+        ],
+        [
+          "**الأمان**",
+          "قائمة فحص يدوية",
+          "SBOM + توقيع + قائمة فحص في CI",
+          "+ admission/تحقق في CD بتثبيت الهوية + قرارات VEX + تدقيق append-only منبّه عليه"
+        ],
+        [
+          "**الخصوصية**",
+          "خريطة بيانات",
+          "+ تشفير حقل + export",
+          "+ erasure عبر ≥ 6 مخازن + crypto-shredding + إخفاء PII في السجلات مُختبر + RoPA"
+        ],
+        [
+          "**التوثيق والأدلة**",
+          "لقطات شاشة متفرقة",
+          "ملف أدلة منظم",
+          "`evidence/` بتاريخ + سكربت جمع آلي + `CAPSTONE.md` فيه known-unknowns وقرارات النطاق + كل بند DoD له دليل"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑧ قالب `CAPSTONE.md` — املأه وأنت بتشتغل مش في الآخر"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "CAPSTONE.md",
+      "filename": "CAPSTONE.md",
+      "code": "# Capstone المرحلة 7 — رصد + تشغيل + أمان لنظام shop\n> الاسم: · التاريخ: · المستودع: · البيئة: staging/production\n> **القاعدة**: كل ادعاء في هذا الملف له دليل في evidence/ بتاريخ.\n\n## 1) النظام المرصود\n- الخدمات: (orders-api · payments-worker · notifications · outbox-dispatcher · …)\n- المنصة: (compose محلي · AKS · ACA)\n- خريطة النظام: docs/capstone-map.txt (أضف نسختك)\n\n## 2) الـSLIs والـSLOs\n| الخدمة | SLI | الصيغة | الهدف | الميزانية (30 يومًا) | المحروق فعليًا |\n|---|---|---|---|---|---|\n| orders-api | نسبة النجاح | job:sli_success:ratio_rate5m | 99.9% | 43.2 دقيقة | |\n| orders-api | نسبة الأسرع من 300ms | histogram bucket ratio | 95% | — | |\n| outbox | عمر أقدم رسالة | shop_outbox_oldest_age_seconds | < 60 ثانية | — | |\n\n**قرار الهدف**: لماذا 99.9% وليس 99.95%؟ (تكلفة · تبعيات · أثر)\n**سياسة الميزانية**: ماذا يتوقف لو احترقت الميزانية؟\n\n## 3) الملاحظة\n- Collector: (الإصدار · المعالجات بالترتيب · سياسات tail sampling)\n- المخازن: Prometheus (retention) · Loki/Seq (retention) · Tempo/Jaeger (sampling)\n- التكلفة: عدد السلاسل (series) · حجم السجلات/يوم · كيف قللتها\n\n## 4) التنبيهات\n| التنبيه | النوع | النوافذ | burn-rate | المسار | runbook | اختُبر حيًا؟ |\n|---|---|---|---|---|---|---|\n| OrdersAvailabilityFastBurn | page | 1h/5m | 14.4x | pager | docs/runbooks/checkout-5xx-spike.md | نعم (التاريخ) |\n| OrdersAvailabilitySlowBurn | ticket | 3d/6h | 1x | ticket | … | |\n| SecurityRejectionsSpike | page | 5m | — | pager | docs/runbooks/auth-abuse.md | |\n\nقياس الضجيج: إشعارات/حادثة قبل التجميع = · بعده =\n\n## 5) التشغيل\n- سياسة الحوادث: docs/incident-response.md (المستويات مربوطة بـ: )\n- Runbooks: (3 أسماء + آخر اختبار لكل واحد)\n- **تدريب العطل**: التاريخ · السيناريو · MTTD · MTTA · MTTR · 3 فجوات في الـrunbook وإصلاحها\n- Postmortem: postmortems/<ملف> · عدد الإجراءات · المقفلة منها · lint: PASS\n\n## 6) الأمان\n- SBOM: عدد مكونات التطبيق = · الصورة = · الثغرات: (fix/VEX/ticket لكل واحدة)\n- التوقيع: الهوية المثبتة = · التحقق في: (CD/admission) · SLSA level =\n- قائمة الفحص: بنود = · ناجح = · فاشل = · الاستثناءات (بسبب/مالك/تاريخ):\n- التدقيق: الأحداث المدققة = · append-only: كيف مُنع التعديل = · التنبيهات الأمنية =\n\n## 7) التهديدات\n- DFD: docs/threat-model/shop-dfd.md · حدود الثقة = · التدفقات =\n- جدول التهديدات: العدد = · P0 = · لكل P0 اختبار: (أسماء الاختبارات)\n- قبولات الخطر: (مع السبب وتاريخ المراجعة)\n\n## 8) البيانات الشخصية\n- خريطة البيانات: docs/data-inventory.md (عدد الحقول المصنفة = )\n- التشفير: الحقول المشفرة = · blind index على = · المقايضات المقبولة =\n- الحقوق: export (الزمن) · erasure (المخازن المغطاة = · crypto-shredding: نعم/لا)\n- RoPA: docs/ropa.md (الأغراض = ) · known-unknowns قانونية:\n\n## 9) الأدلة\n- الدليل: evidence/<stamp>/index.txt · البنود الفاشلة: (ولماذا)\n- سكربت الجمع: scripts/observability-evidence.sh\n\n## 10) ما تعلمته / ما سأفعله مختلفًا\n- 3 أشياء نجحت:\n- 3 أشياء كلفت وقتًا:\n- ما الذي سأبنيه مختلفًا في النظام القادم:\n\n## 11) Known-unknowns (اكتبها بصراحة)\n| السؤال | لماذا لا أعرفه | كيف سأقيسه |\n|---|---|---|\n| أثر تشفير الحقل على p95 | ما قستش قبل/بعد | benchmark + مقارنة p95 في staging |\n| هل الـsampling بيفقد تتبعات الأخطاء؟ | سياسات tail sampling غير مُختبرة على حمل حقيقي | حقن أخطاء + فحص نسبة الاحتفاظ |\n| تكلفة الملاحظة عند 10× حمل | ما جربتش | تقدير cardinality + حجم السجلات |\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "سكريبت الـ3 دقائق في المقابلة (احفظه)",
+      "md": "**السؤال**: «إزاي بتتأكد إن نظامك في الإنتاج سليم ومؤمّن؟»\n\n**الإجابة** (بنيّة: قرار → أرقام → حادثة → نتيجة):\n\n«ببني الملاحظة على **الأعراض مش الأسباب**: SLI أساسي هو نسبة نجاح الطلبات مقاسة عند الـingress، وهدف 99.9% يعني **43.2 دقيقة** ميزانية أخطاء في الشهر. التنبيهات **multi-window multi-burn-rate**: 14.4× على نافذة ساعة/5 دقائق للـpage، و1× على 3 أيام للـticket — كده بتتنبه لما المستخدم يتأثر فعلًا، والضجيج نزل من ~12 إشعارًا لحادثة إلى إشعار مجمّع واحد.\n\nكل تنبيه page بيبقى معه **runbook** فيه أوامر تشخيص حقيقية وجدول تخفيف بأثره الجانبي، وإدارة الحادثة بأدوار: **IC ما يشخّصش**، OL بيصلّح، CL بيبلّغ، وScribe بيوثق الخط الزمني. بنعمل **Game Day** كل ربع سنة: نكسر تبعية فعلًا ونقيس MTTD/MTTA/MTTR — في آخر تدريب اكتشفنا إن الـrunbook كان بيفترض أداة مش موجودة في الصورة المشدودة (chiseled)، فأضفنا صورة debug منفصلة.\n\nبعد كل SEV1 بيكون فيه **postmortem بلا لوم** خلال 48 ساعة بإجراءات **بمالك وتاريخ وتذكرة**، وعندنا lint آلي بيرفض التقرير لو إجراء من غير مالك. أهم مقياس عندي **معدل التكرار**: هل نفس السبب رجع؟\n\nوعلى ناحية الأمان: **SBOM مزدوج** (تطبيق + صورة) مفحوص، والصور **موقعة keyless مع provenance**، والتحقق في CD بيبقى **بتثبيت الهوية والـworkflow** مش بالتوقيع فقط، و**بوابة قائمة فحص** بترفض النشر لو فيه ثغرة قابلة للإصلاح أو ترويسة ناقصة. وعملنا **threat model بـSTRIDE** وكل تهديد P0 له **اختبار تكاملي** باسم فيه الـT-ID — فأهم تهديد عندنا (IDOR) بيتكشف في CI مش في الإنتاج. وأخيرًا مسار **حذف البيانات** بيغطي 8 مخازن مع crypto-shredding للنسخ الاحتياطية.»\n\n**ليه الإجابة دي بتشتغل**: أرقام محددة (43.2 دقيقة · 14.4×) · مصطلحات صحيحة (burn-rate/IC/MTTA) · **قصة فشل حقيقية** (الأداة في الصورة المشدودة) · وربط بالأمن والخصوصية — يعني مش مجرد «حطينا Grafana»."
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "8 أسئلة على المشروع كله.",
+      "questions": [
+        {
+          "q": "خدمة بتنتج spans لكن كل خدمة ليها trace_id مختلف، والطابور بره التتبع خالص. السبب الأرجح؟",
+          "options": [
+            "الـsampling نسبة صغيرة",
+            "سياق التتبع مش منتشر عبر الطابور — يحتاج inject/extract صريح بـW3C traceparent",
+            "اسم الـActivitySource غلط",
+            "Prometheus لا يخزن التتبع"
+          ],
+          "answer": 1,
+          "explain": "HTTP وgRPC بينشروا السياق تلقائيًا عبر instrumentation، لكن **الطوابير لأ**: لازم تحقن `traceparent` في ترويسة الرسالة عند النشر وتستخرجه عند الاستهلاك مع `ActivityKind.Consumer` (7.1.2). الاختبار `Queue_Consumer_Joins_The_Same_Trace_As_Producer` بيكشف ده في CI."
+        },
+        {
+          "q": "لوحتك فاضية رغم إن المقاييس واصلة لـPrometheus. أول حاجة تتحقق منها؟",
+          "options": [
+            "إصدار Grafana",
+            "اسم المقياس الفعلي بعد ترجمة OTLP: العدادات بتاخد `_total` والقيم بتاخد `_seconds`/`_bytes`",
+            "حجم الشاشة",
+            "صلاحيات الـdashboard"
+          ],
+          "answer": 1,
+          "explain": "أشهر خطأ في المرحلة دي: تكتب `shop_orders_placed` والاسم الفعلي `shop_orders_placed_total`. اسأل Prometheus عن الأسماء الحقيقية (`/api/v1/label/__name__/values`) وابنِ الاستعلام منها — ولا تنسخ استعلامًا من مقال (7.1.4)."
+        },
+        {
+          "q": "حقنت عطل 2% لمدة 90 ثانية وتنبيه الـFastBurn ما اشتغلش. ليه؟",
+          "options": [
+            "التنبيه معطل",
+            "النوافذ ما امتلاتش: القاعدة تحتاج نافذة ساعة (للاستهلاك) ونافذة 5 دقائق (للحداثة) — عطل 90 ثانية لا يكفي",
+            "النسبة صغيرة جدًا",
+            "Alertmanager مش شغال"
+          ],
+          "answer": 1,
+          "explain": "multi-window يعني **الاتنتين** لازم تتحقق: النافذة الطويلة بتأكد إن فيه استهلاك حقيقي، والقصيرة بتأكد إنه لسه بيحصل. للاختبار: عطل مستمر ≥ 10 دقائق بنسبة ≥ 2% (7.1.5). وده مقصود: التنبيه ما يطلقش على نبضة عابرة."
+        },
+        {
+          "q": "أهم مقياس يثبت إن عملية ما بعد الحادثة بتشتغل فعلًا؟",
+          "options": [
+            "MTTR",
+            "عدد التقارير المكتوبة",
+            "معدل تكرار الحوادث من نفس السبب الجذري",
+            "عدد التنبيهات"
+          ],
+          "answer": 2,
+          "explain": "MTTR بيتحسن بالتخفيف السريع حتى لو السبب لسه موجود، وعدد التقارير بيتحول لورق. **التكرار** بيقيس هل التعلم اتحول لتغيير في النظام — وده هدف الـpostmortem (7.2.1)."
+        },
+        {
+          "q": "وقّعت الصورة بـcosign keyless وفي CD بتتحقق بـ`--certificate-oidc-issuer` فقط. ما الخطر؟",
+          "options": [
+            "التوقيع بطيء",
+            "بيقبل أي صورة موقعة من أي مستودع على GitHub Actions — لازم تثبيت الهوية (repo + workflow)",
+            "لا يعمل مع GHCR",
+            "يحتاج مفتاحًا خاصًا"
+          ],
+          "answer": 1,
+          "explain": "الـissuer وحده معناه «أي مستودع على GitHub». ثبّت المستودع والـworkflow بـ`--certificate-identity` أو `--certificate-identity-regexp`، وتحقق **بالـdigest** مش بالـtag (7.2.2)."
+        },
+        {
+          "q": "في تدريب العطل، إيه اللي لازم تعمله قبل ما تعيد تشغيل الخدمة المعطوبة؟",
+          "options": [
+            "تكتب الـpostmortem",
+            "تأخذ لقطة أدلة (logs/describe/top/تنبيهات) لأن إعادة التشغيل تمسح الأعراض",
+            "تبلغ العملاء",
+            "تدور الأسرار"
+          ],
+          "answer": 1,
+          "explain": "إعادة التشغيل بتمسح الذاكرة والأعراض وتدمّر الدليل اللي محتاجه للتشخيص والـpostmortem. اللقطة بتاخد أقل من دقيقة (7.2.1 §6.1) — وبعدها خفف بحرية. وفي حالة الاشتباه بخرق، ده إلزامي مش اختياري."
+        },
+        {
+          "q": "مسار الحذف نجح في قاعدة البيانات، لكن بيانات المستخدم لسه في الكاش وفهرس البحث. أفضل إصلاح بنيوي؟",
+          "options": [
+            "حذف يدوي عند الطلب",
+            "قائمة مخازن صريحة في خدمة الحذف + اختبار تكاملي يثبت الاختفاء من ≥ 6 مخازن + تنبيه عند partially_failed",
+            "تقليل مدة الاحتفاظ بالكاش",
+            "تجاهل: الكاش بيتحدث تلقائيًا"
+          ],
+          "answer": 1,
+          "explain": "الحذف التزام قانوني، و«نجاح جزئي» لازم يُكتشف ويُنبَّه. البنية الصح: `IErasureService` بيمشي على مخازن محددة (قاعدة · كاش · طابور · فهرس · جلسات · سجلات · مفاتيح · معالجون) + إثبات لكل مخزن + crypto-shredding للنسخ (7.2.5)."
+        },
+        {
+          "q": "إيه اللي بيخلي تهديدًا من نموذج STRIDE «مقفل» فعلًا؟",
+          "options": [
+            "كتابته في الجدول",
+            "تحديد إجراء مضاد نظري",
+            "اختبار تكاملي يحمل الـT-ID ويثبت الإجراء المضاد (مثل 403 على مورد مستخدم آخر)",
+            "مراجعته في اجتماع"
+          ],
+          "answer": 2,
+          "explain": "من غير اختبار، الإجراء المضاد بيتكسر في أول refactor ومحدش هيعرف. الربط T-ID ↔ اختبار بيخلي أي انحدار أمني يظهر في CI (7.2.4 المهمة 2)."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "المشروع: 3 مهام مترابطة",
+      "intro": "نفّذهم بالترتيب — كل مهمة بتبني على اللي قبلها وتنتهي بأدلة.",
+      "items": [
+        {
+          "id": "s7-m3-l1-t1",
+          "title": "مهمة 1 (الجلسات 1–4): ملاحظة كاملة + SLOs وتنبيهات مختبرة",
+          "md": "وصّل 3 خدمات على الأقل بـOpenTelemetry (traces/metrics/logs) إلى Collector ثم Prometheus/Grafana/Loki (أو Tempo/Jaeger + Seq). عرّف SLI أساسيًا وثانويًا، واكتب قواعد التسجيل وتنبيهات multi-burn-rate وAlertmanager بالتجميع والكبت. اختبر كل تنبيه **حيًا** بحقن عطل، وقِس الضجيج قبل وبعد.",
+          "criteria": [
+            "`docker-compose.observability.yml` (أو manifests) يشغّل: Collector + Prometheus + Grafana + مخزن تتبع + مخزن سجلات — ويشتغل بأمر واحد.",
+            "**تتبع متصل** لطلب واحد عبر ≥ 3 خدمات بما فيها مستهلك الطابور (`ActivityKind.Consumer` مع نفس trace_id) — بملف JSON كدليل.",
+            "`collector-config.yaml`: `memory_limiter` **أولًا** · `batch` · حجب `db.statement`/`authorization` · **tail sampling** بسياسات (أخطاء + بطء + نسبة عادية).",
+            "`slo-rules.yml`: ≥ 5 recording rules + تنبيهان page (14.4×/1h/5m · 6×/6h/30m) + تنبيه ticket (1×/3d/6h) + `promtool check rules` ناجح.",
+            "`alertmanager.yml`: routing بـ`severity` · تجميع · inhibition (≥ قاعدتين) · صمت موثق بـ`amtool` · `amtool check-config` ناجح.",
+            "**اختبار حي موثق لكل تنبيه**: وقت الإطلاق · الإشعار · الاختفاء بعد الإصلاح (من سجلات حقيقية، مش تقدير).",
+            "لوحتا Grafana (JSON محفوظ): RED للخدمة + SLO/ميزانية للنظام، مع annotation للنشر ووحدات صحيحة.",
+            "Serilog مركزي: إثراء TraceId/SpanId · إخفاء PII مُختبر (بحث بنمط هاتف يرجع 0) · endpoint تغيير المستوى بـwatchdog.",
+            "`docs/slo-orders.md`: الهدف + حساب الميزانية (43.2 دقيقة لـ99.9%) + استعلامات 30 يومًا + سياسة الميزانية.",
+            "الأدلة 1–14 من الجدول محفوظة في `evidence/<stamp>/` عبر `observability-evidence.sh`."
+          ],
+          "hint": "ابدأ بـ**خدمة واحدة** وشوف الإشارات الثلاث قبل ما توصل التانية — أغلب الوقت بيضيع في توصيل مش في تصميم. لو `promtool`/`amtool` مش مثبتين، حمّلهم من إصدار Prometheus (مش من مدير حزم قديم). ولحقن العطل: أضف مسار اختبار في الخدمة (`FAULT_INJECT_ERROR_RATE` من متغير بيئة) — أدق وأأمن من كسر حاجة حقيقية، وبيخلي الاختبار قابلًا للتكرار في الـdrill. وخلي بالك من أسماء المقاييس بعد ترجمة OTLP قبل ما تبني اللوحة.",
+          "solution": "النتيجة النموذجية: أول 60–90 دقيقة بتضيع في التوصيل (منفذ OTLP · اسم الخدمة · مسار المستقبل)، وبعدها كل حاجة بتمشي أسرع. الأرقام النموذجية لنظام صغير تحت حمل k6: نسبة نجاح 99.2–99.8% مع حقن أخطاء 2% · p95 بين 60–250ms · عدد السلاسل (series) 3–15 ألف لكل خدمة (لو تعدى 50 ألف، راجع السمات) · حجم السجلات 50–500MB/يوم حسب مستوى Info. في اختبار التنبيهات: الـFastBurn بيطلق خلال 2–5 دقائق من بدء عطل 2% مستمر، والـSlowBurn بيحتاج 30–60 دقيقة (نافذة 6h) فالاختبار الكامل له بيستغرق وقتًا — ممكن تختبره بنافذة مخفّضة مؤقتًا في بيئة تدريب مع **توثيق** إن القيم مختلفة عن الإنتاج. أهم ملاحظة: قياس الضجيج قبل التجميع بيطلع عادة 8–20 إشعارًا لحادثة واحدة، وبعده إشعار واحد — وده الرقم اللي بتقنع بيه فريقك يستثمر في Alertmanager.",
+          "resources": [
+            "https://opentelemetry.io/docs/languages/dotnet/",
+            "https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/",
+            "https://sre.google/workbook/alerting-on-slos/",
+            "https://grafana.com/docs/grafana/latest/dashboards/",
+            "https://prometheus.io/docs/alerting/latest/alertmanager/",
+            "https://learn.microsoft.com/dotnet/core/diagnostics/observability-with-otel"
+          ]
+        },
+        {
+          "id": "s7-m3-l1-t2",
+          "title": "مهمة 2 (الجلسات 5–6): تشغيل الحوادث — runbooks + تدريب + postmortem",
+          "md": "اكتب سياسة حوادث و3 runbooks لأعلى تنبيهاتك، واربطها بـ`runbook_url`. ثم نفّذ **تدريب عطل حقيقي** بـ`chaos-drill.sh` (أو يدويًا)، ونفّذ الـrunbook حرفيًا، وقِس الأزمنة من مصادر حقيقية، واكتب postmortem بلا لوم ومرّره على الـlint، وأصلح 3 فجوات اكتشفتها.",
+          "criteria": [
+            "`docs/incident-response.md`: تعريف الحادثة · 4 مستويات **مربوطة بمعيار رقمي** (burn-rate) · 4 أدوار · قالب إعلان · أول 15 دقيقة · مسار الخرق الأمني · شروط الإغلاق.",
+            "**3 runbooks** لكل واحد: التنبيه بالاسم · ≥ 3 خطوات تشخيص بأمر حقيقي وجدول «نتيجة → خطوة» · جدول تخفيف ≥ 4 خيارات بأثرها الجانبي · تحقق رقمي بـPromQL · تصعيد · مالك وتاريخ اختبار.",
+            "`runbook_url` في **كل** تنبيه page، وكل رابط يشير لملف موجود (`test -f`).",
+            "**تدريب عطل مُنفَّذ**: سيناريو محدد · لقطة قبل/بعد · كسر فعلي · تنفيذ runbook · استعادة · سجل بتواقيت UTC.",
+            "**MTTD/MTTA/MTTR محسوبة من مصادر حقيقية** (سجل Alertmanager للإقرار · استعلام SLI للاستعادة) — مش تقديرًا.",
+            "3 فجوات في الـrunbook مكتوبة وإصلاحها (ملف محدّث + commit).",
+            "`postmortems/<تاريخ>-<وصف>.md` كامل: أثر بالأرقام · خط زمني ≥ 8 أحداث · سبب جذري + ≥ 3 أسباب مساهمة · «أين كنا محظوظين» · ≥ 5 إجراءات (مالك/أولوية/تاريخ/تذكرة) · **`postmortem-lint.sh` ناجح**.",
+            "3 جمل أُعيدت صياغتها من لغة اللوم للغة النظام (قبل/بعد).",
+            "مراجعة التنبيهات بعد التدريب: قرار (إبقاء/تعديل/حذف) لكل تنبيه اشتغل أو مااشتغلش."
+          ],
+          "hint": "اختار سيناريو التدريب بحيث يكون **واقعيًا وآمنًا**: `dependency-down` (إيقاف Redis) أو `error-injection` بعلم ميزة — وتجنب `pod-kill --force` على الإنتاج. لو بتشتغل لوحدك، العب دورين بالتناوب (IC/OL) وصرّح بالقرار في السجل — ده تدريب حقيقي على التنسيق مش على الأوامر. ولحساب MTTA: Alertmanager بيحتفظ بوقت بدء التنبيه، ووقت الإقرار من أداة الـon-call (أو من أول رسالة كتبته في قناة الحادثة — استخدمها لو مفيش أداة).",
+          "solution": "النتائج النموذجية لأول تدريب: MTTD 1–3 دقائق (لو التنبيهات على الأعراض) · MTTA 3–10 دقائق (فريق صغير) · MTTR 15–45 دقيقة. والفجوات اللي بتظهر دايمًا: (1) أمر في الـrunbook بيحتاج أداة مش موجودة في الصورة المشدودة (chiseled بلا shell) — الحل صورة debug أو sidecar، (2) الشخص الـon-call ما عندوش صلاحيات على الـcluster — الحل RBAC مسبق (7.2.3)، (3) مفيش نسخة قياسية من الصورة للرجوع — الحل سياسة احتفاظ بالصور + digest في الـmanifests، (4) التخفيف استغرق أطول من المتوقع لأن الـrollback نفسه غير مُختبر (6.3.3). أهم نتيجة غير متوقعة: الفرق بتكتشف إن **التنبيه وصل لكن محدش عرف هو عن إيه** — وده بيتحول لتحسين في رسالة التنبيه (`summary`/`description` بلغة الأثر مش الاسم التقني).",
+          "resources": [
+            "https://sre.google/resources/practices-and-processes/incident-management-guide/",
+            "https://sre.google/workbook/postmortem-culture/",
+            "https://response.pagerduty.com/",
+            "https://sre.google/sre-book/effective-troubleshooting/",
+            "https://learn.microsoft.com/azure/well-architected/reliability/"
+          ]
+        },
+        {
+          "id": "s7-m3-l1-t3",
+          "title": "مهمة 3 (الجلسات 7–8): بوابة الأمان + التهديدات + البيانات الشخصية",
+          "md": "اربط سلسلة التوريد والأمان والخصوصية بالـCI/CD: SBOM مزدوج مفحوص + توقيع وprovenance + تحقق في CD + قائمة فحص أمان كبوابة + Dependabot بمجموعات. وبعدين: نموذج تهديدات STRIDE كامل باختبار لكل P0 + خريطة بيانات + تشفير حقلي بـblind index + مسارا تصدير وحذف مُختبرين + RoPA.",
+          "criteria": [
+            "`scripts/sbom.sh`: CycloneDX للتطبيق + SPDX (أو CycloneDX) للصورة + `trivy sbom` على الاتنين + `dotnet list package --vulnerable` — وملفان محفوظان.",
+            "**جدول قرارات الثغرات**: لكل ثغرة → fix / not_affected (VEX بتبرير ودليل) / risk_accepted (بمالك ومراجعة) — بلا خانة فاضية.",
+            "`.github/dependabot.yml` بثلاث منظومات (nuget/github-actions/docker) + مجموعات + تجاهل semver-major.",
+            "Workflow إصدار: دفع **بالـdigest** + `actions/attest` (provenance + SBOM) + `cosign sign` keyless + **أرشفة SBOM** لكل إصدار.",
+            "`deploy/verify-image.sh` في CD: `gh attestation verify` + `cosign verify` بتثبيت المستودع والـworkflow + استخراج provenance + فحص SBOM — ويفشل النشر لو التحقق فشل.",
+            "(لو عندك cluster) `ClusterImagePolicy` بـglob محصور + استثناءات الموردين + تطبيق audit أولًا ثم enforce، بدليل رفض صورة غير موقعة.",
+            "`pre-release-security-check.sh`: **≥ 18 بندًا** بتقرير Markdown + يعمل كـjob في CI + الاستثناءات موثقة بمالك وتاريخ.",
+            "سجل تدقيق append-only عبر `SaveChangesInterceptor` (actor من التوكن · CorrelationId · إخفاء الحقول الحساسة) + تنبيهان أمنيان.",
+            "`docs/threat-model/`: DFD بحدود ثقة + جدول تدفقات + **≥ 12 تهديدًا** بصيغة قابلة للاختبار + ≥ 2 قبول خطر موثق + فحص CI ضد التقادم.",
+            "**اختبار تكاملي لكل تهديد P0** بـT-ID في الاسم + مخرَج اختبار محفوظ.",
+            "`docs/data-inventory.md` (≥ 10 حقول مصنفة) + تشفير حقل واحد على الأقل بـAesGcm (`new AesGcm(key, 16)`) + **blind index** بفهرس فريد + 3 اختبارات (roundtrip · اختلاف القيم · بحث).",
+            "`GET /me/export` (بيانات المستخدم الحالي فقط) + `POST /me/erasure` (202 · idempotent · ≥ 6 مخازن · crypto-shredding · إثبات) + `RetentionWorker` + `docs/ropa.md` بـ≥ 3 أغراض.",
+            "كل الأدلة 17–24 محفوظة + `CAPSTONE.md` مملوء (بما فيه known-unknowns وقرارات النطاق)."
+          ],
+          "hint": "المهمة دي كبيرة، فقسّمها على يومين: يوم للأمان (SBOM/توقيع/قائمة فحص) ويوم للتهديدات والخصوصية. ولو مفيش cluster متاح، نفّذ التحقق في خطوة CD ووثّق إن admission هي الخطوة الناقصة (ده قرار نطاق مشروع، مش نقص في الشغل). في التشفير الحقلي: ابدأ بحقل واحد (`phone`) واعمل migration بـexpand/contract (3.3.4) — عمود جديد + مهمة ترحيل على دفعات + تبديل + حذف القديم. ولو اختبارات الحذف صعبة: استخدم fakes للمخازن المشتقة (`IDerivedStoreCleaner`) تسجل الاستدعاءات، واثبت إنها اتنادت بالمعرّف الصح.",
+          "solution": "النتائج النموذجية: SBOM التطبيق 120–250 مكوّنًا والصورة تضيف 15–40 نظاميًا · الثغرات القابلة للإصلاح عادة 0–3 (بتُحل برفع الحزمة الأب) · «بلا إصلاح» 5–20 (VEX أو تذكرة). قائمة الفحص أول تشغيل بتفشل في 4–7 بنود (ترويسة Server · /metrics مكشوف · rate limit على /login · تفاصيل في /health). نموذج التهديدات بيطلع عادة 15–25 تهديدًا، والتوزيع النموذجي: إفصاح 30% · تصعيد 20% · حجب خدمة 18% · عبث 12% · انتحال 12% · إنكار 8% — و**التهديدات الإدارية (هويات/CI/on-call) بتبقى أعلى أثرًا من ثغرات الكود**. في الخصوصية: أول تنفيذ للحذف بيغطي القاعدة والكاش وينسى الطابور والفهرس — والاختبار التكاملي هو اللي بيكشفه. وأهم ملاحظة عملية: التشفير الحقلي بيكسر كل استعلام `WHERE email = @x` القديم (بيرجع 0 صفوف بصمت) — فالتحويل لـblind index لازم يكون جزءًا من نفس التغيير، مع اختبار يثبت إن البحث لسه شغال.",
+          "resources": [
+            "https://opentelemetry.io/docs/",
+            "https://grafana.com/docs/",
+            "https://top10.owasp.org/2025/",
+            "https://docs.sigstore.dev/",
+            "https://learn.microsoft.com/azure/security/develop/threat-modeling",
+            "https://learn.microsoft.com/dotnet/standard/security/",
+            "https://sre.google/workbook/postmortem-culture/",
+            "https://learn.microsoft.com/aspnet/core/security/gdpr"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "OpenTelemetry: التوثيق",
+          "url": "https://opentelemetry.io/docs/"
+        },
+        {
+          "label": "OpenTelemetry .NET",
+          "url": "https://opentelemetry.io/docs/languages/dotnet/"
+        },
+        {
+          "label": "Grafana: التوثيق",
+          "url": "https://grafana.com/docs/"
+        },
+        {
+          "label": "Prometheus: التنبيهات وقواعد التسجيل",
+          "url": "https://prometheus.io/docs/alerting/latest/alertmanager/"
+        },
+        {
+          "label": "Google SRE Workbook: التنبيه على SLOs",
+          "url": "https://sre.google/workbook/alerting-on-slos/"
+        },
+        {
+          "label": "Google SRE: إدارة الحوادث",
+          "url": "https://sre.google/resources/practices-and-processes/incident-management-guide/"
+        },
+        {
+          "label": "Google SRE Workbook: ثقافة ما بعد الحادثة",
+          "url": "https://sre.google/workbook/postmortem-culture/"
+        },
+        {
+          "label": "OWASP Top 10:2025",
+          "url": "https://top10.owasp.org/2025/"
+        },
+        {
+          "label": "Sigstore (cosign / policy-controller)",
+          "url": "https://docs.sigstore.dev/"
+        },
+        {
+          "label": "Microsoft Learn: نمذجة التهديدات",
+          "url": "https://learn.microsoft.com/azure/security/develop/threat-modeling"
+        },
+        {
+          "label": "Microsoft Learn: الأمان في .NET",
+          "url": "https://learn.microsoft.com/dotnet/standard/security/"
+        },
+        {
+          "label": "Azure Well-Architected: الموثوقية والأمان",
+          "url": "https://learn.microsoft.com/azure/well-architected/"
+        }
+      ]
+    }
+  ]
+}

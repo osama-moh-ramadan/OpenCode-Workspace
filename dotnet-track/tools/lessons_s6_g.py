@@ -1,0 +1,386 @@
+# -*- coding: utf-8 -*-
+"""Stage 6 module 2 (part C): s6-m2-l5 (التكلفة: تحسب الفاتورة قبل ما تنشر)."""
+
+TODAY = "2026-10-22"
+
+_L5 = {
+    "id": "s6-m2-l5",
+    "updatedAt": TODAY,
+    "blocks": [
+        {"type": "text", "md": "السحابة مش «أرخص» ولا «أغلى» — هي **مختلفة في طريقة الحساب**. في الدرس ده هتحسب فاتورة نظام `shop` بند ببند قبل ما تنشره، وهتتعلم: إزاي تحسب فوترة Container Apps بالثانية يدويًا · الفرق بين **Reserved capacity** و**Savings Plan for Compute** و**Savings Plan for Databases** (الجديد من مارس 2026) · ليه **السجلات** بتبقى أكبر بند مفاجئ · وأدوات التحكم (budget + action group + cost analysis + tags + Advisor). والهدف: رقم مكتوب بتاريخ، مش «إن شاء الله تكون رخيصة»."},
+
+        {"type": "terms", "title": "مصطلحات الدرس", "items": [
+            {"term": "PAYG (Pay-As-You-Go)", "def": "الدفع حسب الاستخدام بلا التزام: أعلى سعر وحدة، وأعلى مرونة. نقطة البداية لأي workload جديد."},
+            {"term": "Reserved capacity", "def": "التزام بسعة محددة (خدمة · منطقة · طبقة · عدد vCores) لسنة أو 3 سنين مقابل خصم. **يغطي الحوسبة فقط** — التخزين والشبكة والنسخ الاحتياطي بيفضلوا PAYG."},
+            {"term": "Savings Plan for Compute", "def": "التزام **بمبلغ في الساعة** (مش بسعة محددة) لسنة أو 3 سنين، بينطبق على خدمات مؤهلة (VMs · App Service Premium v3/Isolated v2 · Container Instances · Functions Premium · **Container Apps** · Dedicated Host). مرن بين العائلات والمناطق."},
+            {"term": "Savings Plan for Databases", "def": "خطة **سنة واحدة فقط** أُطلقت في **مارس 2026**: خصم على حوسبة قواعد البيانات المؤهلة (SQL provisioned/serverless · SQL Managed Instance · PostgreSQL · MySQL · Cosmos · DocumentDB) — حتى ~35%."},
+            {"term": "Azure Hybrid Benefit", "def": "استخدام تراخيص SQL Server/Windows الموجودة عندك (بـSoftware Assurance) بدل دفع الترخيص في Azure. لا ينطبق على DTU ولا Serverless."},
+            {"term": "Dev/Test pricing", "def": "أسعار مخفضة لبيئات غير إنتاجية (لمشتركي Visual Studio/اشتراك Dev/Test): بلا رسوم ترخيص Windows. مهم لمشروع شخصي."},
+            {"term": "المنح المجانية", "def": "حدود شهرية مجانية داخل الفوترة: في Container Apps Consumption (vCPU-seconds · GiB-seconds · طلبات)، وفي Functions Consumption (تنفيذات · GB-s)، وفي Log Analytics (GB استيعاب)، وفي egress (أول ~100 GB شهريًا)."},
+            {"term": "Budget + Action group", "def": "ميزانية بحدود تنبيه (50% · 80% · 100%) + مجموعة إجراءات (بريد/Webhook/Function). **تنبيه فقط — الموارد ما بتتوقفش**."},
+            {"term": "Cost analysis", "def": "تحليل التكلفة بتقطيع حسب الخدمة/المجموعة/الوسم/المورد — الأداة اللي بتجيب «مين بيدفع كام وليه»."},
+            {"term": "Tags", "def": "وسوم على الموارد (`env` · `project` · `owner` · `team`). من غير تسميات متسقة، التحليل بيطلع بلا معنى."},
+            {"term": "Egress", "def": "تكلفة البيانات الخارجة من Azure. **الداخل مجاني والخارج مدفوع** بعد المنحة — بند بيفاجئ الناس في التوزيع/CDN/النسخ بين المناطق."},
+            {"term": "Orphaned resources", "def": "موارد لسه بتتفوتر ومحدش بيستخدمها: قرص من VM محذوف · IP عام · خطة App Service فاضية · snapshot · Log Analytics workspace قديم."},
+            {"term": "Azure Advisor", "def": "توصيات تلقائية (تكلفة/أمان/أداء) — مفيدة للحجم الزائد والموارد المنسية، بس قراراتها تحتاج مراجعة بشرية."},
+        ]},
+
+        # ── 1
+        {"type": "heading", "level": 2, "text": "① الحقيقة الأولى اللي لازم تعرفها قبل أي حاجة"},
+        {"type": "callout", "kind": "danger", "title": "Azure ما بيوقفش مواردك عند تجاوز الميزانية",
+         "md": "الميزانية في Azure **تنبيهات بس**: بتيجي لك رسالة عند 50% و80% و100%، والموارد **بتفضل شغالة وبتتفوتر** لحد ما تتدخل بنفسك. يعني «ضبطت budget» ≠ «أنا محمي». الحماية الحقيقية = **بنية رخيصة بالبناء** (scale-to-zero · إيقاف dev · حدود autoscale معقولة · احتفاظ سجلات قصير) + تنبيهات + روتين شهري. ولو عندك اشتراك جديد، فعّل **spending limit** لو متاحًا لنوع اشتراكك، وافصل بيئات التطوير في اشتراك مستقل."},
+
+        # ── 2
+        {"type": "heading", "level": 2, "text": "② فاتورة نظام shop بند ببند (تقدير أكتوبر 2026 · غرب أوروبا)"},
+        {"type": "text", "md": "الأرقام أدناه **تقديرية** ومحسوبة من أسعار منشورة ووحدات الفوترة المعلنة؛ الغرض إنك تتعلم **البنود ومحرّكاتها** مش تحفظ رقمًا. الأداة الوحيدة الموثوقة هي [حاسبة التسعير](https://azure.microsoft.com/en-us/pricing/calculator/) و**Cost analysis** بعد التشغيل الفعلي. الافتراضات: تطبيق واحد بـ0.5 vCPU / 1 GiB، قاعدة بيانات 2 GB، ملفات 20 GB، ~300 ألف طلب شهريًا."},
+        {"type": "table", "caption": "dev = scale-to-zero و8 ساعات نشاط يوميًا · prod = نسخة واحدة دائمة + سجلات معتدلة",
+         "head": ["البند", "محرّك التكلفة", "dev (تقديري/شهر)", "prod (تقديري/شهر)", "إزاي تخفضه"],
+         "rows": [
+             ["Container Apps (الحوسبة)", "vCPU-seconds + GiB-seconds بعد المنحة المجانية",
+              "**~8 دولار** (8 ساعات نشاط يوميًا)", "**~34 دولارًا** (نسخة دائمة 24/7)",
+              "`minReplicas: 0` لغير الحساس للـlatency · تخفيض CPU/الذاكرة بعد القياس · Savings Plan for Compute لو الحمل مستمر"],
+             ["PostgreSQL Flexible (Burstable B1ms)", "حجم الحوسبة + التخزين/GB + النسخ الاحتياطي",
+              "**~17 دولارًا** (32 GB تخزين)", "**~20–25 دولارًا** (تخزين أكبر + احتفاظ 30 يومًا)",
+              "**Stop/Start** للتطوير · احتفاظ نسخ أقصر · احذف الفهارس الزائدة (بتستهلك تخزينًا وI/O)"],
+             ["Blob Storage", "لكل GB حسب الطبقة + عدد العمليات + egress",
+              "**~1 دولار**", "**~2–4 دولارات**",
+              "دورة حياة (Cool بعد 30 يومًا) · احذف الملفات المؤقتة · CDN للصور العامة يقلل egress"],
+             ["Container Registry (ACR Basic)", "طبقة السجل + تخزين الصور",
+              "**~5 دولارات**", "**~5–10 دولارات**",
+              "احذف tags القديمة تلقائيًا (retention policy) · صور أصغر (6.1.3) · طبقة Basic تكفي لمشروع واحد"],
+             ["Key Vault", "عدد العمليات",
+              "**<1 دولار**", "**~1–2 دولار**",
+              "قلل قراءات الإقلاع (فلتر البادئة 6.2.3) · خزّن cache للتوكنات · لا تقرأ سرًا لكل طلب"],
+             ["**Log Analytics (المراقبة)**", "**لكل GB استيعاب** بعد المنحة (5 GB)",
+              "**~0** (ضمن المنحة)", "**~13 دولارًا** (10 GB) · **~110 دولارات** (50 GB) ← **أكبر بند مفاجئ**",
+              "قلل مستوى السجلات (Information → Warning للمسارات الصاخبة) · احتفاظ 30 يومًا بدل 90 · استبعد health checks من السجلات · sampling للتتبع"],
+             ["Private endpoints / شبكة", "لكل endpoint + لكل GB مُعالَج",
+              "**~0** (عام للتطوير)", "**~7–15 دولارًا** لكل endpoint",
+              "استخدمه للإنتاج فقط · اجمع البيانات في نفس المنطقة (egress بين المناطق مدفوع)"],
+             ["Egress (بيانات خارجة)", "لكل GB بعد أول ~100 GB شهريًا",
+              "**~0**", "**~0–10 دولارات**",
+              "CDN · ضغط الاستجابات (Brotli) · caching (2.2.3) · تجنب نسخ البيانات بين المناطق"],
+             ["**الإجمالي التقديري**", "—", "**~32 دولارًا**", "**~70 دولارًا** (بلا private endpoint) · **~170 دولارًا** لو السجلات صاخبة",
+              "الفرق بين prod «منضبط» وprod «مهمل» ≈ 100 دولار شهريًا — كله تقريبًا في السجلات"],
+         ]},
+
+        # ── 3
+        {"type": "heading", "level": 2, "text": "③ احسب فوترة Container Apps بنفسك (بالثواني — مش تخمينًا)"},
+        {"type": "code", "lang": "text", "title": "الحساب اليدوي — طبّقه على أرقامك أنت", "filename": "docs/aca-cost-math.txt", "code": r'''وحدات الفوترة في Container Apps (خطة Consumption):
+   • vCPU-seconds   : عدد الثواني × عدد vCPUs المخصصة
+   • GiB-seconds    : عدد الثواني × الذاكرة المخصصة (GiB)
+   • requests       : عدد الطلبات HTTP
+المنحة المجانية الشهرية (لكل اشتراك — تحقق من صفحة التسعير الحالية):
+   180,000 vCPU-seconds  +  360,000 GiB-seconds  +  2,000,000 requests
+أسعار تقديرية (أكتوبر 2026، غرب أوروبا):
+   ~0.000024 دولار / vCPU-second     ~0.000003 دولار / GiB-second
+
+────────────────────────────────────────────────────────────────────────
+الحالة أ) scale-to-zero: 0.5 vCPU / 1 GiB، نشط 8 ساعات يوميًا، 30 يومًا
+   الثواني النشطة   = 8 × 3600 × 30            = 864,000 ثانية
+   vCPU-seconds     = 0.5 × 864,000            = 432,000
+      الخاضع للفوترة = 432,000 − 180,000       = 252,000  → × 0.000024 = 6.05 دولار
+   GiB-seconds      = 1.0 × 864,000            = 864,000
+      الخاضع للفوترة = 864,000 − 360,000       = 504,000  → × 0.000003 = 1.51 دولار
+   الطلبات (300,000) داخل المنحة المجانية      = 0 دولار
+   ─────────────────────────────────────────────────────────────
+   الإجمالي ≈ 7.6 دولار/شهر      ← غالبًا «تقريبًا مجاني» لمشروع شخصي
+
+الحالة ب) نسخة دائمة: minReplicas = 1 (24/7)
+   الثواني          = 24 × 3600 × 30           = 2,592,000 ثانية
+   vCPU-seconds     = 0.5 × 2,592,000          = 1,296,000
+      الخاضع للفوترة = 1,296,000 − 180,000     = 1,116,000 → × 0.000024 = 26.78 دولار
+   GiB-seconds      = 1.0 × 2,592,000          = 2,592,000
+      الخاضع للفوترة = 2,592,000 − 360,000     = 2,232,000 → × 0.000003 = 6.70 دولار
+   ─────────────────────────────────────────────────────────────
+   الإجمالي ≈ 33.5 دولار/شهر     ← الفرق مقابل الحالة أ = ~26 دولارًا
+                                     هذا هو الثمن الحقيقي لتجنّب cold start
+
+الحالة ج) توسع في الذروة: 5 نسخ × 4 ساعات يوميًا (0.5 vCPU / 1 GiB)
+   vCPU-seconds = 5 × 0.5 × (4 × 3600 × 30)    = 1,080,000 → (−180,000) × 0.000024 ≈ 21.60 دولار
+   GiB-seconds  = 5 × 1.0 × (4 × 3600 × 30)    = 2,160,000 → (−360,000) × 0.000003 ≈  5.40 دولار
+   الإجمالي ≈ 27 دولارًا + تكلفة النسخة الأساسية  ← التوسع مرن لكنه ليس مجانيًا
+
+قاعدة القرار: لو الحوسبة المستمرة (الحالة ب) بتقارب سعر خطة App Service P1v3
+(~70 دولارًا تقديريًا) أو تزيد، فالتزام (Savings Plan / reservation) بقى يستاهل الدراسة.
+────────────────────────────────────────────────────────────────────────
+تحقق من الرقم الحقيقي دائمًا:
+   Cost Management → Cost analysis → Group by: Meter / Resource
+أو صدّر الاستهلاك وشوف العدّادات بنفسك (الأمر في الملف التالي).
+'''},
+
+        # ── 4
+        {"type": "heading", "level": 2, "text": "④ أدوات الخصم: إمتى تشتري التزامًا (ومتى لا)"},
+        {"type": "table", "caption": "نسب الخصم **تقديرية** ومنشورة في 2026؛ تحقق من صفحة كل خدمة قبل الشراء",
+         "head": ["الأداة", "الخصم التقريبي", "المدة", "الشروط / القيود", "إمتى تشتري"],
+         "rows": [
+             ["**Reserved capacity** (VMs · SQL vCore · PostgreSQL · Blob · Cosmos)",
+              "SQL vCore حتى ~33% · PostgreSQL حتى ~47% (سنة) / ~64% (3 سنين) · VMs 30–72% · Blob حتى ~38%",
+              "1 أو 3 سنين",
+              "مقفل على خدمة/منطقة/طبقة/سعة · **يغطي الحوسبة فقط** · الإلغاء/التبادل محدود · **لا ينطبق على DTU**",
+              "بعد 60 يومًا من قياس مستقر، وحجم معروف لن يتغير"],
+             ["**Savings Plan for Compute**",
+              "حتى ~65% (3 سنين) · ~25–35% (سنة)",
+              "1 أو 3 سنين",
+              "التزام **بمبلغ/ساعة** مش بسعة · يشمل Container Apps وFunctions Premium وVMs وApp Service Premium v3 · **لا يشمل التخزين/الشبكة** · غير قابل للإلغاء",
+              "لو حمل الحوسبة مستمر بس **الخدمة/الحجم بيتغير** — المرونة هنا أهم من أقصى خصم"],
+             ["**Savings Plan for Databases** (جديد: مارس 2026)",
+              "PostgreSQL/MySQL Flexible ~20% · SQL provisioned ~20% · SQL **serverless حتى ~35%** · Cosmos ~12%",
+              "**سنة واحدة فقط**",
+              "التزام بمبلغ/ساعة عبر خدمات قواعد بيانات مؤهلة · لا يشمل التخزين/النسخ/الشبكة · الخصم أقل من الـreservation لكنه مرن",
+              "لو عندك أكثر من قاعدة بيانات أو متوقع ترحيل بينها (مثال: PostgreSQL → SQL)"],
+             ["**Azure Hybrid Benefit**",
+              "حتى ~55% على حوسبة SQL (ويُكدَّس مع reservation حتى ~80%)",
+              "مرتبط بتراخيصك",
+              "يحتاج تراخيص SQL Server/Windows بـSoftware Assurance · **لا ينطبق على DTU ولا Serverless ولا Hyperscale الجديدة**",
+              "لو مؤسستك أصلًا عندها تراخيص — لمشروع شخصي غالبًا لا ينطبق"],
+             ["**Dev/Test pricing**",
+              "حتى ~80% (بلا رسوم ترخيص Windows)",
+              "مستمر",
+              "**لبيئات غير إنتاجية فقط** · يحتاج اشتراك Dev/Test أو Visual Studio",
+              "**فورًا** لبيئات dev/staging — أرخص مكسب متاح لمشروع شخصي"],
+             ["**المنح المجانية**",
+              "ACA: 180k vCPU-s + 360k GiB-s + 2M طلب · Functions: ~1M تنفيذ + 400k GB-s · Log Analytics: ~5 GB استيعاب · egress: ~100 GB",
+              "شهريًا",
+              "لكل اشتراك · لا تُرحَّل للشهر التالي",
+              "صمّم عشان تستفيد منها: scale-to-zero + سجلات مضبوطة + منطقة واحدة"],
+         ]},
+        {"type": "callout", "kind": "tip", "title": "ترتيب القرارات الصح (اللي بيوفر أكتر)",
+         "md": "**① صغّر البنية أولًا** (خدمة واحدة + قاعدة واحدة + scale-to-zero) — ده بيوفر أكتر من أي خصم. **② اضبط السجلات** (مستوى + احتفاظ + sampling) — غالبًا أكبر بند متغير. **③ أوقف ما لا يُستخدم** (dev بالليل/الويكند + احذف الموارد المنسية). **④ فعّل Dev/Test pricing** لبيئات التطوير. **⑤ بعد 60 يومًا من القياس المستقر** اشتري التزامًا (reservation أو Savings Plan) للحجم اللي **مش هيتغير**. الالتزام قبل القياس = فلوس مدفوعة على حجم غلط."},
+
+        # ── 5
+        {"type": "heading", "level": 2, "text": "⑤ الأوامر: تحكّم في التكلفة من الطرفية وCI"},
+        {"type": "code", "lang": "bash", "title": "azure/60-cost.sh", "filename": "azure/60-cost.sh", "code": r'''#!/usr/bin/env bash
+set -euo pipefail
+SUB=$(az account show --query id --output tsv)
+MONTH=$(date +%Y-%m-01)                 # أول الشهر الحالي
+EMAIL=you@example.com
+
+# ═══ 1) التسميات أولًا: من غيرها التحليل بلا معنى ═══
+az group update --name rg-shop-dev --tags env=dev project=shop owner=you cost-center=personal
+# وسم كل مورد مهم (خصوصًا اللي بيتفوتر بالساعة):
+az resource tag --ids \
+  "$(az postgres flexible-server show -g rg-shop-dev -n pg-shop-dev --query id -o tsv)" \
+  --tags env=dev project=shop owner=you >/dev/null
+
+# ═══ 2) مجموعة إجراءات + ميزانية بتنبيهات (تنبيه فقط — لا إيقاف) ═══
+az monitor action-group create --resource-group rg-shop-dev --name ag-cost \
+  --short-name cost --action email-owner owner "$EMAIL"
+az consumption budget create --budget-name monthly-50 --amount 50 \
+  --time-grain monthly --category cost \
+  --start-date "$MONTH" --end-date 2027-12-31 \
+  --contact-emails "$EMAIL" \
+  --action-groups "$(az monitor action-group show -g rg-shop-dev -n ag-cost --query id -o tsv)"
+# ⚠ الأعلام بتتغير بين الإصدارات: az consumption budget create --help
+
+# ═══ 3) شوف فلوسك: أعلى 10 موارد استهلاكًا هذا الشهر ═══
+az consumption usage list \
+  --query "[?contains(billingPeriodEndDate, '$(date +%Y-%m)')].{resource:instanceName,pretax:pretaxCost,meter:meterName}" \
+  --output table 2>/dev/null || echo "الأدق: Cost Management → Cost analysis في الـPortal"
+# صدّر تقرير التكلفة لملف (لأرشفته شهريًا في المستودع):
+az costmanagement export execute --name monthly-export --resource-group rg-shop-dev >/dev/null 2>&1 || true
+
+# ═══ 4) توصيات Advisor: حجم زائد وموارد منسية ═══
+az advisor recommendation list --query "[?category=='Cost'].{res:resourceMetadata.resourceId,impact:impact,desc:shortDescription.problem}" \
+  --output table
+
+# ═══ 5) افحص الموارد المنسية يدويًا (الأكثر تسريبًا للفلوس) ═══
+az disk list --query "[?diskState=='Unattached'].{name:name,size:diskSizeGb,rg:resourceGroup}" -o table
+az network public-ip list --query "[?ipConfiguration==null].{name:name,ip:ipAddress}" -o table
+az appservice plan list --query "[].{name:name,sku:sku.name,sites:numberOfSites}" -o table
+az snapshot list --query "[].{name:name,created:timeCreated}" -o table
+az monitor log-analytics workspace list --query "[].{name:name,retention:retentionInDays}" -o table
+# كل سطر في المخرجات أعلاه = مورد محتمل أن يُحذف أو يُصغَّر
+
+# ═══ 6) احتفاظ السجلات: أكبر بند مفاجئ ═══
+az monitor log-analytics workspace update --resource-group rg-shop-dev \
+  --workspace-name la-shop-dev --retention-time 30
+# وفي التطبيق: قلّل مستوى السجلات للمسارات الصاخبة (6.1.x/1.2.x) —
+#   Logging:LogLevel:Microsoft.AspNetCore = Warning
+#   Logging:LogLevel:Microsoft.EntityFrameworkCore = Warning  (Info بيكتب كل استعلام!)
+
+# ═══ 7) إيقاف بيئة التطوير ليلًا (توفير فعلي) ═══
+az postgres flexible-server stop --name pg-shop-dev --resource-group rg-shop-dev || true
+# ⚠ يُعاد تشغيله تلقائيًا بعد 7 أيام → جدوله أسبوعيًا:
+#    (GitHub Actions schedule أو Azure Function Timer — الدرس 6.2.2 و6.3.1)
+
+# ═══ 8) بعد أي تجربة: امسح مجموعة الموارد كاملة ═══
+az group delete --name rg-experiment --no-wait --yes
+
+# ═══ 9) اشترِ التزامًا (بعد 60 يوم قياس — لا قبل) ═══
+az reservations reservation-order create --help      # اقرأ الأعلام قبل التنفيذ
+# Savings Plan: من الـPortal (Cost Management → Savings plans) أو az billing savings-plan
+# ⚠ الالتزام غير قابل للإلغاء — اشترِ حجمًا أقل مما تعتقد، وزِد لاحقًا بخطة ثانية.
+'''},
+
+        # ── 6
+        {"type": "heading", "level": 2, "text": "⑥ التكلفة أثر معماري: قرارات الكود اللي بتظهر في الفاتورة"},
+        {"type": "table", "caption": "نفس النظام، قرارات مختلفة = فواتير مختلفة (أحيانًا بعشرات الدولارات شهريًا)",
+         "head": ["القرار المعماري/الكودي", "الأثر على الفاتورة", "البديل الأرخص", "المرجع"],
+         "rows": [
+             ["تقسيم مبكر لـmicroservices (3 خدمات + 3 قواعد)",
+              "3× حوسبة + 3× قواعد بيانات + 3× مراقبة = غالبًا 3–5 أضعاف",
+              "**Modular monolith** بخدمة واحدة وقاعدة واحدة بمخططات",
+              "4.2 · 6.2.4"],
+             ["`minReplicas: 1` على كل خدمة تحسبًا لـcold start",
+              "حوسبة دائمة 24/7 حتى للخدمات الخلفية",
+              "`minReplicas: 0` للخدمات المستهلكة للطوابير (لا تخدم مستخدمًا ينتظر)",
+              "6.1.5 · 6.2.1"],
+             ["سجلات `Information` على EF Core + health checks",
+              "استيعاب GB في Log Analytics — غالبًا **أكبر بند**",
+              "Warning للمسارات الصاخبة + استبعاد `/health` + sampling للتتبع",
+              "1.2.2 · 2.3.4 · 5.3.2"],
+             ["استعلامات N+1 وبلا فهارس",
+              "CPU/IOPS أعلى → طبقة حوسبة أكبر مما تحتاج",
+              "فهرسة مبنية على EXPLAIN + `AsSplitQuery`/`Include` صحيح",
+              "3.1.1 · 3.1.4"],
+             ["بلا caching",
+              "قراءات متكررة = حوسبة + I/O + latency",
+              "HybridCache (L1+L2) — بيقلل الحمل على القاعدة مباشرة",
+              "2.2.3 · 3.2.2"],
+             ["صور Docker ضخمة (SDK كامل في مرحلة التشغيل)",
+              "ACR storage + زمن سحب أبطأ (وبالتالي cold start أطول = حوسبة أكثر)",
+              "chiseled/NativeAOT + multi-stage",
+              "6.1.3"],
+             ["احتفاظ سجلات/نسخ 90 يومًا في كل البيئات",
+              "تخزين إضافي مستمر",
+              "30 يومًا للتطوير · 90 للإنتاج فقط",
+              "6.2.4"],
+             ["HA zone-redundant على dev/staging",
+              "~2× حوسبة مقابل صفر فائدة",
+              "HA في الإنتاج فقط، وبشرط أن التوقف = خسارة حقيقية",
+              "6.2.4"],
+             ["نسخ البيانات بين المناطق أو سحبها لعميل ثقيل",
+              "**egress** بعد المنحة (~100 GB)",
+              "منطقة واحدة + CDN + ضغط الاستجابات + cursor pagination",
+              "2.1.2 · 6.2.4"],
+             ["موارد تجارب منسية (VM/قرص/IP/workspace)",
+              "تسريب مستمر بلا قيمة",
+              "فحص شهري + حذف مجموعة الموارد بعد كل تجربة + tags",
+              "هذا الدرس"],
+         ]},
+        {"type": "callout", "kind": "warn", "title": "خمسة أسباب للفاتورة المفاجئة (بالترتيب شيوعًا)",
+         "md": "**① موارد منسية** بعد تجارب (الأسهل والأكثر شيوعًا). **② استيعاب السجلات** — EF Core على Information بيكتب كل استعلام. **③ `minReplicas`/`maxReplicas` بلا قياس** — توسع لـ20 نسخة في ذروة مدتها دقيقتان. **④ egress** من CDN/توزيع/نسخ بين المناطق. **⑤ طبقة قاعدة بيانات أكبر من اللازم** (HA أو General Purpose لحمل Burstable). كل سبب من ده بيتكشف بأمر واحد في `azure/60-cost.sh` — فخليه جزءًا من روتينك."},
+
+        {"type": "steps", "title": "⑦ الروتين الشهري (45 دقيقة تمنع فاتورة مفاجئة)",
+         "items": [
+             {"title": "1) صدّر الأرقام واحفظها في المستودع",
+              "md": "`docs/cost/2026-10.md`: الإجمالي · أعلى 5 موارد · الفرق عن الشهر السابق · أي بند زاد أكتر من 20% وسببه. الأرشيف ده هو اللي بيخليك تلاحظ الانحراف بدري.",
+              "code": "az costmanagement export execute --name monthly-export --resource-group rg-shop-dev"},
+             {"title": "2) راجع أعلى 5 موارد",
+              "md": "لكل مورد اسأل: هل الحجم مبني على قياس؟ (لو لأ → قِس أولًا). هل فيه خصم متاح؟ (لو الحمل مستقر 60+ يومًا → reservation/Savings Plan).",
+              "code": "az consumption usage list --query \"[].{r:instanceName,cost:pretaxCost}\" -o table"},
+             {"title": "3) افحص الموارد المنسية",
+              "md": "أقراص غير موصولة · IPs بلا استخدام · خطط App Service فاضية · snapshots · workspaces قديمة. احذف أو صغّر.",
+              "code": "az disk list --query \"[?diskState=='Unattached'].name\" -o tsv"},
+             {"title": "4) اضبط السجلات والاحتفاظ",
+              "md": "راجع حجم الاستيعاب؛ لو زاد، ارفع مستوى السجلات للمسارات الصاخبة وقلل مدة الاحتفاظ. ده عادةً أكبر مكسب بأقل مجهود.",
+              "code": "az monitor log-analytics workspace update -g rg-shop-dev -n la-shop-dev --retention-time 30"},
+             {"title": "5) تحقق من التنبيهات والميزانية",
+              "md": "هل الميزانية لسه معقولة؟ هل الـaction group بيوصل فعلًا (جرّب تنبيهًا اختباريًا)؟ **وتأكد إنك فاهم إن التنبيه لا يوقف الموارد**.",
+              "code": "az consumption budget list --output table"},
+             {"title": "6) قرار واحد للتحسين",
+              "md": "كل شهر نفّذ تحسينًا واحدًا موثقًا في ADR قصير (مثال: `minReplicas: 0` للـworkers · أو reservation لخادم القاعدة بعد 60 يوم قياس). تراكم 12 قرارًا صغيرًا = فرق كبير.",
+              "code": ""},
+         ]},
+
+        {"type": "checkpoints", "title": "وقفة تحقق", "items": [
+            "عارف إن الميزانية في Azure **تنبيه مش إيقاف** — والحماية الحقيقية بنية رخيصة + روتين شهري.",
+            "أقدر أحسب فوترة Container Apps يدويًا (vCPU-seconds/GiB-seconds ناقص المنحة المجانية) وأقارن scale-to-zero بنسخة دائمة.",
+            "أفرّق بين **Reserved capacity** (سعة محددة، 1/3 سنين، حتى ~64% لقواعد PostgreSQL) و**Savings Plan for Compute** (مبلغ/ساعة، مرن) و**Savings Plan for Databases** (سنة واحدة، من مارس 2026).",
+            "عارف إن الـreservation **يغطي الحوسبة فقط**، وإن **DTU غير مؤهل** لأي خصم.",
+            "أقدر أحدد بنود الفاتورة لنظام .NET نموذجي وأعرف إن **Log Analytics ingestion** غالبًا أكبر بند مفاجئ.",
+            "أقدر أوسم الموارد، أنشئ ميزانية بتنبيهات، وأكشف الموارد المنسية بأوامر محددة.",
+            "أعرف ترتيب القرارات الموفرة: صغّر البنية → اضبط السجلات → أوقف غير المستخدم → Dev/Test → التزام بعد قياس.",
+        ]},
+
+        {"type": "quiz", "title": "اختبر نفسك", "intro": "6 أسئلة على الحساب والالتزامات والمفاجآت.",
+         "questions": [
+             {"q": "ضبطت ميزانية 50 دولارًا بتنبيهات. هل ده بيحميك من فاتورة 500 دولار؟",
+              "options": ["نعم — Azure بيوقف الموارد تلقائيًا", "**لا**: الميزانية تنبيهات فقط والموارد بتفضل شغالة؛ الحماية = بنية رخيصة + روتين شهري + حذف غير المستخدم", "نعم لو فعّلت spending limit على أي اشتراك", "لا، لكن التنبيه بيقلل الاستهلاك"],
+              "answer": 1,
+              "explain": "ده أهم فرق عن توقعات الناس: مفيش «hard cap» عام بيوقف الخدمات. التنبيه بييجي لك، والقرار قرارك — فالبنيه والروتين هما الحماية الحقيقية."},
+             {"q": "تطبيق 0.5 vCPU / 1 GiB نشط 8 ساعات يوميًا على ACA Consumption. التقدير الأقرب؟",
+              "options": ["~70 دولارًا/شهر", "**~8 دولارات/شهر** (بعد خصم المنحة المجانية)", "~34 دولارًا/شهر", "صفر تمامًا"],
+              "answer": 1,
+              "explain": "الحساب: 432,000 vCPU-s − 180,000 منحة = 252,000 × 0.000024 ≈ 6 دولارات، و864,000 GiB-s − 360,000 = 504,000 × 0.000003 ≈ 1.5 دولار. نفس التطبيق بنسخة دائمة ≈ 34 دولارًا — الفرق هو ثمن تجنّب cold start."},
+             {"q": "خادم قاعدة بيانات PostgreSQL بحجم ثابت ومستقر من 3 شهور. أنسب التزام؟",
+              "options": ["Savings Plan for Compute", "**Reserved capacity** لـPostgreSQL (سنة أو 3 سنين) — خصم أعلى من الـSavings Plan لنفس الخدمة", "Savings Plan for Databases", "Azure Hybrid Benefit"],
+              "answer": 1,
+              "explain": "للحجم الثابت المعروف: الـreservation بيدي خصمًا أعلى (حتى ~47% لسنة و~64% لثلاث سنين تقديريًا). Savings Plan for Databases (سنة واحدة، ~20% لـPostgreSQL) أفضل لو الحجم أو الخدمة هتتغير. وتذكر: الحوسبة فقط — التخزين والنسخ بيفضلوا PAYG."},
+             {"q": "قاعدة بيانات على نموذج **DTU**. تقدر تشتري reservation؟",
+              "options": ["نعم بخصم 33%", "**لا**: DTU غير مؤهل للـreserved capacity ولا Hybrid Benefit ولا Savings Plans — لازم تنتقل لنموذج vCore أولًا", "نعم لو Business Critical", "نعم لمدة سنة واحدة"],
+              "answer": 1,
+              "explain": "ده سبب رئيسي لتجنب DTU في الإنتاج: محبوس في السعر الكامل بلا أي أداة توفير. الانتقال لـvCore (provisioned أو serverless) بيفتحلك الخصومات."},
+             {"q": "فاتورتك زادت 100 دولار فجأة ومفيش مستخدمين جدد. أول بند تفحصه؟",
+              "options": ["تكلفة ACR", "**استيعاب السجلات في Log Analytics** (لكل GB بعد المنحة) — غالبًا بسبب EF Core على Information أو health checks", "تكلفة Key Vault", "رسوم الـDNS"],
+              "answer": 1,
+              "explain": "السجلات بتتضاعف مع كل استعلام EF على مستوى Information ومع كل فحص `/health` كل 10 ثوانٍ من عدة نسخ. الإصلاح: Warning للمسارات الصاخبة + استبعاد الفحوصات + sampling للتتبع + احتفاظ 30 يومًا."},
+             {"q": "إمتى تشتري التزام (reservation/Savings Plan) لأول مرة؟",
+              "options": ["من أول يوم توفيرًا للفلوس", "**بعد ~60 يومًا من القياس الفعلي** لما الحمل والحجم يستقرا — وقبل كده ركّز على تصغير البنية وضبط السجلات", "بعد سنة", "لا تشتري أبدًا"],
+              "answer": 1,
+              "explain": "الالتزام غير قابل للإلغاء (أو بإلغاء محدود)، فشرائه على حجم غلط = خسارة صافية. الترتيب: بنية صغيرة → سجلات مضبوطة → إيقاف غير المستخدم → Dev/Test → ثم التزام على الجزء المستقر."},
+         ]},
+
+        {"type": "tasks", "title": "مهمتان", "intro": "تقدير مكتوب قبل النشر + تحكم فعلي بعد التشغيل.",
+         "items": [
+             {"id": "t1", "title": "مهمة 1: احسب فاتورة نظامك قبل ما تنشره",
+              "md": "**السياق:** عايز تنشر نظام `shop` (خدمة واحدة + قاعدة بيانات + ملفات) على Azure، وميزانيتك **50 دولارًا شهريًا**.\n\n**المطلوب:** اكتب `docs/cost-estimate.md` فيه:\n1. **جدول بنود** (حوسبة · قاعدة بيانات · تخزين · سجلات · سجل صور · شبكة · egress) لكل بند: محرّك التكلفة · القيمة المتوقعة · السعر التقديري · **المصدر/التاريخ**.\n2. **الحساب اليدوي** للحوسبة بالثواني (زي `docs/aca-cost-math.txt`) لثلاثة سيناريوهات: `minReplicas: 0` مع 6 ساعات نشاط · `minReplicas: 1` دائم · ذروة 5 نسخ لمدة ساعتين.\n3. **مقارنة منصة**: نفس النظام على Container Apps مقابل App Service (B1/S1/P1v3) مقابل Functions Flex Consumption — برقم شهري تقديري لكل واحد ومن الحاسبة الرسمية.\n4. **قرار**: أي تركيبة تحقق ≤ 50 دولارًا؟ وايه اللي هتضحّي بيه (cold start؟ HA؟ احتفاظ سجلات؟).\n5. **خط أحمر**: قائمة بـ5 إعدادات لو اتغيرت الفاتورة هتتجاوز الميزانية (مثال: `maxReplicas` · مستوى السجلات · احتفاظ · HA · طبقة القاعدة) مع القيمة الآمنة لكل واحدة.\n6. **خطة الالتزام**: متى تشتري reservation/Savings Plan، وبأي مبلغ، وعلى أي مورد تحديدًا.",
+              "criteria": [
+                  "جدول بنود كامل وكل بند فيه **محرّك التكلفة** وقيمة عددية (مش «متغير»).",
+                  "الحساب اليدوي لثلاثة سيناريوهات بأرقام واضحة (ثوانٍ · vCPU-seconds · ناقص المنحة × السعر).",
+                  "مقارنة 3 منصات من الحاسبة الرسمية مع ذكر التاريخ والمنطقة.",
+                  "قرار صريح ≤ 50 دولارًا مع **التضحية المذكورة** (مثال: قبول cold start ~ثوانٍ).",
+                  "قائمة الخط الأحمر بخمس إعدادات وقيم آمنة لكل واحدة.",
+                  "خطة التزام مرتبطة بشرط زمني (بعد 60 يوم قياس) ومورد محدد ومبلغ محدد.",
+                  "فقرة «لو الأرقام دي غلطت»: إزاي تكتشف الانحراف (Cost analysis · تنبيه 80% · روتين شهري).",
+              ],
+              "hint": "ابدأ بالحوسبة لأنها الأكثر حساسية للقرارات: اضرب `الثواني × vCPU` واطرح المنحة المجانية. وبعدين السجلات: قدّر حجم السطر (~300 بايت) × عدد الأسطر/يوم — لو التطبيق بيكتب 100 ألف سطر يوميًا فده ~30 GB شهريًا، وفجأة السجلات بقت أغلى من الحوسبة. استخدم الحاسبة للتأكيد مش كبديل للحساب.",
+              "solution": "نتيجة نموذجية لمشروع شخصي: **ACA (minReplicas: 0) + PostgreSQL Burstable B1ms + Blob + Log Analytics باحتفاظ 30 يومًا ≈ 30–40 دولارًا/شهر** — داخل الميزانية. التضحية المقبولة: cold start (2–8 ثوانٍ) على أول طلب بعد السكون؛ لو ده غير مقبول، `minReplicas: 1` بيضيف ~26 دولارًا فيتجاوز الميزانية → الحل الوسط: `minReplicas: 1` لخدمة الواجهة فقط و0 للـworkers. الخطوط الحمراء: `maxReplicas ≤ 5` · `Logging:LogLevel:Microsoft.EntityFrameworkCore = Warning` · `retention-time 30` · HA = off في dev · طبقة القاعدة Burstable حتى يثبت الحمل. خطة الالتزام: بعد 60 يومًا، لو فاتورة القاعدة مستقرة على نفس الحجم → reservation سنة لـPostgreSQL (~20–47% خصم تقديريًا على الحوسبة)؛ ولو حوسبة ACA بقت مستمرة فوق ~34 دولارًا → قارن Savings Plan for Compute بمبلغ/ساعة صغير. اكتشاف الانحراف: تنبيه عند 80% من 50 دولارًا + تقرير شهري في `docs/cost/`.",
+              "resources": [
+                  "https://azure.microsoft.com/en-us/pricing/calculator/",
+                  "https://learn.microsoft.com/en-us/azure/container-apps/pricing-billing-overview",
+                  "https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/quick-create-budget-portal",
+                  "https://learn.microsoft.com/en-us/azure/cost-management-billing/savings-plan/",
+                  "https://learn.microsoft.com/en-us/azure/cost-management-billing/reservations/save-compute-costs-reservations",
+                  "https://learn.microsoft.com/en-us/azure/azure-monitor/logs/cost-logs",
+              ]},
+             {"id": "t2", "title": "مهمة 2: تحكّم فعلي — ميزانية + تنبيهات + تقرير شهري آلي",
+              "md": "**السياق:** التقدير وحده ما بيحميش. محتاج آلية تشتغل من غيرك.\n\n**المطلوب:**\n1. وسّم كل موارد المشروع بـ`env`/`project`/`owner`/`cost-center` (أوامر موثقة في `scripts/tag-resources.sh`).\n2. أنشئ **action group** (بريد + Webhook اختياري) و**ميزانية شهرية** بالحد المناسب لتقديرك، بتنبيهات عند 50% و80% و100%.\n3. اكتب **workflow في GitHub Actions** (أو Function Timer من 6.2.2) يشتغل أول كل شهر: يسحب تقرير التكلفة، يولد `docs/cost/YYYY-MM.md` فيه أعلى 5 موارد والفرق عن الشهر السابق، ويرفعه كـcommit/PR.\n4. أضف **فحص الموارد المنسية** في نفس الـworkflow: أقراص غير موصولة · IPs بلا استخدام · خطط App Service فاضية · snapshots — ويطبع قائمة (ويفتح issue لو فيه نتائج).\n5. أضف **إيقافًا مجدولًا** لخادم التطوير (5 أيام/أسبوع) مع ملاحظة حد الـ7 أيام لإعادة التشغيل التلقائي، واستئناف صباح أيام العمل.\n6. طبّق تحسينًا واحدًا فعليًا (مثال: خفض مستوى سجلات EF Core إلى Warning، أو `retention-time 30`) وقِس الفرق بعد أسبوع — واكتب النتيجة في `docs/cost/`.\n7. اكتب `docs/cost-runbook.md`: إزاي أقرأ تقرير التكلفة، وإيه أول 5 حاجات أفحصها لو الفاتورة زادت، ومين المسؤول عن كل بند.",
+              "criteria": [
+                  "سكريبت التسميات يعمل فعليًا ويغطي كل الموارد المدفوعة (موثق بالمخرجات).",
+                  "action group + ميزانية بتنبيهات 50/80/100% — **مع تنبيه اختباري يثبت الوصول**.",
+                  "workflow شهري ينشئ `docs/cost/YYYY-MM.md` بأعلى 5 موارد وفرق الشهر السابق (يُظهر ملفًا حقيقيًا).",
+                  "فحص الموارد المنسية ضمن الـworkflow مع نتائج (ولو فارغة، موثقة كفحص ناجح).",
+                  "إيقاف/استئناف مجدول لخادم التطوير مع التعامل الصريح مع حد الـ7 أيام.",
+                  "تحسين واحد مطبق **ومقيس قبل/بعد** برقم (مش «هيوفر فلوس»).",
+                  "runbook فيه أول 5 فحوصات عند زيادة الفاتورة (موارد منسية · سجلات · replicas · egress · طبقة القاعدة).",
+                  "ملاحظة صريحة إن الميزانية **تنبيه لا إيقاف**، وإيه الإجراء اليدوي عند تجاوزها.",
+              ],
+              "hint": "أبسط workflow: `schedule: cron 0 6 1 * *` + خطوة `az login` بـ**federated credential** (من غير سر مخزّن — 6.2.3) + `az consumption usage list` أو Cost Management REST → Python بسيط يولّد Markdown → `peter-evans/create-pull-request` أو commit مباشر. ولو مش عايز CI، Function Timer (6.2.2) بتعمل نفس الشغل وتشتغل على Consumption ببلاش تقريبًا.",
+              "solution": "البنية النهائية: (1) `scripts/tag-resources.sh` يوسم كل الموارد (2) ميزانية شهرية بالحد من المهمة 1 مع تنبيهات + اختبار وصول البريد (3) `cost-report.yml` أول كل شهر: login بـfederated credential → سحب الاستهلاك → توليد `docs/cost/2026-11.md` بجدول أعلى 5 موارد + فرق عن الشهر السابق → commit (4) نفس الـworkflow بيفحص `az disk list`/`network public-ip list`/`appservice plan list` وبيفتح issue لو لقى موارد منسية (5) `dev-schedule.yml`: إيقاف الخادم 7م أيام العمل واستئنافه 8ص، مع ملاحظة إن الإيقاف أكتر من 7 أيام بيعيد التشغيل تلقائيًا فالجدول أسبوعي (6) التحسين المطبق نموذجيًا: `Logging:LogLevel:Microsoft.EntityFrameworkCore=Warning` + استبعاد `/health` من السجلات → الفرق المقاس عادةً **30–70% من بند الاستيعاب** (7) الـrunbook: أول 5 فحوصات = موارد منسية ← استيعاب السجلات ← عدد النسخ/حدود التوسع ← egress ← طبقة القاعدة وHA. أهم نتيجة: التقرير بييجي لك كل شهر من غير ما تفتكر، والتنبيه بيوصل قبل ما تتجاوز.",
+              "resources": [
+                  "https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-acm-create-budgets",
+                  "https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/cost-mgt-api",
+                  "https://learn.microsoft.com/en-us/azure/cost-management-billing/manage/cost-management-automation",
+                  "https://learn.microsoft.com/en-us/azure/azure-monitor/logs/cost-logs",
+                  "https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows",
+                  "https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-compute-storage",
+              ]},
+         ]},
+
+        {"type": "resources", "title": "مصادر", "items": [
+            {"label": "حاسبة تسعير Azure (المصدر الوحيد الموثوق للأرقام)", "url": "https://azure.microsoft.com/en-us/pricing/calculator/"},
+            {"label": "Container Apps: الفوترة والتسعير", "url": "https://learn.microsoft.com/en-us/azure/container-apps/pricing-billing-overview"},
+            {"label": "Cost Management: إنشاء الميزانيات والتنبيهات", "url": "https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-acm-create-budgets"},
+            {"label": "Savings plans (Compute وDatabases)", "url": "https://learn.microsoft.com/en-us/azure/cost-management-billing/savings-plan/"},
+            {"label": "Reserved capacity: وفّر على الحوسبة", "url": "https://learn.microsoft.com/en-us/azure/cost-management-billing/reservations/save-compute-costs-reservations"},
+            {"label": "التحكم في تكلفة السجلات (Log Analytics)", "url": "https://learn.microsoft.com/en-us/azure/azure-monitor/logs/cost-logs"},
+            {"label": "Azure Advisor: توصيات التكلفة", "url": "https://learn.microsoft.com/en-us/azure/advisor/advisor-cost-recommendations"},
+            {"label": "تسعير Azure Dev/Test", "url": "https://azure.microsoft.com/en-us/pricing/dev-test/"},
+            {"label": "أسعار PostgreSQL Flexible Server", "url": "https://azure.microsoft.com/en-us/pricing/details/postgresql/flexible-server/"},
+        ]},
+    ],
+}
+
+LESSONS_S6_G = [_L5]

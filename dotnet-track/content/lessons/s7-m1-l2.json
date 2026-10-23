@@ -1,0 +1,464 @@
+{
+  "id": "s7-m1-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "درس 5.3.2 كان «شغّل التتبع». الدرس ده هو **الإتقان**: بنية OTel في .NET (API/SDK/Exporter/Collector) · الأدوات الفعلية (`ActivitySource` · `Meter` · الـinstruments الستة) · **نشر السياق** عبر HTTP وgRPC والطوابير والمهام الخلفية · ربط السجلات بالتتبع · الـsampling وحدود الـcardinality · والـCollector كطبقة تحكم. ومع كل جزء: **الأخطاء اللي بتخلي التتبع يظهر مقطّعًا أو ما يظهرش خالص** — لأن 90% من مشاكل OTel إعدادات مش كود."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "OTel API مقابل SDK",
+          "def": "**API** = الواجهات اللي بيستخدمها كود المكتبات (بلا تنفيذ). **SDK** = التنفيذ (معالجة · دفعات · تصدير). تطبيقك يسجّل SDK مرة واحدة؛ المكتبات تستخدم API فقط."
+        },
+        {
+          "term": "`Activity` / `ActivitySource`",
+          "def": "نوع .NET الأساسي (`System.Diagnostics`) المكافئ لـspan: `ActivitySource.StartActivity` بينشئ span لو فيه مستمع. الـSDK بيستمع لمصادر محددة بـ`AddSource`."
+        },
+        {
+          "term": "`Meter` / instruments",
+          "def": "ستة أدوات: `Counter` · `UpDownCounter` · `Histogram` · `Gauge` (لحظي) · `ObservableCounter` · `ObservableGauge` · `ObservableUpDownCounter` — بتُقاس عند الجمع بدل ما تُسجّل."
+        },
+        {
+          "term": "W3C trace context",
+          "def": "البروتوكول الافتراضي لنشر السياق: هيدر `traceparent` (و`tracestate`) — بدونه كل خدمة بتعمل trace منفصل وتشوف «رحلات مقطّعة»."
+        },
+        {
+          "term": "Baggage",
+          "def": "حقول key-value بتنتقل مع السياق عبر الخدمات (مثلًا `tenant_id`). **احذر**: بتتبعت لكل span وبتزيد الحجم — استخدمها للقليل الضروري."
+        },
+        {
+          "term": "Resource",
+          "def": "سمات ثابتة للعملية كلها: `service.name` · `service.version` · `deployment.environment` · `service.instance.id` · `host.name`. بتُضبط مرة بـ`ConfigureResource`."
+        },
+        {
+          "term": "OTLP",
+          "def": "بروتوكول التصدير: **gRPC على 4317** أو **HTTP/protobuf على 4318**. أهم سبب لفشل التصدير: خلط البروتوكولين أو المنفذين."
+        },
+        {
+          "term": "`UseOtlpExporter()`",
+          "def": "تسجيل **مقطع عرضي** لكل الإشارات الثلاث بمكالمة واحدة (من 1.8) — ويقرأ `OTEL_EXPORTER_OTLP_*` من البيئة. **لا يمكن جمعه مع `AddOtlpExporter` لكل إشارة**: بيرمي `NotSupportedException`."
+        },
+        {
+          "term": "Semantic conventions",
+          "def": "أسماء سمات ومقاييس معيارية (`http.route` · `db.system` · `server.address`). الالتزام بيها بيخلي اللوحات الجاهزة تعمل من غير تعديل."
+        },
+        {
+          "term": "Tail sampling",
+          "def": "قرار الاحتفاظ بالـtrace بعد اكتماله (في Collector): احتفظ بكل الأخطاء وبطء > x ms، وعيّنة من الباقي."
+        },
+        {
+          "term": "Zero-code instrumentation",
+          "def": "وكيل `opentelemetry-dotnet-instrumentation` بيضيف تتبع/مقاييس من غير تعديل الكود (يدعم .NET 10 ومقاييس ASP.NET Core 10) — مفيد لأنظمة قديمة أو للتجربة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① البنية: من `Activity` في كودك إلى الخلفية"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "مسار الإشارة (افهمه مرة، وشخّص للأبد)",
+      "filename": "docs/otel-pipeline.txt",
+      "code": "  كودك                     OTel API/SDK داخل العملية              خارج العملية\n ┌────────────────┐   ┌───────────────────────────────────┐   ┌──────────────────────┐\n │ ActivitySource │──▶│ TracerProvider                     │   │ Collector (اختياري)   │\n │  .StartActivity│   │  • Sampler (ParentBased/TraceIdRatio)│──▶│ receivers: otlp      │\n │ Meter          │──▶│  • Processor (Batch)               │OTLP│ processors:          │\n │  .Counter/     │   │  • SpanProcessor limits            │4317│  • batch             │\n │   Histogram    │   │  • Resource (service.name …)       │   │  • memory_limiter    │\n │ ILogger        │──▶│ MeterProvider (readers/views)      │   │  • tail_sampling     │\n │                │   │ LoggerProvider                     │   │  • attributes/redaction│\n └────────────────┘   └───────────────┬───────────────────┘   │ exporters:           │\n                                      │                        │  • otlphttp → الخلفية │\n             نشر السياق               │                        │  • prometheusremotewrite│\n     traceparent / tracestate ────────┼───▶ الخدمة التالية    │  • loki / debug      │\n                                      │                        └──────────┬───────────┘\n                                      ▼                                   ▼\n                              (بدون Collector: تصدير مباشر)      Prometheus · Grafana · Jaeger\n                                                                 App Insights · Aspire Dashboard · Loki\n\n نقاط الفشل الأشهر على المسار:\n   ① AddSource ناقص → الـspans المخصصة لا تُجمع\n   ② Sampler = 0 أو AlwaysOff → لا شيء يُصدَّر\n   ③ بروتوكول/منفذ غلط (4317 gRPC مقابل 4318 HTTP) → فشل صامت أو 404\n   ④ UseOtlpExporter + AddOtlpExporter معًا → NotSupportedException\n   ⑤ traceparent لا يُمرَّر عبر الطابور/الـgRPC → traces مقطّعة\n   ⑥ memory_limiter غير مضبوط في Collector → إعادة تشغيل/فقدان بيانات\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② الحزم والتسجيل الكامل"
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "title": "src/ServiceDefaults/ServiceDefaults.csproj (إصدارات أكتوبر 2026)",
+      "filename": "src/ServiceDefaults/ServiceDefaults.csproj",
+      "code": "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <Nullable>enable</Nullable>\n    <IsAspireSharedProject>true</IsAspireSharedProject>\n  </PropertyGroup>\n\n  <ItemGroup>\n    <FrameworkReference Include=\"Microsoft.AspNetCore.App\" />\n  </ItemGroup>\n\n  <ItemGroup>\n    <!-- الحالة في أكتوبر 2026: OpenTelemetry .NET مستقر في الإشارات الثلاث\n         (Traces · Metrics · Logs) — والمشروع تخرّج من CNCF في مايو 2026.\n         ثبّت الإصدارات وراجع CHANGELOG قبل الترقية الكبرى. -->\n    <PackageReference Include=\"Microsoft.Extensions.Http.Resilience\" Version=\"10.0.0\" />\n    <PackageReference Include=\"Microsoft.Extensions.ServiceDiscovery\" Version=\"10.0.0\" />\n\n    <PackageReference Include=\"OpenTelemetry\" Version=\"1.20.*\" />\n    <PackageReference Include=\"OpenTelemetry.Extensions.Hosting\" Version=\"1.20.*\" />\n    <PackageReference Include=\"OpenTelemetry.Exporter.OpenTelemetryProtocol\" Version=\"1.20.*\" />\n    <PackageReference Include=\"OpenTelemetry.Instrumentation.AspNetCore\" Version=\"1.15.*\" />\n    <PackageReference Include=\"OpenTelemetry.Instrumentation.Http\" Version=\"1.15.*\" />\n    <PackageReference Include=\"OpenTelemetry.Instrumentation.Runtime\" Version=\"1.15.*\" />\n    <!-- لقاعدة البيانات: يضيف db.* spans ومقاييس -->\n    <PackageReference Include=\"OpenTelemetry.Instrumentation.SqlClient\" Version=\"1.15.*\" />\n    <!-- للتشخيص المحلي فقط (لا تُصدره للإنتاج): -->\n    <PackageReference Include=\"OpenTelemetry.Exporter.Console\" Version=\"1.20.*\" />\n\n    <!-- ⚠ OpenTelemetry.Exporter.Prometheus.AspNetCore ما زال **beta/prerelease**\n         ومبني على مواصفة OpenMetrics التجريبية. للإنتاج: صدّر OTLP لـCollector\n         وخلّي الـCollector يحوّل لـPrometheus (remote write أو OTLP receiver). -->\n  </ItemGroup>\n</Project>\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Program.cs — التسجيل الكامل (traces + metrics + logs)",
+      "filename": "src/Orders.Api/Program.cs",
+      "code": "using OpenTelemetry;\nusing OpenTelemetry.Logs;\nusing OpenTelemetry.Metrics;\nusing OpenTelemetry.Resources;\nusing OpenTelemetry.Trace;\nusing Shop.Observability;\n\nvar builder = WebApplication.CreateBuilder(args);\n\n// ── 1) المورد: هوية الخدمة (بيظهر في كل إشارة) ──\nbuilder.Services.AddOpenTelemetry()\n    .ConfigureResource(r => r\n        .AddService(\n            serviceName: \"orders-api\",\n            serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? \"0.0.0\",\n            serviceInstanceId: Environment.MachineName)\n        // البيئة من الإعدادات — مهم لفصل dev/prod في نفس الخلفية:\n        .AddAttributes(new Dictionary<string, object>\n        {\n            [\"deployment.environment.name\"] = builder.Environment.EnvironmentName,\n            [\"shop.tier\"] = builder.Configuration[\"Shop:Tier\"] ?? \"standard\",\n        }))\n\n    // ── 2) التتبع ──\n    .WithTracing(t => t\n        // instrumentation جاهزة:\n        .AddAspNetCoreInstrumentation(o =>\n        {\n            // استبعد مسارات الفحص — أكبر مصدر ضجيج وتكلفة (7.1.1):\n            o.Filter = ctx => !ctx.Request.Path.StartsWithSegments(\"/health\")\n                           && !ctx.Request.Path.StartsWithSegments(\"/alive\");\n            // سمات إضافية على span الطلب:\n            o.EnrichWithHttpRequest = (act, req) => act.SetTag(\"http.scheme\", req.Scheme);\n            // سجل الاستثناءات كـevents:\n            o.RecordException = true;\n        })\n        .AddHttpClientInstrumentation(o => o.RecordException = true)\n        .AddSqlClientInstrumentation(o =>\n        {\n            o.SetDbStatementForText = true;   // نص SQL — ⚠ فيه بيانات؛ احجبه في Collector لو لازم\n            o.RecordException = true;\n        })\n        // مصادرك المخصصة (من 7.1.1):\n        .AddSource(\"Shop.Orders\")\n        .AddSource(\"Shop.Workers\")\n        // ⚠ نسيان AddSource = الـspans المخصصة لا تُجمع (أشهر سبب لـ«التتبع ناقص»)\n        .SetSampler(new ParentBasedTraceIdRatioSampler(\n            builder.Configuration.GetValue(\"Telemetry:SampleRatio\", 0.1)))\n        // ⚠ لو اخترت UseOtlpExporter() (الأسلوب المقطعي بالأسفل) فاحذف AddOtlpExporter من هنا.\n        .AddOtlpExporter())\n\n    // ── 3) المقاييس ──\n    .WithMetrics(m => m\n        .AddAspNetCoreInstrumentation()\n        .AddHttpClientInstrumentation()\n        .AddRuntimeInstrumentation()          // GC · thread pool · استثناءات · ذاكرة\n        .AddMeter(\"Shop.Orders\")\n        .AddMeter(\"Microsoft.AspNetCore.Hosting\")\n        .AddMeter(\"Microsoft.AspNetCore.Server.Kestrel\")\n        .AddMeter(\"System.Net.Http\")\n        .AddMeter(\"System.Net.NameResolution\")\n        // view واحد لكل أداة (view مكرر على نفس الاسم = تعارض):\n        // يجمع حدود الهيستوجرام + حد الـcardinality + السمات المسموحة معًا.\n        // الوحدة بالثواني حسب اتفاقية OTel — لا تخلط ms مع s في نفس المقياس.\n        .AddView(\"http_server_request_duration_seconds\", new ExplicitBucketHistogramConfiguration\n        {\n            Boundaries = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],\n            CardinalityLimit = 2000,\n            TagKeys = [\"http.route\", \"http.request.method\", \"http.response.status_code\",\n                       \"network.protocol.version\", \"server.address\", \"error.type\"],\n        })\n        .AddView(\"shop_checkout_step_duration\", new ExplicitBucketHistogramConfiguration\n        {\n            Boundaries = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],\n        })\n        .AddOtlpExporter())\n\n    // ── 4) السجلات (stable في OTel .NET) ──\n    .WithLogging(l => l\n        .AddOtlpExporter())   // أو استخدم Serilog sink (7.1.3) — اختر مسارًا واحدًا\n    ;\n\n// ── البديل المختصر: تسجيل مقطعي لكل الإشارات من متغيرات البيئة ──\n// OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4317\n// OTEL_SERVICE_NAME=orders-api  ·  OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=prod\n//\n// ⚠ قاعدة صارمة: UseOtlpExporter() وAddOtlpExporter() لكل إشارة\n//    **لا يجتمعان** → NotSupportedException عند الإقلاع.\n//    ولو مشروعك بيستخدم Aspire ServiceDefaults فهو بيسجل UseOtlpExporter تلقائيًا\n//    لما OTEL_EXPORTER_OTLP_ENDPOINT موجود — فاختار أحد الأسلوبين (5.3.1/5.3.2).\n// builder.Services.AddOpenTelemetry().UseOtlpExporter();\n\nvar app = builder.Build();\n\n// /metrics عبر Prometheus exporter = **beta**: استخدمه محليًا،\n// وفي الإنتاج صدّر OTLP لـCollector (7.1.4).\napp.MapDefaultEndpoints();\napp.Run();\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ الأدوات المخصصة: spans ومقاييس بتاعتك"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "src/Orders.Api/CheckoutService.cs — instrumentation صحيح",
+      "filename": "src/Orders.Api/CheckoutService.cs",
+      "code": "using System.Diagnostics;\nusing System.Diagnostics.Metrics;\n\nnamespace Shop.Orders;\n\npublic sealed class CheckoutService(ShopMetrics metrics, PaymentClient payments, ILogger<CheckoutService> log)\n{\n    public async Task<CheckoutResult> CheckoutAsync(CheckoutRequest req, CancellationToken ct)\n    {\n        // ── span لكل وحدة عمل ذات معنى (لا لكل دالة) ──\n        using Activity? activity = ShopTracing.StartCheckout(req.OrderId, req.Total);\n        if (activity is not null)\n        {\n            activity.SetTag(\"shop.checkout.items\", req.Items.Count);\n        }\n\n        try\n        {\n            // خطوة 1: تحقق من المخزون — span فرعي (الابن تلقائي من السياق الحالي)\n            var reserved = await WithStepAsync(\"reserve_stock\", req.OrderId,\n                () => payments.ReserveStockAsync(req, ct), ct);\n            if (!reserved)\n            {\n                metrics.RecordStep(\"reserve_stock\", 0, ok: false);\n                return CheckoutResult.Failed(\"out_of_stock\");\n            }\n\n            // خطوة 2: الدفع (استدعاء HTTP — HttpClientInstrumentation بيعمل span تلقائيًا)\n            var sw = ValueStopwatch.StartNew();\n            var paid = await payments.ChargeAsync(req, ct);\n            metrics.RecordStep(\"charge_payment\", sw.GetElapsedTime().TotalSeconds, paid);\n            ShopTracing.AddPaymentEvent(activity, \"stripe\", paid ? \"ok\" : \"declined\");\n\n            if (!paid) return CheckoutResult.Failed(\"payment_declined\");\n\n            metrics.RecordOrderPlaced(req.Channel, req.PaymentProvider);\n            log.LogInformation(\"Order {OrderId} placed for {Amount} {Currency}\",\n                req.OrderId, req.Total, \"EGP\");          // ← سجل مهيكَل بحقول قابلة للبحث\n            return CheckoutResult.Ok(req.OrderId);\n        }\n        catch (Exception ex) when (ex is not OperationCanceledException)\n        {\n            if (activity is not null) ShopTracing.Fail(activity, ex);\n            metrics.OrdersFailed.Add(1,\n                new KeyValuePair<string, object?>(\"shop.failure.kind\", Classify(ex)));\n            log.LogError(ex, \"Checkout failed for {OrderId}\", req.OrderId);\n            throw;\n        }\n    }\n\n    /// <summary>نمط مساعد: span + مقياس + تسجيل خطأ لكل خطوة.</summary>\n    private static async Task<T> WithStepAsync<T>(string step, string orderId,\n        Func<Task<T>> action, CancellationToken ct)\n    {\n        using var activity = ShopTracing.Source.StartActivity($\"checkout.{step}\", ActivityKind.Internal);\n        activity?.SetTag(\"shop.checkout.step\", step);\n        activity?.SetTag(\"shop.order.id\", orderId);\n\n        var sw = ValueStopwatch.StartNew();\n        try\n        {\n            return await action();\n        }\n        catch (Exception ex)\n        {\n            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);\n            activity?.RecordException(ex);\n            throw;\n        }\n        finally\n        {\n            activity?.SetTag(\"shop.step.duration_s\", sw.GetElapsedTime().TotalSeconds);\n        }\n    }\n\n    /// <summary>\n    /// تصنيف مبسط للفشل — سمة مقياس بقيم محدودة (لا رسالة الاستثناء النصية!).\n    /// </summary>\n    private static string Classify(Exception ex) => ex switch\n    {\n        TimeoutException => \"timeout\",\n        HttpRequestException => \"http\",\n        InvalidOperationException => \"state\",\n        _ => \"unknown\",\n    };\n}\n\npublic record CheckoutRequest(string OrderId, decimal Total, IReadOnlyList<string> Items,\n    string Channel, string PaymentProvider);\npublic record CheckoutResult(bool Ok, string? OrderId, string? Reason)\n{\n    public static CheckoutResult Ok(string id) => new(true, id, null);\n    public static CheckoutResult Failed(string reason) => new(false, null, reason);\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ نشر السياق: HTTP وgRPC والطوابير والمهام الخلفية"
+    },
+    {
+      "type": "table",
+      "caption": "أين ينتشر السياق تلقائيًا وأين تحتاج كودًا",
+      "head": [
+        "الحد",
+        "تلقائي؟",
+        "الآلية",
+        "لو مش شغال"
+      ],
+      "rows": [
+        [
+          "HTTP صادر بـ`HttpClient`/`IHttpClientFactory`",
+          "**نعم** (مع `AddHttpClientInstrumentation`)",
+          "هيدر `traceparent` يُحقن تلقائيًا",
+          "تأكد إنك بتستخدم `HttpClient` من المصنع (مش `new HttpClient`) وإن `Propagator` افتراضي W3C"
+        ],
+        [
+          "HTTP وارد لـASP.NET Core",
+          "**نعم**",
+          "قراءة `traceparent` وإنشاء span أب",
+          "لو فيه proxy بيحذف الهيدرز → ضبط الـgateway"
+        ],
+        [
+          "gRPC",
+          "**نعم** (يستخدم HTTP/2 نفسه)",
+          "`traceparent` في metadata",
+          "تحقق من `Grpc.Net.Client` مع `HttpClient` مُعدَّن"
+        ],
+        [
+          "**RabbitMQ / طوابير**",
+          "**جزئيًا** — MassTransit بينشر السياق تلقائيًا، لكن الرسائل اليدوية تحتاج كودًا",
+          "هيدرز الرسالة: `traceparent` + `tracestate`",
+          "احقن يدويًا عند النشر واقرأه عند الاستهلاك (الكود بالأسفل)"
+        ],
+        [
+          "Kafka",
+          "حسب المكتبة",
+          "هيدرز السجل (record headers)",
+          "نفس نمط الطوابير"
+        ],
+        [
+          "`BackgroundService` / مهام مجدولة",
+          "**لا** — مفيش طلب وارد",
+          "ابدأ root activity بنفسك + `Baggage` لو محتاج",
+          "الكود بالأسفل"
+        ],
+        [
+          "Blazor/SignalR",
+          "جزئي",
+          "حسب الإصدار والرسالة",
+          "ابدأ span لكل عملية أعمال"
+        ],
+        [
+          "قاعدة بيانات (ADO.NET/EF)",
+          "**نعم** مع `AddSqlClientInstrumentation`",
+          "span ابن للعملية الحالية",
+          "النص الكامل لـSQL يتحكم فيه `SetDbStatementForText`"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "src/Shop.Messaging/TracePropagation.cs — نشر السياق عبر الطابور",
+      "filename": "src/Shop.Messaging/TracePropagation.cs",
+      "code": "using System.Diagnostics;\nusing System.Text;\nusing RabbitMQ.Client;           // ⚠ الإصدار 7.x غيّر بعض الـAPIs لنمط غير متزامن —\nusing RabbitMQ.Client.Events;    //   تحقق من التواقيع في إصدارك (النمط هنا يوضح الفكرة).\n\nnamespace Shop.Messaging;\n\n/// <summary>\n/// نشر W3C trace context عبر رسائل RabbitMQ — بدونه الـtrace بينقطع عند الطابور\n/// وبتشوف «رحلتين منفصلتين» بدل رحلة واحدة.\n/// (MassTransit بيعمل ده تلقائيًا — الكود ده للرسائل اليدوية أو للفهم.)\n/// </summary>\npublic static class TracePropagation\n{\n    private const string TraceParent = \"traceparent\";\n    private const string TraceState = \"tracestate\";\n\n    // ── عند النشر ──\n    public static void Inject(IBasicProperties props)\n    {\n        props.Headers ??= new Dictionary<string, object?>();\n\n        // W3C Propagator الافتراضي بيكتب traceparent من Activity.Current:\n        var headers = new Dictionary<string, string>();\n        Propagators.DefaultTextMapPropagator.Inject(\n            new PropagationContext(Activity.Current?.Context ?? default, Baggage.Current),\n            carrier: headers,\n            setter: (carrier, key, value) => carrier[key] = value);\n\n        foreach (var (k, v) in headers) props.Headers[k] = Encoding.UTF8.GetBytes(v);\n    }\n\n    // ── عند الاستهلاك ──\n    public static Activity? ExtractAndStart(BasicDeliverEventArgs args, string operationName)\n    {\n        var headers = new Dictionary<string, string>();\n        if (args.BasicProperties.Headers is not null)\n        {\n            foreach (var kv in args.BasicProperties.Headers)\n            {\n                headers[kv.Key] = kv.Value switch\n                {\n                    byte[] b => Encoding.UTF8.GetString(b),\n                    string s => s,\n                    _ => kv.Value?.ToString() ?? string.Empty,\n                };\n            }\n        }\n\n        var ctx = Propagators.DefaultTextMapPropagator.Extract(\n            new PropagationContext(default, Baggage.Empty),\n            carrier: headers,\n            getter: (carrier, key) =>\n                carrier.TryGetValue(key, out var v) ? new[] { v } : Enumerable.Empty<string>());\n\n        // span من نوع Consumer وأبوه هو سياق الرسالة → الرحلة تتصل:\n        var activity = new Activity(operationName)\n            .SetParentId(ctx.ActivityContext.TraceId, ctx.ActivityContext.SpanId, ctx.ActivityContext.TraceFlags)\n            .SetKind(ActivityKind.Consumer)\n            .Start();\n\n        foreach (var kv in ctx.Baggage) activity.SetBaggage(kv.Key, kv.Value);\n        activity.SetTag(\"messaging.system\", \"rabbitmq\");\n        activity.SetTag(\"messaging.operation\", \"receive\");\n        return activity;\n    }\n}\n\n/// <summary>مهمة خلفية: مفيش طلب وارد، فابدأ root activity بنفسك.</summary>\npublic sealed class OutboxDispatcherWorker(IServiceScopeFactory scopes, ILogger<OutboxDispatcherWorker> log)\n    : BackgroundService\n{\n    protected override async Task ExecuteAsync(CancellationToken ct)\n    {\n        while (!ct.IsCancellationRequested)\n        {\n            // root span لكل دورة — بدونه الشغل الخفي لا يظهر في أي trace:\n            using var activity = new Activity(\"outbox.dispatch_cycle\")\n                .SetKind(ActivityKind.Internal)\n                .Start();\n            activity.SetTag(\"shop.worker\", \"outbox\");\n\n            try\n            {\n                using var scope = scopes.CreateScope();\n                var dispatcher = scope.ServiceProvider.GetRequiredService<IOutboxDispatcher>();\n                var sent = await dispatcher.DispatchPendingAsync(ct);\n                activity.SetTag(\"shop.outbox.sent\", sent);\n            }\n            catch (OperationCanceledException) { /* إيقاف لطيف (6.1.5) */ }\n            catch (Exception ex)\n            {\n                activity.SetStatus(ActivityStatusCode.Error, ex.Message);\n                activity.RecordException(ex);\n                log.LogError(ex, \"Outbox dispatch cycle failed\");\n            }\n\n            await Task.Delay(TimeSpan.FromSeconds(2), ct);\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ ربط السجلات بالتتبع (أعلى عائد استثمار في الدرس)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Log correlation — TraceId في كل سطر",
+      "filename": "src/ServiceDefaults/LogCorrelation.cs",
+      "code": "using Serilog;\nusing Serilog.Configuration;\nusing Serilog.Core;\nusing Serilog.Events;\nusing System.Diagnostics;\n\nnamespace Shop.Observability;\n\n/// <summary>\n/// يضيف TraceId/SpanId لكل سطر سجل من Activity.Current.\n/// النتيجة: من أي خطأ في اللوج → انسخ الـTraceId → افتح الرحلة كاملة.\n/// (بديل جاهز: Serilog.Enrichers.Span — تحقق من توافقه مع إصدارك.)\n/// </summary>\npublic sealed class TraceContextEnricher : ILogEventEnricher\n{\n    public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)\n    {\n        var current = Activity.Current;\n        if (current is null) return;\n\n        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty(\"TraceId\", current.TraceId.ToString()));\n        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty(\"SpanId\", current.SpanId.ToString()));\n        if (current.ParentSpanId != default)\n            logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty(\"ParentSpanId\", current.ParentSpanId.ToString()));\n    }\n}\n\npublic static class LoggerEnrichmentConfigurationExtensions\n{\n    public static LoggerConfiguration WithTraceContext(this LoggerEnrichmentConfiguration cfg) =>\n        cfg.With<TraceContextEnricher>();\n}\n\n/* الإعداد في Program.cs:\n   Log.Logger = new LoggerConfiguration()\n       .Enrich.FromLogContext()\n       .Enrich.WithTraceContext()                       // ← الربط\n       .Enrich.WithProperty(\"service\", \"orders-api\")\n       .Enrich.WithProperty(\"environment\", builder.Environment.EnvironmentName)\n       .WriteTo.Console(outputTemplate:\n           \"[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj} \" +\n           \"{TraceId}{NewLine}{Exception}\")              // ← يظهر في السطر\n       .WriteTo.OpenTelemetry(...)                      // (7.1.3)\n       .CreateLogger();\n\n   ولو بتستخدم OTel logs مباشرة (WithLogging) فـSDK بيضيف TraceId/SpanId تلقائيًا\n   كحقول في سجل OTLP — بس output template في الكونسول لسه محتاج {TraceId}.\n*/\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑥ Collector: طبقة التحكم اللي بتنقذك"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": "otel/collector-config.yaml",
+      "filename": "otel/collector-config.yaml",
+      "code": "# Collector = مكان واحد تتحكم منه في: الدفعات · الذاكرة · الـsampling · حجب البيانات · الخلفيات.\n# الصورة: otel/opentelemetry-collector-contrib (فيه معالجات tail_sampling وredaction).\nreceivers:\n  otlp:\n    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\n      http:\n        endpoint: 0.0.0.0:4318\n\nprocessors:\n  # ① حماية الذاكرة أولًا (بدونه Collector بياخد كل الذاكرة ويعيد التشغيل):\n  memory_limiter:\n    check_interval: 1s\n    limit_percentage: 80\n    spike_limit_percentage: 25\n\n  # ② دفعات لتقليل عدد الطلبات:\n  batch:\n    timeout: 5s\n    send_batch_size: 1024\n\n  # ③ حجب البيانات الحساسة من السمات والسجلات:\n  attributes/redact:\n    actions:\n      - key: db.statement\n        action: hash            # أو delete — القرار حسب سياستك (7.2.5)\n      - key: http.request.header.authorization\n        action: delete\n      - key: shop.customer.email\n        action: hash\n\n  # ④ توحيد السمات (بيئة/إصدار) لو التطبيق ما بيبعتهاش:\n  resource:\n    attributes:\n      - key: deployment.environment.name\n        from_attribute: environment\n        action: upsert\n\n  # ⑤ tail sampling: احتفظ بكل الأخطاء والبطيئة، وعيّن الباقي:\n  tail_sampling:\n    decision_wait: 10s\n    num_traces: 100000\n    expected_new_traces_per_sec: 1000\n    policies:\n      - name: keep-errors\n        type: status_code\n        status_code: { status_codes: [ERROR] }\n      - name: keep-slow\n        type: latency\n        latency: { threshold_ms: 1000 }\n      - name: keep-checkout\n        type: string_attribute\n        string_attribute: { key: shop.checkout.step, values: [charge_payment] }\n      - name: sample-rest\n        type: probabilistic\n        probabilistic: { sampling_percentage: 10 }\n\nexporters:\n  # المسار الموصى به للإنتاج: OTLP للخلفية المُدارة/الذاتية\n  otlphttp/backend:\n    endpoint: http://tempo:4318        # أو الخلفية المُدارة\n  prometheusremotewrite:\n    endpoint: http://prometheus:9090/api/v1/write\n  loki:\n    endpoint: http://loki:3100/loki/api/v1/push\n  debug:\n    verbosity: basic                    # للتشخيص المحلي فقط\n\nservice:\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [memory_limiter, attributes/redact, resource, tail_sampling, batch]\n      exporters: [otlphttp/backend, debug]\n    metrics:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [prometheusremotewrite]\n    logs:\n      receivers: [otlp]\n      processors: [memory_limiter, attributes/redact, batch]\n      exporters: [loki]\n  telemetry:\n    logs: { level: info }\n    metrics:\n      level: detailed                   # راقب الـCollector نفسه (7.1.4)\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑦ التشخيص: 10 أسباب لـ«التتبع مش ظاهر»"
+    },
+    {
+      "type": "table",
+      "caption": "رتّب الفحص بالترتيب — 90% من الحالات في أول 4 صفوف",
+      "head": [
+        "العرض",
+        "السبب الأشهر",
+        "الفحص",
+        "الإصلاح"
+      ],
+      "rows": [
+        [
+          "لا spans خالصًا",
+          "`OTEL_EXPORTER_OTLP_ENDPOINT` غير مضبوط أو التطبيق ما سجّلش SDK",
+          "`env | grep OTEL` + `AddExporter(Console)` مؤقتًا",
+          "ضبط المتغير أو تسجيل `AddOpenTelemetry` (وتأكد إنه بيتنفذ فعليًا)"
+        ],
+        [
+          "`NotSupportedException` عند الإقلاع",
+          "جمع `UseOtlpExporter()` مع `AddOtlpExporter()` لكل إشارة (أو ServiceDefaults بيعملها)",
+          "رسالة الاستثناء بتقول كده صراحةً",
+          "اختر أسلوبًا واحدًا: إما المقطعي أو لكل إشارة"
+        ],
+        [
+          "الـspans المخصصة ناقصة",
+          "`AddSource(\"Shop.Orders\")` غير مضاف",
+          "قارن أسماء المصادر في الكود مع المسجلة",
+          "أضف كل `ActivitySource` بـ`AddSource` (أو `AddSource(\"Shop.*\")` لو مدعوم في إصدارك)"
+        ],
+        [
+          "traces مقطّعة عند الطابور",
+          "`traceparent` لا يُحقن في هيدرز الرسالة",
+          "افحص هيدرز الرسالة المستهلكة",
+          "استخدم `Propagators.DefaultTextMapPropagator` (inject/extract) — أو MassTransit"
+        ],
+        [
+          "فشل تصدير 404/غير مدعوم",
+          "خلط البروتوكول والمنفذ: gRPC=4317 مقابل HTTP=4318 (والمسار `/v1/traces`)",
+          "`AddOtlpExporter(o => …)` أو `OTEL_EXPORTER_OTLP_PROTOCOL`",
+          "وحّد: `grpc` مع 4317، أو `http/protobuf` مع 4318"
+        ],
+        [
+          "كل حاجة اتسقطت (sampling)",
+          "Sampler = 0 أو `AlwaysOff` أو `ParentBased` مع أب غير مُعيَّن",
+          "اطبع نسبة العينة من الإعدادات",
+          "`ParentBasedTraceIdRatioSampler(0.1)` وخلي القرار في Collector (tail)"
+        ],
+        [
+          "السجلات بلا TraceId",
+          "السجل خارج نطاق `Activity.Current` (مثلًا في worker أو بعد `ConfigureAwait`)",
+          "اطبع `Activity.Current?.TraceId` في نفس السطر",
+          "ابدأ root activity في الـworker (الكود أعلاه) + enricher"
+        ],
+        [
+          "المقاييس ناقصة/مقطوعة",
+          "الـMeter غير مضاف بـ`AddMeter` أو حدود cardinality بتسقط نقاط",
+          "سجلات SDK بتحذير عن السلاسل المتجاوزة",
+          "أضف الـMeter · ارفع `CardinalityLimit` أو قلل السمات"
+        ],
+        [
+          "الـCollector بيعيد التشغيل",
+          "مفيش `memory_limiter` أو `decision_wait` كبير مع حمل عالي",
+          "مقاييس الـCollector نفسه (`otelcol_process_memory_rss`)",
+          "أضف `memory_limiter` أول المعالجات · قلل `num_traces` · زد الذاكرة"
+        ],
+        [
+          "الفاتورة/الحجم انفجر",
+          "سمات بقيم غير محدودة أو sampling 100% أو سجلات Information",
+          "عدد السلاسل الزمنية وحجم الاستيعاب في الخلفية",
+          "قَوْلبة المسارات · `TagKeys` · tail sampling · مستويات سجلات (7.1.1)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أربع قواعد ما تكسرهمش",
+      "md": "**① `AddSource` لكل `ActivitySource` مخصص** — وإلا الكود شغال والـSDK مش بيسمعه. **② لا تجمع `UseOtlpExporter` مع `AddOtlpExporter`** — استثناء عند الإقلاع. **③ وحدة المقاييس في السمة مش في الاسم**: `http_server_request_duration_seconds` بالثواني حسب الاتفاقية — لا تخلط ms مع s في نفس المقياس. **④ لا تسمتر معرّفات في سمات المقاييس** — المعرّف مكانه الـspan والسجل. وكمان: **`Activity.Current` بيعتمد على السياق** — في المهام الخلفية/بعد الطابور ابدأ span بنفسك."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أعرف بنية OTel (API · SDK · Exporter · Collector) وأقدر أرسم مسار الإشارة من كودي للخلفية.",
+        "أقدر أسجل traces + metrics + logs في `Program.cs` مع `ConfigureResource` واستبعاد `/health`.",
+        "عارف فرق `UseOtlpExporter()` (مقطعي لكل الإشارات) عن `AddOtlpExporter()` (لكل إشارة) وإنهم ما يجتمعوش.",
+        "أقدر أكتب `ActivitySource` و`Meter` بأدوات صحيحة (Counter/Histogram/ObservableGauge) ووحدات وسمات مضبوطة.",
+        "أقدر أنشر السياق عبر HTTP/gRPC والطوابير، وأبدأ root activity في المهام الخلفية.",
+        "أقدر أربط السجلات بالتتبع (TraceId في كل سطر) وأعرف قيمة الـexemplars.",
+        "أعرف أظبط sampling (head/tail) وحدود cardinality (`CardinalityLimit`/`TagKeys`/`AddView`).",
+        "أقدر أشخّص «التتبع مش ظاهر» من جدول الـ10 أسباب بالترتيب."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على OTel في .NET.",
+      "questions": [
+        {
+          "q": "التطبيق شغال وبيصدر، بس الـspans اللي كتبتها بـ`ShopTracing.Source.StartActivity` مش ظاهرة. السبب الأشهر؟",
+          "options": [
+            "الـsampling",
+            "**`AddSource(\"Shop.Orders\")` غير مضاف في `WithTracing`** — الـSDK بيسمع فقط للمصادر المسجلة",
+            "الـCollector",
+            "اسم الـspan"
+          ],
+          "answer": 1,
+          "explain": "ده أشهر سبب لـ«الكود صح والتتبع ناقص». سجّل كل `ActivitySource` (والأسماء case-sensitive)، وتأكد إن `Activity.Current` مش null (يعني فيه مستمع فعلًا)."
+        },
+        {
+          "q": "جمعت `UseOtlpExporter()` مع `WithTracing(t => t.AddOtlpExporter())`. النتيجة؟",
+          "options": [
+            "تصدير مزدوج (نسخة لكل وجهة)",
+            "**`NotSupportedException` عند الإقلاع** — الأسلوبان لا يجتمعان في نفس `IServiceCollection`",
+            "أداء أبطأ",
+            "لا شيء"
+          ],
+          "answer": 1,
+          "explain": "قاعدة موثقة في README المُصدِّر. وخلي بالك: Aspire ServiceDefaults بيسجل `UseOtlpExporter` تلقائيًا لما `OTEL_EXPORTER_OTLP_ENDPOINT` موجود — فلو ضفت `AddOtlpExporter` يدويًا هيقع الإقلاع."
+        },
+        {
+          "q": "الـtraces بتظهر كرحلتين منفصلتين: واحدة للـAPI وواحدة للـworker المستهلك من الطابور. السبب؟",
+          "options": [
+            "الـworker بلا `AddSource`",
+            "**سياق W3C (`traceparent`) لا يُحقن/يُستخرج في هيدرز الرسالة** → مفيش أب مشترك",
+            "الـCollector بيقطع",
+            "الـsampling"
+          ],
+          "answer": 1,
+          "explain": "HTTP وgRPC بينشروا السياق تلقائيًا، لكن الطوابير تحتاج حقنًا/استخراجًا صريحًا (`Propagators.DefaultTextMapPropagator`) — أو استخدام MassTransit اللي بيعمله لك. وفي الـworker ابدأ span بـ`ActivityKind.Consumer` مع `SetParentId`."
+        },
+        {
+          "q": "ليه مُصدِّر Prometheus في OTel .NET ما زال beta، وإيه البديل للإنتاج؟",
+          "options": [
+            "بطيء؛ استخدم console exporter",
+            "**مبني على مواصفة OpenMetrics التجريبية وقد يتغير؛ للإنتاج صدّر OTLP لـCollector وخلّيه يحوّل (remote write أو OTLP receiver في Prometheus)**",
+            "ما بيشتغلش على Linux",
+            "بيتطلب Prometheus 3.x"
+          ],
+          "answer": 1,
+          "explain": "الـendpoint `/metrics` (pull) مفيد محليًا وللتجربة. الإنتاج: OTLP → Collector → Prometheus، وده كمان بيديك exemplars ومعالجة مركزية."
+        },
+        {
+          "q": "مقياس `http_server_request_duration_seconds` فيه 4 ملايين سلسلة زمنية. أول حاجة تفحصها؟",
+          "options": [
+            "حجم الهيستوجرام",
+            "**قيم السمات: هل `http.route` مُقَوْلَب ولا المسار الفعلي؟ وهل فيه سمة زي `user_id`؟ ثم اضبط `TagKeys` و`CardinalityLimit`**",
+            "عدد النسخ",
+            "فترة الجمع"
+          ],
+          "answer": 1,
+          "explain": "الانفجار سببه سمة بقيم غير محدودة. الحل: قَوْلبة المسارات (الإطار بيعملها لو الـrouting matched) + تقييد السمات المسموحة + حد للسلاسل مع تحذير في السجلات."
+        },
+        {
+          "q": "tail sampling في Collector بيحل إيه مش بيحلّه head sampling؟",
+          "options": [
+            "بيقلل الحجم أكتر دايمًا",
+            "**بيحتفظ بكل الرحلات الفاشلة/البطيئة ويعيّن من الناجحة** — لأن القرار بيتاخد بعد اكتمال الرحلة، بينما head بيقرر قبل ما يعرف النتيجة",
+            "بيسرع التطبيق",
+            "بيقلل الـcardinality"
+          ],
+          "answer": 1,
+          "explain": "الثمن: ذاكرة و`decision_wait` في Collector (بيخزن الرحلات لحد ما تكتمل). التركيبة الشائعة: sampling خفيف في التطبيق + tail sampling في Collector للاحتفاظ بالحالات المهمة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "تتبع متصل عبر الخدمات + ضبط تكلفة.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: تتبع متصل من الـgateway لقاعدة البيانات والطابور",
+          "md": "**السياق:** نظام `shop`: gateway/BFF → `orders` → (PostgreSQL + `payments` عبر HTTP) → نشر رسالة → `worker` يستهلكها.\n\n**المطلوب:**\n1. `ServiceDefaults` بتسجيل OTel كامل: `ConfigureResource` (service.name/version/instance + `deployment.environment.name`) · traces · metrics · logs — **بأسلوب واحد** (إما `UseOtlpExporter` أو لكل إشارة) مع تعليق يشرح السبب.\n2. استبعاد `/health` و`/alive` من التتبع والمقاييس (filter) وقياس الفرق في الحجم قبل/بعد.\n3. `ActivitySource` مخصص مع span لكل خطوة أعمال ذات معنى (checkout: reserve_stock · charge_payment · publish_event) + سمات + events + حالة خطأ.\n4. **نشر السياق عبر الطابور**: inject عند النشر وextract عند الاستهلاك مع `ActivityKind.Consumer` (أو MassTransit + تحقق إن السياق اتنقل).\n5. root activity في الـ`BackgroundService` (outbox dispatcher) بحيث شغله يظهر في التتبع.\n6. **ربط السجلات**: TraceId/SpanId في كل سطر (enricher أو Serilog.Enrichers.Span) + `{TraceId}` في output template.\n7. Collector بـ`memory_limiter` و`batch` و**tail sampling** (احتفظ بالأخطاء والبطيئة > 1s وعيّن 10% من الباقي) وحجب `db.statement`/`authorization`.\n8. **الدليل**: لقطة/مخرج لرحلة واحدة كاملة من gateway لـworker (5 spans على الأقل عبر عمليتين) + سجل فيه نفس الـTraceId + حجم البيانات قبل/بعد الـsampling والفلاتر.",
+          "criteria": [
+            "تسجيل OTel واحد بلا تعارض (`UseOtlpExporter` **أو** `AddOtlpExporter`) ومعلّق السبب.",
+            "Resource attributes كاملة (name/version/instance/environment) — ظاهرة في الخلفية.",
+            "`/health` و`/alive` مستبعدة، مع رقم حجم قبل/بعد.",
+            "spans مخصصة بأسماء وسمات وأحداث وحالة خطأ صحيحة (`ActivityStatusCode.Error` + `RecordException`).",
+            "السياق منتشر عبر الطابور (الدليل: الـworker span ابن الناشر).",
+            "root activity في الـworker/المهام الخلفية (شغلها ظاهر).",
+            "TraceId في كل سطر سجل (مُثبت بمخرج).",
+            "Collector فيه `memory_limiter` **أول المعالجات** + tail sampling بـ4 سياسات + حجب سمات حساسة.",
+            "رحلة واحدة موثقة بـ5+ spans عبر عمليتين + رقم حجم قبل/بعد."
+          ],
+          "hint": "أسهل خلفية محلية: Aspire Dashboard (يقبل OTLP على 4317/18889 ويعرض الإشارات الثلاث) — مثالي لإثبات الاتصال. وبعدها Collector + Tempo/Jaeger + Prometheus + Grafana + Loki. وللتحقق من النشر: اطبع هيدرز الرسالة المستهلكة وشوف `traceparent`. ولو `Activity.Current` null في الكود، فمعناها مفيش مستمع → راجع `AddSource`.",
+          "solution": "الترتيب العملي: (1) Aspire Dashboard محليًا + `OTEL_EXPORTER_OTLP_ENDPOINT` (2) تسجيل OTel في ServiceDefaults **بـ`UseOtlpExporter` وحده** (لأن ServiceDefaults قد يسجله تلقائيًا) (3) filters لاستبعاد الفحص — الحجم بينزل عادةً 20–40% (4) `ShopTracing` + `ShopMetrics` (5) حقن/استخراج السياق في رسائل RabbitMQ (6) root activity في الـoutbox worker (7) enricher للـTraceId في Serilog (8) Collector بـtail sampling. الدليل النموذجي: رحلة `POST /checkout` فيها spans: `POST /checkout` (gateway) → `checkout` (orders) → `checkout.reserve_stock` → `POST /payments/charge` (HTTP client) → `INSERT orders` (SqlClient) → `publish order-placed` → `process order-placed` (worker, Consumer). الحجم: مع sampling 10% + tail + استبعاد الفحص، الحجم بينزل عادةً 60–85% مع الاحتفاظ **بكل** الأخطاء.",
+          "resources": [
+            "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel",
+            "https://opentelemetry.io/docs/languages/dotnet/",
+            "https://opentelemetry.io/docs/languages/dotnet/exporters/",
+            "https://github.com/open-telemetry/opentelemetry-dotnet",
+            "https://opentelemetry.io/docs/collector/configuration/",
+            "https://opentelemetry.io/docs/specs/otel/context/api-propagators/",
+            "https://aspire.dev/"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: اضبط التكلفة والجودة — قياس ثم تقليل بلا فقدان إشارة",
+          "md": "**السياق:** التتبع شغال لكن الحجم (والتكلفة) كبير، وفيه ضجيج.\n\n**المطلوب:**\n1. **قياس الوضع الحالي** لمدة 24 ساعة (أو تحت حمل k6): حجم الاستيعاب بالـGB · عدد السلاسل الزمنية النشطة · عدد الـspans/يوم · أكبر 5 مصادر حجمًا (حسب المسار/الخدمة/مستوى السجل).\n2. طبّق 5 إجراءات تقليل مرتبة بالأثر: مستويات سجلات · استبعاد مسارات الفحص · sampling (head ثم tail) · `TagKeys`/`CardinalityLimit` · حجب الحقول الكبيرة (`db.statement`) — وقِس **بعد كل إجراء**.\n3. أضف حدودًا وقائية: `CardinalityLimit` لكل histogram مهم + `SpanLimits` (عدد السمات/الأحداث/الروابط) + تحذير في السجلات لو SDK أسقط نقاط.\n4. اضبط Collector: `memory_limiter` + `batch` بأحجام مناسبة + مراقبة الـCollector نفسه (مقاييسه في لوحة).\n5. اكتب `docs/observability-cost.md`: جدول قبل/بعد لكل إجراء (الحجم · الأثر على القدرة التشخيصية) · الرقم الشهري المتوقع · و«ما الذي لم نقلله ولماذا».\n6. **اختبار عدم الفقدان**: تأكد إن بعد كل التقليل، لسه قادر تجاوب على الأسئلة الخمسة الأولى من خطة 7.1.1 (جرّب تحقيقًا كاملًا على عطل متعمد).",
+          "criteria": [
+            "قياس خط أساس بأرقام حقيقية (GB · سلاسل زمنية · spans/يوم) + أكبر 5 مصادر حجمًا.",
+            "5 إجراءات تقليل مطبقة **ومقيسة بعد كل واحد** (جدول قبل/بعد).",
+            "حدود وقائية: `CardinalityLimit` + `SpanLimits` + ملاحظة عن تحذيرات الإسقاط.",
+            "Collector بـ`memory_limiter` أولًا + batch مضبوط + مقاييسه مرصودة.",
+            "وثيقة تكلفة فيها الرقم الشهري المتوقع وفقرة «ما لم نقلله ولماذا».",
+            "**اختبار تحقيق كامل بعد التقليل** يثبت إن الأسئلة الخمسة لسه قابلة للإجابة.",
+            "ملاحظة عن المقايضة: sampling بيقلل التكلفة وبيخفي الأنماط النادرة — وكيف تعوضها (tail sampling للأخطاء)."
+          ],
+          "hint": "أسهل 3 مكاسب بالترتيب: (1) `Logging:LogLevel:Microsoft.EntityFrameworkCore = Warning` (2) استبعاد `/health` و`/alive` من التتبع والمقاييس (3) sampling 10% + tail للأخطاء. ولقياس السلاسل الزمنية في Prometheus: `prometheus_tsdb_head_series` و`count by (__name__)({__name__=~\".+\"})`. ولو بتستخدم خلفية مُدارة، شوف صفحة الاستهلاك/الـusage فيها.",
+          "solution": "الأرقام النموذجية لمشروع صغير: قبل = ~1.5–3 GB سجلات/يوم + ~150 ألف span/يوم + ~5,000 سلسلة زمنية. بعد الإجراءات: السجلات ↓70% (مستويات + استبعاد الفحص + حجب `db.statement`)، الـspans ↓80% (sampling 10% + tail يحتفظ بكل الأخطاء والبطيئة)، السلاسل الزمنية ↓50% (TagKeys + قَوْلبة المسارات). الحدود الوقائية: `CardinalityLimit = 2000` على histograms الطلبات · `SpanLimits { AttributeCountLimit = 64, EventCountLimit = 32 }` · مراقبة `otelcol_refused_spans` و`otelcol_dropped_metric_points`. اختبار عدم الفقدان: بعد التقليل، التحقيق على عطل متعمد لسه بينجح لأن tail sampling محتفظ بكل الرحلات الفاشلة — وده الدرس الأهم: **التقليل الذكي بيحافظ على الإشارات النادرة المهمة**، مش بيقص كل حاجة بنسبة ثابتة.",
+          "resources": [
+            "https://opentelemetry.io/docs/collector/configuration/",
+            "https://opentelemetry.io/docs/concepts/sampling/",
+            "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/metrics",
+            "https://prometheus.io/docs/prometheus/latest/querying/basics/",
+            "https://learn.microsoft.com/en-us/azure/azure-monitor/logs/cost-logs"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "OTel لـ.NET (الدليل الرسمي)",
+          "url": "https://opentelemetry.io/docs/languages/dotnet/"
+        },
+        {
+          "label": "المُصدِّرات (OTLP · Prometheus · Console)",
+          "url": "https://opentelemetry.io/docs/languages/dotnet/exporters/"
+        },
+        {
+          "label": "مستودع opentelemetry-dotnet (الإصدارات وCHANGELOG)",
+          "url": "https://github.com/open-telemetry/opentelemetry-dotnet"
+        },
+        {
+          "label": "قابلية الملاحظة في .NET (Microsoft Learn)",
+          "url": "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel"
+        },
+        {
+          "label": "مثال: OTel + Prometheus + Grafana + Jaeger",
+          "url": "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-prgrja-example"
+        },
+        {
+          "label": "إعداد الـCollector (receivers/processors/exporters)",
+          "url": "https://opentelemetry.io/docs/collector/configuration/"
+        },
+        {
+          "label": "الاتفاقيات الدلالية (أسماء السمات والمقاييس)",
+          "url": "https://opentelemetry.io/docs/specs/semconv/"
+        },
+        {
+          "label": "نشر السياق (W3C Trace Context)",
+          "url": "https://www.w3.org/TR/trace-context/"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,235 @@
+{
+  "id": "s1-m1-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nالـ**Dependency Injection** في ASP.NET Core مش ميزة إضافية — دي الطريقة اللي بيتبني بيها التطبيق. وأهم قرار بتاخده\nلكل خدمة هو **الـlifetime**: مين بيمتلك النسخة دي، وإمتى بتتعمل، وإمتى بتموت؟\n\nالغلطة الأشهر (واللي بتظهر في الإنتاج مش في التطوير) هي **captive dependency**: خدمة Singleton تمسك خدمة Scoped،\nفتقعد تعيش أكتر من الـRequest اللي عملها — ومع `DbContext` معناها بيانات متداخلة وتسريبات ذاكرة.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Transient",
+          "def": "نسخة جديدة **كل مرة** تطلبها. خفيفة وبلا حالة (stateless)."
+        },
+        {
+          "term": "Scoped",
+          "def": "نسخة واحدة **لكل scope** — في الويب: لكل HTTP Request. ده الافتراضي للخدمات المرتبطة بالطلب زي `DbContext`."
+        },
+        {
+          "term": "Singleton",
+          "def": "نسخة واحدة **طوال عمر التطبيق**. لازم تكون thread-safe وبلا حالة مرتبطة بمستخدم."
+        },
+        {
+          "term": "Captive dependency",
+          "def": "خدمة طويلة العمر (Singleton) تعتمد على أقصر عمرًا (Scoped/Transient بحالة) — ASP.NET Core بيرفضها في Development."
+        },
+        {
+          "term": "IServiceScopeFactory",
+          "def": "الطريقة الشرعية لإنشاء scope جوه Singleton (زي BackgroundService) عشان تستهلك خدمات Scoped بأمان."
+        },
+        {
+          "term": "Keyed services",
+          "def": "من .NET 8: تسجيل أكثر من تنفيذ لنفس الـinterface بمفتاح، وحقنه بـ`[FromKeyedServices]`."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "Lifetime",
+        "نسخة لكل",
+        "استخدام نموذجي",
+        "خطر رئيسي"
+      ],
+      "rows": [
+        [
+          "Singleton",
+          "التطبيق كله",
+          "كاش، إعدادات ثابتة، `IHttpClientFactory`, clocks",
+          "حالة مشتركة بين المستخدمين + captive dependency"
+        ],
+        [
+          "Scoped",
+          "HTTP Request",
+          "`DbContext`، Unit of Work، خدمات المستخدم الحالي",
+          "استهلاكها من Singleton"
+        ],
+        [
+          "Transient",
+          "كل حقن",
+          "خدمات خفيفة بلا حالة، مappers",
+          "إنشاؤها كتير لو ثقيلة، وموتها مع من حقنها"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "التسجيل والحقن"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Program.cs",
+      "title": "Composition Root — المكان الوحيد اللي بيتقرر فيه الـlifetimes",
+      "code": "\nvar builder = WebApplication.CreateBuilder(args);\n\n// Scoped: نسخة لكل request — مناسب للـDbContext\nbuilder.Services.AddDbContext<AppDbContext>(opt =>\n    opt.UseNpgsql(builder.Configuration.GetConnectionString(\"Shop\")));\n\nbuilder.Services.AddScoped<IOrderStore, EfOrderStore>();\nbuilder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();\n\n// Transient: خفيفة وبلا حالة\nbuilder.Services.AddTransient<OrderTotalCalculator>();\n\n// Singleton: لازم تكون thread-safe وما تمسكش Scoped\nbuilder.Services.AddSingleton(TimeProvider.System);\nbuilder.Services.AddSingleton<ITaxPolicy, EgyptTaxPolicy>();\n\n// Keyed services (.NET 8+): أكثر من تنفيذ لنفس العقد\nbuilder.Services.AddKeyedSingleton<INotifier, EmailNotifier>(\"email\");\nbuilder.Services.AddKeyedSingleton<INotifier, SmsNotifier>(\"sms\");\n\nbuilder.Services.AddScoped<OrderPlacementService>(sp => new OrderPlacementService(\n    sp.GetRequiredService<IOrderStore>(),\n    sp.GetRequiredKeyedService<INotifier>(\"email\"),\n    sp.GetRequiredService<ITaxPolicy>()));\n\nvar app = builder.Build();\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الغلطة: Singleton يمسك Scoped"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "BrokenCache.cs",
+      "title": "كود يبدو سليمًا… ويفشل في الإنتاج",
+      "code": "\n// ✗ خطأ: Singleton بيمسك IOrderStore (Scoped) وDbContext معه\npublic sealed class RecentOrdersCache\n{\n    private readonly IOrderStore _store;              // captive dependency\n    private readonly List<Order> _items = [];\n\n    public RecentOrdersCache(IOrderStore store) => _store = store;\n\n    public async Task<IReadOnlyList<Order>> GetAsync()\n    {\n        if (_items.Count == 0)\n            _items.AddRange(await _store.RecentAsync());   // أي مستخدم؟ أي request؟\n        return _items;                                      // حالة مشتركة بين كل المستخدمين!\n    }\n}\n\nbuilder.Services.AddSingleton<RecentOrdersCache>();\n// في Development: InvalidOperationException\n// \"Cannot consume scoped service 'IOrderStore' from singleton 'RecentOrdersCache'.\"\n// في Production (لو ValidateScopes متقفل): DbContext عايش للأبد + بيانات مستخدمين متداخلة\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "ليه بتشوف الخطأ في Development بس؟",
+      "md": "\n`builder.Host.UseDefaultServiceProvider(o => { o.ValidateScopes = true; o.ValidateOnBuild = true; })`\nمفعّل افتراضيًا في بيئة Development. في Production بيتقفل لأسباب أداء، فالخطأ بيتحول لتسريب صامت.\nخليك صريح وفعّلها في الاختبارات كمان:\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "تفعيل التحقق في كل البيئات (مع إبقاء الإنتاج سريعًا)",
+      "code": "\nbuilder.Host.UseDefaultServiceProvider(options =>\n{\n    options.ValidateScopes = builder.Environment.IsDevelopment() || IsTestRun();\n    options.ValidateOnBuild = builder.Environment.IsDevelopment();\n});\n\nstatic bool IsTestRun() =>\n    Environment.GetEnvironmentVariable(\"DOTNET_ENVIRONMENT\") == \"Testing\";\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الإصلاح: scope صريح أو lifetime مناسب"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "FixedCache.cs",
+      "title": "الحل 1: إنشاء scope لكل عملية داخل Singleton",
+      "code": "\npublic sealed class RecentOrdersCache(TimeProvider time, IServiceScopeFactory scopes)\n{\n    private readonly TimeSpan _ttl = TimeSpan.FromSeconds(30);\n    private IReadOnlyList<Order> _items = [];\n    private DateTimeOffset _expiresAt = DateTimeOffset.MinValue;\n    private readonly SemaphoreSlim _gate = new(1, 1);\n\n    public async Task<IReadOnlyList<Order>> GetAsync(CancellationToken ct = default)\n    {\n        if (time.GetUtcNow() < _expiresAt) return _items;\n\n        await _gate.WaitAsync(ct);\n        try\n        {\n            if (time.GetUtcNow() < _expiresAt) return _items;\n\n            await using var scope = scopes.CreateAsyncScope();   // ✓ scope صريح\n            var store = scope.ServiceProvider.GetRequiredService<IOrderStore>();\n            _items = await store.RecentAsync(ct);\n            _expiresAt = time.GetUtcNow().Add(_ttl);\n            return _items;\n        }\n        finally { _gate.Release(); }\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Worker.cs",
+      "title": "الحل 2: BackgroundService — نفس القاعدة بالضبط",
+      "code": "\npublic sealed class OrderCleanupWorker(IServiceScopeFactory scopes, ILogger<OrderCleanupWorker> log)\n    : BackgroundService\n{\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(5));\n        while (await timer.WaitForNextTickAsync(stoppingToken))\n        {\n            try\n            {\n                await using var scope = scopes.CreateAsyncScope();\n                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();\n                var removed = await db.Orders\n                    .Where(o => o.Status == OrderStatus.Abandoned && o.CreatedAt < DateTime.UtcNow.AddHours(-2))\n                    .ExecuteDeleteAsync(stoppingToken);\n                log.LogInformation(\"cleaned {Count} abandoned orders\", removed);\n            }\n            catch (Exception ex) when (ex is not OperationCanceledException)\n            {\n                log.LogError(ex, \"cleanup iteration failed\");   // بلا catch = الـworker يموت بصمت\n            }\n        }\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قواعد سريعة تحفظك",
+      "md": "\n- **الافتراضي Scoped** لأي خدمة مرتبطة بطلب. حوّلها Singleton بس لما تثبت إنها thread-safe وبلا حالة.\n- **مفيش حالة مستخدم في Singleton** — ولا كاش مشترك من غير `SemaphoreSlim`/`ConcurrentDictionary`.\n- **Transient جوه Singleton** بيبقى عمليًا singleton (بيتحقن مرة واحدة) — لو له حالة، ده باج.\n- **BackgroundService = Singleton**: استخدم `IServiceScopeFactory` دايمًا.\n- فعّل `ValidateScopes`/`ValidateOnBuild` في Development والاختبارات.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أشرح الفرق بين الثلاثة lifetimes بمثال من مشروعي.",
+        "أكتشف captive dependency من رسالة الخطأ أو من قراءة التسجيلات.",
+        "أستخدم `IServiceScopeFactory` في خدمة Singleton أو BackgroundService.",
+        "أسجّل تنفيذين لنفس العقد بـkeyed services وأختار بينهم."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "`DbContext` مسجّل بـ`AddDbContext` (Scoped). أنهي تسجيل هيثير captive dependency؟",
+          "options": [
+            "`builder.Services.AddScoped<IOrderService, OrderService>()`",
+            "`builder.Services.AddSingleton<IReportService, ReportService>()` و`ReportService` بياخد `AppDbContext` في الـconstructor",
+            "`builder.Services.AddTransient<OrderMapper>()`",
+            "`builder.Services.AddSingleton(TimeProvider.System)`"
+          ],
+          "answer": 1,
+          "explain": "Singleton بيستهلك Scoped. الصح: تخلي `ReportService` Scoped، أو تستخدم `IServiceScopeFactory` جوه Singleton."
+        },
+        {
+          "q": "خدمة Transient اتحقنت جوه Singleton. إيه اللي بيحصل فعليًا؟",
+          "options": [
+            "بيتعمل نسخة جديدة مع كل استخدام",
+            "بيتعمل نسخة واحدة وقت إنشاء الـSingleton وتفضل معاه",
+            "بيرمي استثناء دايمًا",
+            "بيتحوّل تلقائيًا لـScoped"
+          ],
+          "answer": 1,
+          "explain": "الـTransient بيتحل مرة واحدة وقت بناء الـSingleton، فبياخد عمره. لو الخدمة دي بحالة (stateful) ده مصدر باجات."
+        },
+        {
+          "q": "في `BackgroundService` محتاج تقرأ من قاعدة البيانات كل دقيقة. إيه الصح؟",
+          "options": [
+            "تحقن `AppDbContext` في الـconstructor وتستخدمه كل مرة",
+            "تعمل `CreateAsyncScope()` جوه كل دورة وتحل الـDbContext منها",
+            "تسجّل الـBackgroundService كـScoped",
+            "تستخدم static DbContext مشترك"
+          ],
+          "answer": 1,
+          "explain": "الـHosted services singletons. الـscope المؤقت بيديك `DbContext` بعمر دورة واحدة ويتخلص منها بشكل صحيح."
+        },
+        {
+          "q": "عايز تنفيذين لـ`INotifier` (email وsms) وتختار بينهم وقت الحقن. أفضل حل حديث؟",
+          "options": [
+            "`IEnumerable<INotifier>` واختيار بالـindex",
+            "Keyed services مع `[FromKeyedServices(\"email\")]` أو `GetRequiredKeyedService`",
+            "classين بأسماء مختلفة من غير interface مشترك",
+            "Singleton بيقرأ setting في كل نداء"
+          ],
+          "answer": 1,
+          "explain": "Keyed services (‎.NET 8+) بتحل المشكلة دي مباشرة وبشكل مصرّح به في مكان الحقن."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "اصنع الباج وبعدين اصلحه",
+          "md": "في مشروع تجريبي: سجّل `DbContext` كـScoped وخدمة Singleton بتستهلكه. شغّل في Development، وثّق رسالة الخطأ، ثم أصلحها بطريقتين: مرة بتغيير الـlifetime، ومرة بـ`IServiceScopeFactory`.",
+          "criteria": [
+            "شفت `InvalidOperationException: Cannot consume scoped service ...` بنفسك",
+            "الإصلاح الأول: الخدمة بقت Scoped والطلب شغال",
+            "الإصلاح التاني: Singleton مع scope صريح وشغال",
+            "كتبت في ملاحظاتك إمتى تختار كل إصلاح"
+          ],
+          "hint": "لو الرسالة مش ظاهرة، تأكد إن `ValidateScopes = true` (وهو الافتراضي في Development) وإنك بتحل الخدمة فعلًا وقت البناء أو في أول طلب."
+        },
+        {
+          "id": "t2",
+          "title": "Worker آمن",
+          "md": "اكتب `BackgroundService` بـ`PeriodicTimer` كل 10 ثواني ينشئ scope، يعدّ الطلبات الجديدة، ويسجّل الرقم — مع معالجة الاستثناءات بحيث الـworker ما يموتش.",
+          "criteria": [
+            "بيستخدم `IServiceScopeFactory` مش حقن مباشر",
+            "فيه `try/catch` حول الدورة مع logging",
+            "بيحترم `stoppingToken` ويقفل بنظافة",
+            "السجل بيظهر رقم متزايد كل 10 ثواني"
+          ],
+          "solution": "راجع `OrderCleanupWorker` في الشرح — نفس الهيكل مع `PeriodicTimer` و`CreateAsyncScope` و`log.LogError` جوه catch."
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Dependency injection in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/dependency-injection"
+        },
+        {
+          "label": "Hosted services / BackgroundService",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/host/hosted-services"
+        },
+        {
+          "label": "Keyed DI services",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/dependency-injection-usage"
+        }
+      ]
+    }
+  ]
+}

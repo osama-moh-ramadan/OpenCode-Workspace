@@ -1,0 +1,478 @@
+{
+  "id": "s4-m1-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nعندك اختيارين معروفين: **monolith** بيتحوّل لكره طين (كل شيء بينادي كل شيء)،\nأو **ميكروسيرفيسز** بتدفع ضريبتها من أول يوم (شبكة، معاملات موزعة، مراقبة، نشر، فرق).\n\nالخيار التالت — والأصح لأغلب الفرق — **Modular Monolith**: حدود موديولات صارمة **وملكية بيانات واضحة**،\nمع نشر واحد وتواصل داخل العملية. بتاخد انضباط الميكروسيرفيسز من غير تكلفة الشبكة،\nولو احتجت تفصل موديول لاحقًا، الحدود موجودة أصلًا.\n\nالفرق بين «monolith منظّم» و«modular monolith» هو **فرض الحدود**: موديول ما يقدرش يقرأ جداول موديول تاني،\nولا يستخدم أنواعه الداخلية، ولا يعدّل كياناته. والقاعدة دي مفروضة بالـcompiler وباختبارات — مش بالاتفاق الشفهي.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Module",
+          "def": "وحدة قدرة عمل (capability) لها حدود: كود خاص، بيانات خاصة، وعقد عام. أمثلة: Orders، Catalog، Payments، Shipping."
+        },
+        {
+          "term": "Public Contract",
+          "def": "السطح الوحيد المسموح للموديولات التانية: أوامر/استعلامات/أحداث/أنواع DTO. **مفيش كيانات ولا DbContext**."
+        },
+        {
+          "term": "Internal",
+          "def": "كل تنفيذ الموديول (handlers، entities، DbContext، migrations) — `internal` ومش مرجعي من بره."
+        },
+        {
+          "term": "Data Ownership",
+          "def": "كل موديول يملك جداوله (schema خاص). **لا FK ولا join عبر الموديولات** — معرّفات فقط + اتساق eventual."
+        },
+        {
+          "term": "In-Process Event",
+          "def": "إشعار داخل نفس العملية (MediatR notification) — سريع، لكن بلا دوام لو سقطت العملية."
+        },
+        {
+          "term": "Outbox Event",
+          "def": "حدث يُكتب في نفس معاملة البيانات ثم يُنشر لاحقًا — دوام واتساق eventual عبر الموديولات."
+        },
+        {
+          "term": "Integration Assembly",
+          "def": "مشروع `Module.Integration` بيجمع تركيب الموديولات في عملية واحدة (composition root)."
+        },
+        {
+          "term": "Coupling Metric",
+          "def": "قياس عددي للاعتماديات عبر الحدود (عدد المراجع، عدد الاستعلامات المتقاطعة) — يوريك هل الحدود بتتحترم فعلًا."
+        },
+        {
+          "term": "Strangler Migration",
+          "def": "نقل الحدود تدريجيًا: كود أولًا، ثم بيانات (schema)، ثم أحداث — بلا إعادة كتابة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) الهيكل: عقد عام + تنفيذ داخلي"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "حل modular monolith",
+      "code": "\n# لكل موديول: مشروعان (عقد عام + تنفيذ) — أقوى فرض ممكن بالـcompiler\nfor m in Orders Catalog Payments Shipping; do\n  dotnet new classlib -n Shop.$m.Contracts -o src/Modules/Shop.$m/Shop.$m.Contracts\n  dotnet new classlib -n Shop.$m           -o src/Modules/Shop.$m/Shop.$m\n  dotnet add src/Modules/Shop.$m/Shop.$m reference src/Modules/Shop.$m/Shop.$m.Contracts\ndone\n\ndotnet new web      -n Shop.Host           -o src/Shop.Host              # composition root فقط\ndotnet new classlib -n Shop.Kernel         -o src/Shop.Kernel            # مشترك صغير جدًا (Money, IClock, Result)\ndotnet new classlib -n Shop.Infrastructure -o src/Shop.Infrastructure    # outbox, messaging, logging (تقني)\n\n# ★ الاتجاه المسموح:\n#   Shop.X        → Shop.X.Contracts, Shop.Kernel, Shop.Infrastructure\n#   Shop.X        → Shop.Y.Contracts      (عقود الموديولات الأخرى فقط — ممنوع Shop.Y نفسه)\n#   Shop.Host     → كل Shop.X (للتركيب)\n#   ممنوع تمامًا: Shop.Y → Shop.X (التنفيذ الداخلي لأي موديول آخر)\n\n# مثال: موديول الشحن يعرف عقد الطلبات فقط\ndotnet add src/Modules/Shop.Shipping/Shop.Shipping \\\n    reference src/Modules/Shop.Orders/Shop.Orders.Contracts src/Shop.Kernel\n\n# ملاحظة: الحل البديل (الأبسط): مشروع واحد لكل موديول مع مجلدات Public/ و Internal/\n# + [assembly: InternalsVisibleTo(\"Shop.Orders.Tests\")] — فرض أقل لكن أسرع في البداية.\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Modules/Shop.Orders/Shop.Orders.Contracts/OrdersContract.cs",
+      "title": "العقد العام: كل ما يعرفه الآخرون عن الطلبات",
+      "code": "\nnamespace Shop.Orders.Contracts;\n\n// ═══ أنواع عامة (بلا EF، بلا تفاصيل تنفيذ) ═══\npublic readonly record struct OrderId(Guid Value);\npublic readonly record struct OrderRef(string Number);\n\npublic sealed record OrderSnapshot(\n    OrderId Id, OrderRef Ref, Guid CustomerId, string Status,\n    Money Total, DateTimeOffset PlacedAt, IReadOnlyList<OrderLineSnapshot> Lines);\n\npublic sealed record OrderLineSnapshot(Guid ProductId, string Name, int Quantity, Money UnitPrice, Money Subtotal);\n\n// ═══ عمليات يمكن استدعاؤها (sync, in-process) ═══\npublic interface IOrdersModule\n{\n    Task<OrderSnapshot?> GetAsync(OrderId id, CancellationToken ct);\n    Task<IReadOnlyList<OrderSnapshot>> ListForCustomerAsync(Guid customerId, int size, CancellationToken ct);\n}\n\n// ═══ أحداث ينشرها الموديول (للمستهلكين داخل وخارج العملية) ═══\npublic sealed record OrderPlaced(\n    OrderId OrderId, Guid CustomerId, Money Total, DateTimeOffset OccurredAt) : IIntegrationEvent;\n\npublic sealed record OrderCancelled(\n    OrderId OrderId, Guid CustomerId, Money Total, string Reason, DateTimeOffset OccurredAt) : IIntegrationEvent;\n\npublic sealed record OrderShipped(OrderId OrderId, DateTimeOffset OccurredAt) : IIntegrationEvent;\n\n/// <summary>علامة لكل الأحداث العابرة للحدود (تُسلسل JSON وتُكتب في outbox).</summary>\npublic interface IIntegrationEvent\n{\n    DateTimeOffset OccurredAt { get; }\n    string EventType => GetType().Name;\n}\n\n// ═══ استثناءات العقد (جزء من الواجهة العامة) ═══\npublic sealed class OrderNotFoundException(OrderId id) : Exception($\"الطلب {id.Value} غير موجود\");\npublic sealed class OrderConflictException(OrderId id, string status)\n    : Exception($\"الطلب {id.Value} بحالة {status} لا تسمح بالعملية\");\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Modules/Shop.Shipping/Internal/Handlers/OnOrderPlaced.cs",
+      "title": "مستهلك في موديول تاني: يعرف العقد فقط",
+      "code": "\nusing Shop.Orders.Contracts;\n\nnamespace Shop.Shipping.Internal.Handlers;\n\n/// <summary>\n/// ✓ يعتمد على `Shop.Orders.Contracts` فقط — لا يعرف Order entity ولا OrdersDbContext.\n/// ★ بياناته الخاصة: جدول `shipping.shipments` في schema الموديول (مفيش FK لـorders.orders).\n/// </summary>\npublic sealed class OnOrderPlaced(\n    ShippingDbContext db, IOrdersModule orders, ILogger<OnOrderPlaced> log)\n    : INotificationHandler<IntegrationEventEnvelope<OrderPlaced>>\n{\n    public async Task Handle(IntegrationEventEnvelope<OrderPlaced> envelope, CancellationToken ct)\n    {\n        var e = envelope.Event;\n\n        // ① idempotency: إعادة التسليم لا تنشئ شحنة مكررة\n        if (await db.Shipments.AnyAsync(s => s.OrderId == e.OrderId.Value, ct))\n        {\n            log.LogDebug(\"shipment already exists for {OrderId}\", e.OrderId.Value);\n            return;\n        }\n\n        // ② لو محتاج تفاصيل أكتر من الحدث: استعلام عبر العقد (مش قراءة جدول الموديول التاني!)\n        var snapshot = await orders.GetAsync(e.OrderId, ct)\n                       ?? throw new InvalidOperationException($\"Order {e.OrderId.Value} اختفى بعد الحدث\");\n\n        var shipment = Shipment.Schedule(\n            orderId: e.OrderId.Value,                 // ★ معرّف فقط — بلا كيان وبلا FK\n            address: snapshot.Lines.Count > 0 ? ResolveAddress(snapshot) : throw new InvalidOperationException(\"لا أسطر\"),\n            weight: EstimateWeight(snapshot),\n            clock: envelope.Clock);\n\n        db.Shipments.Add(shipment);\n        await db.SaveChangesAsync(ct);\n    }\n\n    private static Address ResolveAddress(OrderSnapshot o) => /* ... */ default!;\n    private static decimal EstimateWeight(OrderSnapshot o) => o.Lines.Sum(l => l.Quantity * 0.5m);\n}\n\n/// <summary>غلاف يحمل الحدث + بيانات التشغيل (ساعة، معرف تسليم) — يُعرَّف في Kernel.</summary>\npublic sealed record IntegrationEventEnvelope<TEvent>(TEvent Event, IClock Clock, string MessageId)\n    where TEvent : IIntegrationEvent;\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) قواعد الحدود (العشرة)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "#",
+        "القاعدة",
+        "السبب",
+        "إزاي تفرضها"
+      ],
+      "rows": [
+        [
+          "1",
+          "موديول يستدعي موديولًا آخر **عبر العقد فقط**",
+          "تغيير التنفيذ لا يكسر الآخرين",
+          "مراجع مشاريع + اختبار معماري"
+        ],
+        [
+          "2",
+          "لا كيانات ولا `DbContext` في العقد العام",
+          "التنفيذ يبقى حرًا في التغيير",
+          "اختبار: أنواع العقود يجب أن تكون records/interfaces"
+        ],
+        [
+          "3",
+          "**كل موديول يملك schema بياناته**",
+          "ملكية البيانات = جوهر الحدود",
+          "سياق EF لكل موديول + schemas منفصلة"
+        ],
+        [
+          "4",
+          "لا FK ولا JOIN عبر الموديولات",
+          "FK = اقتران نشر ويمنع فصل الموديول",
+          "مراجعة migrations + اختبار على `pg_constraint`"
+        ],
+        [
+          "5",
+          "التواصل غير المتزامن عبر أحداث + **outbox**",
+          "بلا فقد رسائل، بلا معاملات موزعة",
+          "`IIntegrationEvent` + اختبار على جدول outbox"
+        ],
+        [
+          "6",
+          "idempotency في كل مستهلك حدث",
+          "at-least-once = تكرار متوقع",
+          "اختبار إعادة تسليم لنفس المعرف"
+        ],
+        [
+          "7",
+          "لا حالة مشتركة قابلة للتعديل بين الموديولات",
+          "تسابق وصعوبة تتبع",
+          "اختبار معماري على أنواع `static` عامة"
+        ],
+        [
+          "8",
+          "Kernel صغير ومراقب",
+          "Kernel ضخم = طبقة مخفية يقترن بها الكل",
+          "حد أقصى للأنواع + مراجعة كل إضافة"
+        ],
+        [
+          "9",
+          "عقود مُصدَّرة versioned (لا تغيير كاسر صامت)",
+          "مستهلكون خارجيون/مستقبليون",
+          "اختبار توافق (snapshot للعقد)"
+        ],
+        [
+          "10",
+          "اختبارات تكامل **لكل موديول** + عقدية بين الموديولات",
+          "الأول يحمي السلوك، الثاني يحمي الحدود",
+          "CI jobs منفصلة"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.ArchTests/ModuleBoundaryTests.cs",
+      "title": "فرض الحدود آليًا (ده اللي بيخليها حقيقية)",
+      "code": "\npublic class ModuleBoundaryTests\n{\n    private static readonly string[] Modules = [\"Orders\", \"Catalog\", \"Payments\", \"Shipping\"];\n\n    public static TheoryData<string, string> CrossModulePairs()\n    {\n        var data = new TheoryData<string, string>();\n        foreach (var a in Modules) foreach (var b in Modules) if (a != b) data.Add(a, b);\n        return data;\n    }\n\n    [Theory]\n    [MemberData(nameof(CrossModulePairs))]\n    public void Module_does_not_reference_another_modules_internals(string from, string to)\n    {\n        var assembly = Assembly.Load($\"Shop.{from}\");\n\n        var result = Types.InAssembly(assembly)\n            .ShouldNot()\n            .HaveDependencyOn($\"Shop.{to}.Internal\")        // ✓ العقود مسموحة، التنفيذ ممنوع\n            .GetResult();\n\n        result.IsSuccessful.Should().BeTrue(\n            $\"{from} يعتمد على تنفيذ {to}: {string.Join(\", \", result.FailingTypeNames?.Take(10) ?? [])}\");\n    }\n\n    [Theory]\n    [InlineData(\"Orders\"), InlineData(\"Catalog\"), InlineData(\"Payments\"), InlineData(\"Shipping\")]\n    public void Contracts_contain_no_infrastructure_types(string module)\n    {\n        var contracts = Assembly.Load($\"Shop.{module}.Contracts\");\n\n        var result = Types.InAssembly(contracts)\n            .ShouldNot()\n            .HaveDependencyOnAny(\"Microsoft.EntityFrameworkCore\", \"Npgsql\", \"System.Text.Json.Serialization\",\n                                 \"Microsoft.AspNetCore\", \"StackExchange.Redis\")\n            .GetResult();\n\n        result.IsSuccessful.Should().BeTrue(\"العقد العام يجب أن يبقى تقنيًا محايدًا\");\n    }\n\n    [Fact]\n    public void Each_module_has_exactly_one_DbContext()\n    {\n        foreach (var module in Modules)\n        {\n            var contexts = Types.InAssembly(Assembly.Load($\"Shop.{module}\"))\n                .That().Inherit(typeof(DbContext)).GetTypes();\n\n            contexts.Should().HaveCount(1, $\"{module} لازم يملك سياق بيانات واحد (ملكية واضحة)\");\n        }\n    }\n\n    [Fact]\n    public void Integration_events_are_records_and_immutable()\n    {\n        var events = Modules\n            .SelectMany(m => Types.InAssembly(Assembly.Load($\"Shop.{m}.Contracts\")).GetTypes())\n            .Where(t => t.GetInterfaces().Any(i => i.Name == \"IIntegrationEvent\"))\n            .ToList();\n\n        events.Should().NotBeEmpty();\n        foreach (var e in events)\n        {\n            e.IsSealed.Should().BeTrue($\"{e.Name} لازم يكون sealed\");\n            e.GetProperties().Should().OnlyHave(p => p.SetMethod is null,\n                $\"{e.Name}: أحداث غير قابلة للتعديل (لا setters عامة)\");\n        }\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "db/module-ownership.sql",
+      "title": "ملكية البيانات على مستوى القاعدة (schema لكل موديول)",
+      "code": "\n-- ① schema لكل موديول + مستخدم تطبيق بصلاحيات محدودة\nCREATE SCHEMA IF NOT EXISTS orders   AUTHORIZATION shop;\nCREATE SCHEMA IF NOT EXISTS catalog  AUTHORIZATION shop;\nCREATE SCHEMA IF NOT EXISTS payments AUTHORIZATION shop;\nCREATE SCHEMA IF NOT EXISTS shipping AUTHORIZATION shop;\n\n-- ② كل موديول يعمل migrations على schema الخاص به فقط (EF: HasDefaultSchema في سياق الموديول)\n\n-- ③ اختبار ملكية: لا FK عبر الـschemas (ده اللي بيمنع اقتران النشر)\nSELECT con.conname, nsp.nspname AS from_schema, ref.nspname AS to_schema\nFROM pg_constraint con\nJOIN pg_class      tbl ON tbl.oid = con.conrelid\nJOIN pg_namespace  nsp ON nsp.oid = tbl.relnamespace\nJOIN pg_class      rt  ON rt.oid  = con.confrelid\nJOIN pg_namespace  ref ON ref.oid = rt.relnamespace\nWHERE con.contype = 'f' AND nsp.nspname <> ref.nspname;\n-- ★ الصفوف = انتهاكات. الصفر = الحدود محفوظة على مستوى البيانات.\n\n-- ④ قياس الاقتران في الاستعلامات: أي join عبر schemas؟\nSELECT schemaname, count(*) AS queries, round(mean(mean_exec_time)::numeric, 2) AS mean_ms\nFROM pg_stat_statements\nWHERE query ILIKE '%orders.%' AND query ILIKE '%catalog.%' AND query ILIKE '%join%'\nGROUP BY schemaname;\n\n-- ⑤ منع الكتابة المتقاطعة (لو محتاج حماية أقوى في الإنتاج)\n-- REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA orders FROM shipping_app;\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) التواصل بين الموديولات: 4 خيارات"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الآلية",
+        "الزمن",
+        "الاتساق",
+        "عند الفشل",
+        "استخدمها لما"
+      ],
+      "rows": [
+        [
+          "نداء مباشر عبر `IOrdersModule`",
+          "nanoseconds",
+          "قوي (نفس المعاملة لو شاركت DbContext… لا تشارك!)",
+          "استثناء فوري",
+          "قراءة بيانات لازمة فورًا (snapshot)"
+        ],
+        [
+          "**In-process event** (MediatR notification)",
+          "nanoseconds",
+          "قوي داخل نفس الطلب",
+          "استثناء يُفشل الطلب",
+          "تنسيق داخلي سريع، بلا حاجة للدوام"
+        ],
+        [
+          "**Outbox event** (دائم)",
+          "ms–s",
+          "eventual",
+          "إعادة تسليم + DLQ",
+          "★ عبر الموديولات لأي أثر جانبي (شحن، إشعار، نقاط)"
+        ],
+        [
+          "وسيط رسائل خارجي (RabbitMQ)",
+          "ms–10s",
+          "eventual",
+          "إعادة تسليم + DLQ",
+          "لما فيه عمليات/خدمات مستقلة أو مستهلكون خارج النظام"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "الخطأ القاتل: معاملة عبر موديولين",
+      "md": "\n```csharp\n// ✗ مرفوض: موديول الشحن بيكتب في DbContext موديول الطلبات داخل نفس المعاملة\nawait using var tx = await ordersDb.Database.BeginTransactionAsync(ct);\nordersDb.Orders.Update(order);\nshippingDb.Shipments.Add(shipment);\nawait tx.CommitAsync(ct);          // ← مستحيل: سياقان/اتصالان مختلفان\n```\n\n**ليه ممنوع؟** لأن ده بيحوّل الحدود لوهم: الموديولات بقت كيان واحد، وأي فصل مستحيل.\nوكمان لو فرضت اتصالًا واحدًا، رجعت للاقتران الكامل.\n\n**البديل الصحيح:** `OrderPlaced` يُكتب في outbox موديول الطلبات **في نفس معاملته**،\nوموديول الشحن يستهلكه لاحقًا (at-least-once + idempotent). النتيجة: اتساق eventual **بضمان عدم الفقد** —\nوده بالظبط نفس المقايضة اللي هتواجهها لو فصلت الموديولات لخدمات. بتدفعها دلوقتي بأدوات بسيطة بدل ما تدفعها لاحقًا بشبكة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) monolith ولا modular ولا ميكروسيرفيسز؟"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "Monolith عادي",
+        "**Modular Monolith**",
+        "Microservices"
+      ],
+      "rows": [
+        [
+          "حدود الكود",
+          "ضعيفة/عرفية",
+          "**قوية ومفروضة آليًا**",
+          "قوية (عمليات منفصلة)"
+        ],
+        [
+          "ملكية البيانات",
+          "مشاركة (قاعدة واحدة)",
+          "**schema لكل موديول**",
+          "قاعدة لكل خدمة"
+        ],
+        [
+          "تكلفة النشر",
+          "منخفضة",
+          "منخفضة",
+          "عالية (CI/CD لكل خدمة)"
+        ],
+        [
+          "الاتصال",
+          "نداء دالة",
+          "نداء/حدث داخل العملية (ns)",
+          "شبكة + timeouts + retries"
+        ],
+        [
+          "معاملات",
+          "بسيطة (ACID)",
+          "داخل الموديول ACID، وعبره outbox",
+          "موزعة (Sagas/outbox) — معقدة"
+        ],
+        [
+          "المراقبة",
+          "بسيطة",
+          "متوسطة (تتبع عبر الموديولات)",
+          "معقدة (tracing إلزامي)"
+        ],
+        [
+          "توسع الحمل",
+          "رأسي (أسهل)",
+          "رأسي + أفقي لكل النسخ",
+          "أفقي لكل خدمة بشكل مستقل"
+        ],
+        [
+          "فرق متعددة",
+          "صراع على الكود",
+          "**حدود ملكية واضحة**",
+          "استقلال كامل"
+        ],
+        [
+          "تكلفة البداية",
+          "الأقل",
+          "متوسطة",
+          "**الأعلى بكتير**"
+        ],
+        [
+          "عند الفشل الجزئي",
+          "العملية كلها",
+          "العملية كلها",
+          "الخدمة المعنية فقط (لو صُممت صح)"
+        ],
+        [
+          "مناسب لـ",
+          "نموذج أولي/أداة",
+          "★ أغلب الفرق (2-30 مطورًا)",
+          "فرق كبيرة، حاجات توسع/امتثال مختلفة فعلًا"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قائمة فحص: هل فعلاً تحتاج ميكروسيرفيسز؟",
+      "md": "\nافصل خدمة فقط لو **3 أو أكتر** من دول صحيحة **ومقاسة**:\n1. فريق مستقل بينشر أسبوعيًا على الأقل وبيُعطَّل بسبب جدول النشر المشترك.\n2. موديول له ملف توسّع مختلف بوضوح (مثال: البحث 10× حمل الطلبات) والتوسع الرأسي بقى مكلف.\n3. متطلبات امتثال/أمان تفرض عزلًا فيزيائيًا (بيانات دفع، بيانات صحية).\n4. احتياج تقني مختلف فعلًا (GPU، لغة تانية، تخزين متخصص كخدمة مستقلة).\n5. الموديول مستقر عقديًا (عقد نادر التغيير) وحجمه يبرر عملية مستقلة.\n6. عندك مراقبة موزعة ونشر متدرج جاهزين **قبل** الفصل (مش بعده).\n\nلو مفيش 3 → **Modular Monolith**. وهتوفر شهور عمل، ولو احتجت تفصل بعدين، الحدود جاهزة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) المسار من monolith موجود (بلا إعادة كتابة)"
+    },
+    {
+      "type": "steps",
+      "title": "6 خطوات تدريجية (Strangler)",
+      "items": [
+        {
+          "title": "ارسم الموديولات بالقدرة العمل، لا بالطبقة",
+          "md": "قائمة بالقدرات: Orders، Catalog، Payments، Shipping، Identity، Notifications. المعيار: **بيانات + قواعد مشتركة** تتغير معًا. مش «Services» ولا «Controllers»."
+        },
+        {
+          "title": "قيس الاقتران الحالي",
+          "md": "سكربت يعدّ المراجع المتقاطعة بين المجلدات، والاستعلامات اللي بتلمس جداول أكتر من مجال. ابدأ بالموديول الأقل اقترانًا."
+        },
+        {
+          "title": "اعزل الكود أولًا (بلا تغيير بيانات)",
+          "md": "حرّك أنواع الموديول لمجلد/مشروع، أنشئ `Contracts`، وحوّل النداءات المباشرة لاستخدام العقد. اختبارات المعمارية تبدأ حمراء وتفضل حمراء لحد ما تخلص."
+        },
+        {
+          "title": "انقل البيانات لـschema الموديول",
+          "md": "`ALTER TABLE … SET SCHEMA orders` (عملية سريعة في Postgres) + تحديث الـmappings. احذف FKs المتقاطعة واستبدلها بمعرّفات + فحص تكاملي دوري."
+        },
+        {
+          "title": "حوّل الآثار الجانبية لأحداث + outbox",
+          "md": "كل نداء مباشر «اعمل حاجة بعد كده» يصير حدثًا. المستهلكين idempotent. اختبر إعادة التسليم."
+        },
+        {
+          "title": "أضف الحراسة المستمرة",
+          "md": "اختبارات حدود في CI، قياس اقتران دوري (لو زاد → إنذار)، ومراجعة أي إضافة للـKernel."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Host/Program.cs",
+      "title": "Composition root: تركيب الموديولات في عملية واحدة",
+      "code": "\nvar builder = WebApplication.CreateBuilder(args);\n\nbuilder.Services.AddShopKernel(builder.Configuration);            // clock, logging, health\n\n// ★ كل موديول بيسجّل نفسه — المضيف لا يعرف تفاصيله الداخلية\nbuilder.Services.AddOrdersModule(builder.Configuration);          // DbContext + handlers + IOrdersModule\nbuilder.Services.AddCatalogModule(builder.Configuration);\nbuilder.Services.AddPaymentsModule(builder.Configuration);\nbuilder.Services.AddShippingModule(builder.Configuration);\n\nbuilder.Services.AddOutbox(builder.Configuration);                // بنية تحتية مشتركة (جدول outbox + dispatcher)\nbuilder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(ModuleRegistry.Assemblies));\n\nvar app = builder.Build();\n\napp.UseExceptionHandler().UseSerilogRequestLogging();\nforeach (var module in ModuleRegistry.All) module.MapEndpoints(app);   // كل موديول بيعرّف مساراته\n\napp.MapHealthChecks(\"/health/live\");\napp.MapGet(\"/modules\", () => ModuleRegistry.All.Select(m => new { m.Name, m.Version }));  // ✓ شفافية\napp.Run();\n\n// ── داخل كل موديول ──\npublic static IServiceCollection AddOrdersModule(this IServiceCollection s, IConfiguration cfg)\n{\n    s.AddDbContext<OrdersDbContext>(o =>\n        o.UseNpgsql(cfg.GetConnectionString(\"Orders\"), npgsql => npgsql.MigrationsHistoryTable(\"__migrations\", \"orders\")));\n    s.AddScoped<IOrdersModule, OrdersModuleFacade>();     // ← الواجهة العامة الوحيدة\n    s.AddMediatR(cfg => cfg.RegisterServicesFromAssemblyContaining<OrdersModuleFacade>());\n    return s;\n}\n\ninternal sealed class OrdersModuleFacade(OrdersDbContext db) : IOrdersModule\n{\n    public Task<OrderSnapshot?> GetAsync(OrderId id, CancellationToken ct) =>\n        db.Orders.AsNoTracking().Where(o => o.Id == id.Value)\n          .Select(o => o.ToSnapshot())                    // ✓ تحويل لـDTO من العقد — لا تسريب كيان\n          .FirstOrDefaultAsync(ct);\n\n    public Task<IReadOnlyList<OrderSnapshot>> ListForCustomerAsync(Guid customerId, int size, CancellationToken ct) =>\n        db.Orders.AsNoTracking().Where(o => o.CustomerId == customerId)\n          .OrderByDescending(o => o.PlacedAt).Take(Math.Clamp(size, 1, 100))\n          .Select(o => o.ToSnapshot()).ToListAsync(ct);\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أختار Modular Monolith بمعيار (حجم الفريق، الحاجة للتوسع المستقل، الامتثال) وأسجّل القرار في ADR.",
+        "أبني حدودًا حقيقية: عقد عام + تنفيذ `internal` + schema بيانات لكل موديول.",
+        "أفرض الحدود آليًا (مراجع مشاريع + اختبارات معمارية + استعلام ملكية FK على القاعدة).",
+        "أتواصل بين الموديولات بأحداث + outbox وidempotency، ولا أفتح معاملة عبر موديولين أبدًا."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "إيه الفرق الجوهري بين monolith منظّم وmodular monolith؟",
+          "options": [
+            "عدد الملفات",
+            "فرض الحدود آليًا: ملكية بيانات (schema لكل موديول) + عقود عامة فقط + اختبارات تمنع الاعتماد على التنفيذ الداخلي",
+            "استخدام MediatR",
+            "عدد المشاريع"
+          ],
+          "answer": 1,
+          "explain": "بلا ملكية بيانات وبلا فرض آلي، الموديولات بتتآكل من أول feature مستعجلة — وده اللي بيحصل في أغلب المحاولات."
+        },
+        {
+          "q": "ليه FK بين `shipping.shipments.order_id` و`orders.orders.id` ممنوع؟",
+          "options": [
+            "أداء فقط",
+            "بيخلق اقتران نشر ومخطط: أي تغيير في جدول الطلبات بيكسر الشحن، وبيمنع فصل الموديول لخدمة مستقلة",
+            "Postgres لا يدعمه",
+            "مسموح عادي"
+          ],
+          "answer": 1,
+          "explain": "البديل: معرّف + فحص تكامل (اختبار/مهمة دورية) أو حدث outbox يضمن وجود الطلب. التكلفة: اتساق eventual — وهي نفس تكلفة الميكروسيرفيسز."
+        },
+        {
+          "q": "مستهلك حدث شحن فشل بعد 5 محاولات. التصرف الصحيح؟",
+          "options": [
+            "احذف الرسالة",
+            "انقلها لـDLQ مع تنبيه، واستمر في معالجة الباقي، وأضف idempotency لإعادتها يدويًا لاحقًا",
+            "أوقف الطابور كله",
+            "أعد المحاولة للأبد"
+          ],
+          "answer": 1,
+          "explain": "الدوران اللانهائي بيوقف كل الرسائل. DLQ + تنبيه + أداة إعادة تشغيل = تشغيل صحي."
+        },
+        {
+          "q": "مدير: «نحول لميكروسيرفيسز عشان نتوسع». أحسن رد؟",
+          "options": [
+            "موافق فورًا",
+            "اطلب دليلًا مقاسًا: هل فيه فرق بيُعطَّل بالنشر المشترك؟ هل ملف التوسع مختلف فعلاً؟ هل المراقبة الموزعة جاهزة؟ لو لأ → Modular Monolith",
+            "ارفض دائمًا",
+            "اقترح serverless"
+          ],
+          "answer": 1,
+          "explain": "الميكروسيرفيسز حل لمشاكل تنظيم/توسع محددة، مش هدف. أغلب الفرق بتدفع تكلفتها من غير ما تقابل مشاكلها."
+        },
+        {
+          "q": "Kernel (المشروع المشترك) بدأ يكبر — 40 نوعًا ومنطق تسعير. الحكم؟",
+          "options": [
+            "ممتاز، إعادة استخدام",
+            "خطر: بقى موديولًا خفيًا يقترن به الكل — منطق التسعير يجب أن يصير موديول Pricing بعقده الخاص",
+            "احذفه",
+            "انقله لـInfrastructure"
+          ],
+          "answer": 1,
+          "explain": "Kernel الصحي = أنواع قيمة وأدوات صغيرة (Money، IClock، Result، pagination). أي منطق عمل يدخله لازم يبقى موديولًا."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "استخرج موديولين بحدود مفروضة",
+          "md": "من مشروعك الحالي، استخرج موديولين (مثل Orders وCatalog) كـ`Contracts` + `Internal`، مع schema بيانات لكل واحد، وتواصل عبر عقد/أحداث. أضف اختبارات حدود تفشل لو حد كسر القاعدة.",
+          "criteria": [
+            "مشروعان لكل موديول (Contracts/Internal) ومراجع صحيحة الاتجاه",
+            "اختبار معماري يرفض أي اعتماد على `*.Internal` لموديول آخر (مثبت بفشل مفتعل)",
+            "schema منفصل لكل موديول + استعلام يثبت صفر FK عبر الـschemas",
+            "حدث واحد على الأقل بين الموديولين عبر outbox مع اختبار idempotency",
+            "لا `DbContext` ولا كيانات في العقود العامة",
+            "ADR يشرح اختيار الحدود وليه الموديولين دول بالذات"
+          ],
+          "hint": "ابدأ بالزوج الأقل اقترانًا (استخدم قياس المراجع المتقاطعة). ولو لقيت FK متقاطع يصعب حذفه: احذفه وسجّل فحص تكامل دوري — وقيس كم مرة الفحص لقى مشكلة فعلًا."
+        },
+        {
+          "id": "t2",
+          "title": "قياس اقتران + قرار الفصل",
+          "md": "اكتب سكربت/اختبار يقيس الاقتران بين الموديولات (مراجع أنواع، عدد أحداث، استعلامات متقاطعة)، وارسم مصفوفة. بناءً عليها اكتب تقييمًا: أي موديول (لو فيه) يستحق الانفصال لخدمة مستقلة، وبأي شروط.",
+          "criteria": [
+            "مصفوفة اقتران قابلة للتوليد آليًا (CSV/markdown) مع تعريف كل مقياس",
+            "قائمة فحص الفصل (6 معايير) مقيّمة لكل موديول بدليل",
+            "قرار صريح: فصل/عدم فصل + الشروط اللي لو حصلت يتغير القرار",
+            "خطة لو اتقرر الفصل: الترتيب، ما الذي يحتاج شبكة/مراقبة أولًا"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Modular Monolith (Kamil Grzybek)",
+          "url": "https://github.com/kgrzybek/modular-monolith-with-ddd"
+        },
+        {
+          "label": ".NET architecture — Monolith vs microservices",
+          "url": "https://learn.microsoft.com/dotnet/architecture/cloud-native/choosing-between-monolith-and-microservices"
+        },
+        {
+          "label": "eShop — modular sample",
+          "url": "https://github.com/dotnet-architecture/eShop"
+        },
+        {
+          "label": "Domain-Driven Design — Bounded Contexts",
+          "url": "https://learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/ddd-oriented-microservice"
+        },
+        {
+          "label": "ArchUnitNET",
+          "url": "https://github.com/TNG/ArchUnitNET"
+        },
+        {
+          "label": "System design primer — scale",
+          "url": "https://github.com/donnemartin/system-design-primer"
+        }
+      ]
+    }
+  ]
+}

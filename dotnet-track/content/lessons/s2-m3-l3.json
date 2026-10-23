@@ -1,0 +1,333 @@
+{
+  "id": "s2-m3-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\n«شغل في الخلفية» حاجة و«جدولة» حاجة تانية. الجدولة محتاجة أربع حاجات الـ`BackgroundService`\nما بيديهاش لوحده: **دوام** (المهمة تتنفذ حتى لو التطبيق اتعاد تشغيله)، **رؤية** (لوحة تقولك إيه اللي فشل وإمتى)،\n**إعادة محاولة** (retry/backoff/dead-letter)، و**منع التكرار** (نسخ متعددة ما تنفذهاش مرتين).\n\nالدرس ده: مقارنة عملية بين Hangfire وQuartz.NET والقناة الداخلية وK8s CronJob،\nوتنفيذ cron job قابل للمراقبة و**idempotent** — لأن التسليم «مرة واحدة بالظبط» وهم؛ الواقع at-least-once.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Cron expression",
+          "def": "صيغة جدولة: `*/5 * * * *` (كل 5 دقائق)، `0 2 * * *` (2:00 يوميًا). راجع ترتيب الحقول — يختلف بين الأدوات."
+        },
+        {
+          "term": "Recurring Job",
+          "def": "مهمة متكررة محفوظة في مخزن دائم (Hangfire) أو مجدولة بمشغّل (Quartz)."
+        },
+        {
+          "term": "Persistent Store",
+          "def": "قاعدة بيانات تحفظ المهام وحالتها → تنجو من إعادة التشغيل وتمكّن الـclustering."
+        },
+        {
+          "term": "Misfire",
+          "def": "الموعد فات والخادم كان واقع. السياسة: نفّذ فورًا، تجاهل، أو نفّذ مرة واحدة — قرار لازم يتاخد صراحة."
+        },
+        {
+          "term": "At-least-once",
+          "def": "المهمة ممكن تتنفذ أكتر من مرة. المقابل: معالج idempotent."
+        },
+        {
+          "term": "Idempotency Key",
+          "def": "مفتاح فريد للتنفيذ (اسم المهمة + وقت الجدولة) بـunique index يمنع التكرار."
+        },
+        {
+          "term": "`[DisableConcurrentExecution]` / `[DisallowConcurrentExecution]`",
+          "def": "منع تداخل تشغيلين لنفس المهمة (Hangfire / Quartz)."
+        },
+        {
+          "term": "Dead Letter",
+          "def": "مكان المهام اللي فشلت بعد كل المحاولات — للمراجعة اليدوية بدل الضياع الصامت."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "Channel + BackgroundService",
+        "Hangfire",
+        "Quartz.NET",
+        "Queue (MassTransit)",
+        "K8s CronJob"
+      ],
+      "rows": [
+        [
+          "الدوام بعد إعادة التشغيل",
+          "✗ (في الذاكرة)",
+          "✓ قاعدة بيانات",
+          "✓ (persistent store)",
+          "✓ الوسيط",
+          "✓ (خارج التطبيق)"
+        ],
+        [
+          "لوحة تحكم/رؤية",
+          "✗",
+          "✓ Dashboard ممتاز",
+          "جزئي (تحتاج أدوات)",
+          "✓ إدارة الوسيط",
+          "kubectl/logs"
+        ],
+        [
+          "إعادة المحاولة/Backoff",
+          "يدوي",
+          "✓ مدمج + DLQ",
+          "يدوي/مكتبات",
+          "✓ مدمج قوي",
+          "restart policy"
+        ],
+        [
+          "Cron",
+          "✗ (دوري بسيط)",
+          "✓",
+          "✓ + مناطق زمنية + misfire",
+          "✗ (مش دوره)",
+          "✓"
+        ],
+        [
+          "Clustering / منع التكرار",
+          "✗",
+          "✓ (خوادم متعددة)",
+          "✓ (JDBC store)",
+          "✓ (منافسة مستهلكين)",
+          "✓ (تشغيل واحد)"
+        ],
+        [
+          "فصل الموارد عن الـAPI",
+          "✗",
+          "✗/✓ (خادم منفصل ممكن)",
+          "✗",
+          "✓",
+          "✓"
+        ],
+        [
+          "التكلفة التشغيلية",
+          "الأقل",
+          "منخفضة (جدول DB)",
+          "متوسطة",
+          "أعلى (وسيط)",
+          "متوسطة"
+        ],
+        [
+          "أنسب حالة",
+          "شغل ناتج عن طلب، غير حرج",
+          "مهام دورية داخل تطبيق .NET مع رؤية",
+          "جدولة معقدة/مناطق زمنية/مجموعات",
+          "رسائل وأحداث بين الخدمات",
+          "مهام ثقيلة ليلية/تقارير"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قاعدة الاختيار",
+      "md": "\n- مهام دورية **داخل تطبيقك** ومحتاجة لوحة تحكم وإعادة محاولة → **Hangfire** (أسرع طريق لقيمة حقيقية).\n- جدولة معقدة: مناطق زمنية، تقويمات، misfire policies، مجموعات مهام → **Quartz.NET**.\n- أحداث ورسائل **بين الخدمات** وتحميل متغيّر → **MassTransit + RabbitMQ/Service Bus**.\n- مهمة ثقيلة/نادرة وماينفعش تنافس الـAPI على الموارد → **K8s CronJob** أو خدمة منفصلة.\n- شغل ناتج عن طلب وغير حرج وقابل لإعادة التوليد → **Channel** من الدرس السابق (بلا بنية إضافية).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Hangfire: أسرع طريق لمهام دورية مرئية"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Api package Hangfire.AspNetCore\ndotnet add Shop.Api package Hangfire.PostgreSql        # أو Hangfire.SqlServer\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Jobs/HangfireSetup.cs",
+      "title": "الإعداد + Dashboard محمي + مهام متكررة",
+      "code": "\nusing Hangfire;\nusing Hangfire.PostgreSql;\n\npublic static class HangfireSetup\n{\n    public static IServiceCollection AddJobScheduler(\n        this IServiceCollection services, IConfiguration config, IWebHostEnvironment env)\n    {\n        services.AddHangfire(options => options\n            .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)\n            .UseSimpleAssemblyNameTypeSerializer()\n            .UseRecommendedSerializerSettings()\n            .UsePostgreSqlStorage(c => c.UseNpgsqlConnection(config.GetConnectionString(\"Hangfire\")!))\n            // ✓ إعادة المحاولة: عدد محاولات + backoff أسي\n            // ✗ لا تبتلع الفشل بعد استنفاد المحاولات — AttemptsExceededAction.Fail يخليه ظاهر في اللوحة\n            .UseFilter(new AutomaticRetryAttribute\n            {\n                Attempts = 3,\n                BackoffStrategy = BackoffStrategy.Exponential,\n                OnAttemptsExceeded = AttemptsExceededAction.Fail,\n            }));\n\n        services.AddHangfireServer(options =>\n        {\n            options.WorkerCount = Environment.ProcessorCount * 2;\n            options.Queues = [\"default\", \"reports\"];               // طوابير بأولويات مختلفة\n        });\n\n        return services;\n    }\n\n    public static IApplicationBuilder UseJobDashboard(this IApplicationBuilder app, IWebHostEnvironment env)\n    {\n        // ★ لوحة Hangfire فيها أسماء المهام والبيانات — لا تعرضها عامًا أبدًا\n        app.UseHangfireDashboard(\"/hangfire\", new DashboardOptions\n        {\n            Authorization = [new AdminOnlyDashboardFilter()],\n            DisplayStorageConnectionString = false,               // لا تسرّب connection string\n            StatsPollingInterval = 10_000,\n        });\n        return app;\n    }\n}\n\npublic sealed class AdminOnlyDashboardFilter : IDashboardAuthorizationFilter\n{\n    public bool Authorize(DashboardContext context)\n    {\n        var http = context.GetHttpContext();\n        // ✓ مصادقة حقيقية: سياسة admin، وشبكة داخلية في الإنتاج\n        return http.User.Identity?.IsAuthenticated == true\n            && http.User.IsInRole(Roles.Admin)\n            && !context.GetHttpContext().Request.Headers.ContainsKey(\"X-Forwarded-For\");\n    }\n}\n\n/// <summary>المهام فئات عادية — تُختبر كأي كلاس، وتستدعي الـApplication layer.</summary>\npublic sealed class AbandonedOrdersJob(IOrderService orders, ILogger<AbandonedOrdersJob> log)\n{\n    // ★ منع التداخل: لو دورة أخدت أطول من 5 دقائق، الدورة الجاية تنتظر ولا تتداخل\n    [DisableConcurrentExecution(timeoutInSeconds: 120)]\n    public async Task RunAsync(CancellationToken ct)\n    {\n        var result = await orders.SweepAbandonedAsync(batchSize: 100, ct);\n        log.LogInformation(\"abandoned sweep: {Cancelled} cancelled\", result.Cancelled);\n    }\n}\n\npublic sealed class NightlyReportJob(ISender sender, ILogger<NightlyReportJob> log)\n{\n    /// <summary>\n    /// ★ المهمة «مجدول» فقط؛ المنطق في handler MediatR — نفس الكود اللي بيخدم الـAPI،\n    /// وبنفس الاختبارات. ده معنى «MediatR jobs»: الجدولة توصيل، والمنطق مكانه في الـhandlers.\n    /// </summary>\n    public async Task RunAsync(DateOnly day, CancellationToken ct)\n    {\n        await sender.Send(new GenerateDailySalesReportCommand(day), ct);\n        log.LogInformation(\"daily sales report queued for {Day}\", day);\n    }\n}\n\n// التسجيل (مرة واحدة عند الإقلاع — AddOrUpdate idempotent بحسب الاسم)\npublic static class JobRegistration\n{\n    public static void RegisterRecurringJobs()\n    {\n        RecurringJob.AddOrUpdate<AbandonedOrdersJob>(\n            \"sweep-abandoned-orders\",\n            job => job.RunAsync(CancellationToken.None),\n            \"*/5 * * * *\",                                     // كل 5 دقائق\n            new RecurringJobOptions { TimeZone = TimeZoneInfo.Utc, MisfireHandling = MisfireHandlingMode.FireAndForget });\n\n        RecurringJob.AddOrUpdate<NightlyReportJob>(\n            \"nightly-sales-report\",\n            job => job.RunAsync(DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-1)), CancellationToken.None),\n            \"0 2 * * *\",                                       // 02:00 UTC يوميًا\n            new RecurringJobOptions { TimeZone = TimeZoneInfo.Utc, Queue = \"reports\" });\n    }\n}\n// تُنادى بعد app.Build() — أو من hosted service صغير للتسجيل الآمن\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Quartz.NET: جدولة معقدة ومناطق زمنية"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Api package Quartz.Extensions.Hosting\ndotnet add Shop.Api package Quartz.Extensions.DependencyInjection\ndotnet add Shop.Api package Quartz.Serialization.SystemTextJson\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Jobs/QuartzSetup.cs",
+      "title": "Persistent store + misfire policy + منطقة زمنية",
+      "code": "\nusing Quartz;\n\npublic sealed class DailyReportJob(ISender sender) : IJob\n{\n    public async Task Execute(IJobExecutionContext context)\n    {\n        var day = DateOnly.FromDateTime(context.FireTimeUtc.AddDays(-1).UtcDateTime);\n        await sender.Send(new GenerateDailySalesReportCommand(day), context.CancellationToken);\n    }\n}\n\npublic static IServiceCollection AddQuartzScheduler(this IServiceCollection services, IConfiguration config)\n{\n    services.AddQuartz(q =>\n    {\n        // للتطوير المحلي فقط: q.UseInMemoryStore();\n        q.UsePersistentStore(s =>                    // ★ الدوام = نجاة من إعادة التشغيل + clustering\n        {\n            s.UseProperties = true;\n            s.UsePostgres(o => o.ConnectionString = config.GetConnectionString(\"Quartz\")!);\n            s.UseJsonSerializer();\n            s.UseClustering(c =>                     // نسخ متعددة: واحدة فقط تنفّذ المهمة\n            {\n                c.CheckinMisfireThreshold = TimeSpan.FromSeconds(20);\n                c.CheckinInterval = TimeSpan.FromSeconds(10);\n            });\n        });\n\n        var tz = TimeZoneInfo.FindSystemZoneById(\"Africa/Cairo\");   // ✓ صريح: لا تعتمد على منطقة الخادم\n\n        q.ScheduleJob<DailyReportJob>(trigger => trigger\n            .WithIdentity(\"daily-report\")\n            .WithCronSchedule(\"0 2 * * *\", s => s\n                .InTimeZone(tz)\n                // ★ السياسة: لو الموعد فات والخادم واقع — تجاهل ولا تنفّذ متأخرًا بلا حدود\n                .WithMisfireHandlingInstructionDoNothing())\n            .StartNow());\n    });\n\n    services.AddQuartzHostedService(options =>\n    {\n        options.WaitForJobsToComplete = true;        // ✓ إيقاف لطيف: كمّل الشغل الجاري\n        options.AwaitStartup = true;\n    });\n\n    return services;\n}\n\n/// <summary>منع تداخل تشغيلين لنفس المهمة — ضروري لو التنفيذ أطول من الفترة.</summary>\n[DisallowConcurrentExecution]\n[PersistJobDataAfterExecution]\npublic sealed class StockSyncJob(IProductCatalog catalog) : IJob\n{\n    public async Task Execute(IJobExecutionContext context) =>\n        await catalog.SyncStockAsync(context.CancellationToken);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "منطقة زمنية وDST: الباج اللي بيظهر مرتين في السنة",
+      "md": "\n- **خزّن الجدولة بمنطقة زمنية صريحة** (`InTimeZone(tz)` / `RecurringJobOptions.TimeZone`). الاعتماد على منطقة الخادم = سلوك مختلف بين جهازك والإنتاج.\n- **تغيير التوقيت الصيفي**: مهمة «2:30 صباحًا» قد **لا تُنفَّذ** (الساعة قفزت) أو **تُنفَّذ مرتين** (الساعة رجعت). حدد سياسة misfire واختبرها.\n- **مناطق زمنية غير مثبتة في الحاوية**: صور Alpine/Linux النحيفة أحيانًا بلا قاعدة بيانات tz. الحل: `tzdata` في الصورة، أو خزّن UTC وحول في التطبيق.\n- **أعمدة التواريخ**: خزّن `timestamptz`/UTC دائمًا، وحوّل للعرض فقط.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Idempotency: لأن التنفيذ هيتكرر"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Jobs/JobExecutionLog.cs",
+      "title": "مفتاح تنفيذ فريد يمنع التكرار حتى مع at-least-once",
+      "code": "\npublic sealed class JobExecutionLog\n{\n    public Guid Id { get; init; } = Guid.NewGuid();\n    /// <summary>«nightly-sales-report|2026-10-21» — مفتاح منطقي للتنفيذ المقصود.</summary>\n    public required string ExecutionKey { get; init; }\n    public required DateTimeOffset StartedAt { get; init; }\n    public DateTimeOffset? CompletedAt { get; init; }\n    public required string Status { get; init; }          // running | done | failed\n    public string? Error { get; init; }\n}\n\npublic sealed class IdempotentJobRunner(AppDbContext db, ILogger<IdempotentJobRunner> log)\n{\n    /// <summary>\n    /// يحجز التنفيذ بـunique index: لو حد تاني حجزه، نخرج بهدوء.\n    /// ده بيحل التكرار من: نسختين، إعادة محاولة بعد timeout، أو misfire.\n    /// </summary>\n    public async Task<bool> RunOnceAsync(string executionKey, Func<CancellationToken, Task> work, CancellationToken ct)\n    {\n        var attempt = new JobExecutionLog\n        {\n            ExecutionKey = executionKey,\n            StartedAt = DateTimeOffset.UtcNow,\n            Status = \"running\",\n        };\n\n        try { db.JobExecutionLogs.Add(attempt); await db.SaveChangesAsync(ct); }\n        catch (DbUpdateException)                       // unique violation → تنفيذ تاني سبقنا\n        {\n            log.LogInformation(\"job {Key} already claimed by another run\", executionKey);\n            return false;\n        }\n\n        try\n        {\n            await work(ct);\n            attempt.CompletedAt = DateTimeOffset.UtcNow;\n            attempt.Status = \"done\";\n        }\n        catch (Exception ex)\n        {\n            attempt.Status = \"failed\";\n            attempt.Error = ex.Message;                 // موجز — التفاصيل في اللوجات\n            await db.SaveChangesAsync(ct);\n            throw;                                      // خلّي المجدول يعيد المحاولة بحسب سياسته\n        }\n\n        await db.SaveChangesAsync(ct);\n        return true;\n    }\n}\n\n// الاستخدام داخل المهمة\npublic async Task RunAsync(DateOnly day, CancellationToken ct)\n{\n    var key = $\"nightly-sales-report|{day:yyyy-MM-dd}\";\n    await runner.RunOnceAsync(key, token => sender.Send(new GenerateDailySalesReportCommand(day), token), ct);\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "title": "الـunique index اللي بيخلي الحجز فعالًا",
+      "code": "\nCREATE UNIQUE INDEX ux_job_execution_key ON job_execution_logs (execution_key);\nCREATE INDEX ix_job_executions_started ON job_execution_logs (started_at DESC);\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "المراقبة: مهمة من غير قياس = مهمة ميتة بصمت"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "قياس + health check «المهمة اشتغلت من وقت قريب»",
+      "code": "\npublic static class JobMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter =\n        new(\"Shop.Api.jobs\", version: \"1.0.0\");\n\n    public static readonly UpDownCounter<int> Running =\n        Meter.CreateUpDownCounter<int>(\"jobs.running\", description: \"المهام الجارية\");\n    public static readonly Counter<int> Completed =\n        Meter.CreateCounter<int>(\"jobs.completed\", description: \"المهام المنتهية\");\n    public static readonly Counter<int> Failed =\n        Meter.CreateCounter<int>(\"jobs.failed\", description: \"المهام الفاشلة\");\n    public static readonly Histogram<double> Duration =\n        Meter.CreateHistogram<double>(\"jobs.duration\", unit: \"s\");\n}\n\n/// <summary>\n/// فحص «المهمة اشتغلت بنجاح خلال النافذة المتوقعة» — أهم من فحص «المهمة موجودة».\n/// مهمّة بتفشل بصمت أسبوع = باج إنتاجي لا يكتشفه أحد.\n/// </summary>\npublic sealed class JobFreshnessHealthCheck(AppDbContext db) : IHealthCheck\n{\n    private static readonly Dictionary<string, TimeSpan> Expectations = new()\n    {\n        [\"sweep-abandoned-orders\"] = TimeSpan.FromMinutes(20),      // 4 أضعاف الفترة\n        [\"nightly-sales-report\"] = TimeSpan.FromHours(30),\n    };\n\n    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct)\n    {\n        var now = DateTimeOffset.UtcNow;\n        var stale = new List<string>();\n\n        foreach (var (key, window) in Expectations)\n        {\n            var last = await db.JobExecutionLogs\n                .Where(l => l.ExecutionKey.StartsWith(key) && l.Status == \"done\")\n                .OrderByDescending(l => l.CompletedAt)\n                .Select(l => l.CompletedAt)\n                .FirstOrDefaultAsync(ct);\n\n            if (last is null || now - last.Value > window) stale.Add(key);\n        }\n\n        return stale.Count == 0\n            ? HealthCheckResult.Healthy(\"كل المهام الدورية اشتغلت في نافذتها\")\n            : HealthCheckResult.Unhealthy($\"مهام متأخرة أو متوقفة: {string.Join(\", \", stale)}\");\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "أخطاء الجدولة الشائعة",
+      "md": "\n- **مهمة أطول من الفترة بدون `[DisallowConcurrentExecution]`** → تداخل وتعارضات على نفس الصفوف.\n- **ابتلاع الاستثناء داخل المهمة** → المجدول يفتكر إنها نجحت، ومفيش إعادة محاولة ولا تنبيه. سجّل وارمِ.\n- **مهمة بتشتغل على كل الصفوف بلا حدود** → قفل جداول وتأثير على الإنتاج. خد دفعات (`Take(100)`) وحلقة.\n- **Dashboard مكشوف** → أسماء مهام وبيانات وأحيانًا connection strings. خلف admin + شبكة داخلية.\n- **الاعتماد على «once» من غير مفتاح تنفيذ** → أي إعادة تشغيل/إعادة محاولة = تنفيذ مكرر (شحن مرتين، تقريرين).\n- **منطقة زمنية الخادم** → سلوك مختلف بين البيئات. حدد tz صراحة.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أختار أداة الجدولة بمعيار الدوام والرؤية وإعادة المحاولة ومنع التكرار.",
+        "أنفّذ cron job بمخزن دائم وmisfire policy ومنطقة زمنية صريحة ومنع تداخل.",
+        "أجعل التنفيذ idempotent بمفتاح تنفيذ فريد (at-least-once + معالج آمن).",
+        "أقيس المهام وأضيف health check لحداثها، وأحمي لوحة التحكم."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "«exactly-once delivery» في الجدولة — إيه الحقيقة العملية؟",
+          "options": [
+            "متاح لو استخدمت Hangfire",
+            "وهم عمليًا: التسليم at-least-once + معالج idempotent هو الحل الصحيح",
+            "متاح في Quartz",
+            "يحتاج Kafka فقط"
+          ],
+          "answer": 1,
+          "explain": "أي نظام موزع ممكن يكرر التنفيذ (timeout، إعادة محاولة، misfire، نسختين). الحماية في المعالج: مفتاح تنفيذ فريد."
+        },
+        {
+          "q": "مهمة بتاخد 7 دقائق ومجدولة كل 5 دقائق. إيه اللي لازم تعمله؟",
+          "options": [
+            "تقلل الفترة",
+            "تمنع التداخل (`DisableConcurrentExecution`/`[DisallowConcurrentExecution]`) وتعيد النظر في الفترة أو تنقلها لطابور",
+            "تزيد عدد العمال",
+            "تحذف المهمة"
+          ],
+          "answer": 1,
+          "explain": "بدون منع التداخل هيحصل تضارب على نفس البيانات. وبعدها اسأل: هل الفترة منطقية أصلًا؟"
+        },
+        {
+          "q": "إيه فايدة `WithMisfireHandlingInstructionDoNothing()`؟",
+          "options": [
+            "تسريع الجدولة",
+            "تحديد صريح للسلوك لما الموعد يفوت والخادم واقع (تجاهل بدل تنفيذ متأخر غير مقصود)",
+            "إلغاء المهمة",
+            "منع التكرار"
+          ],
+          "answer": 1,
+          "explain": "من غير سياسة misfire، بعض الإعدادات بتنفّذ كل المواعيد الفائتة مرة واحدة — كارثة لمهمة زي «إرسال فواتير»."
+        },
+        {
+          "q": "أهم health check لمهمة دورية؟",
+          "options": [
+            "إن الكلاس موجود",
+            "إن آخر تنفيذ ناجح كان داخل النافذة المتوقعة (freshness)",
+            "إن cron صحيح",
+            "إن الطابور فاضي"
+          ],
+          "answer": 1,
+          "explain": "مهمة بتفشل بصمت لأسبوع لا يكتشفها أحد غير فحص الحداثة. ده أعلى قيمة مراقبة بتكلفة بسيطة."
+        },
+        {
+          "q": "مهمة ليلية تقيلة بتأثر على زمن استجابة الـAPI. أفضل حل؟",
+          "options": [
+            "تقليل حجم الدفعة",
+            "نقلها لطابور/خادم منفصل أو K8s CronJob لعزل الموارد عن خدمة الـAPI",
+            "تشغيلها في وقت الذروة",
+            "إلغاؤها"
+          ],
+          "answer": 1,
+          "explain": "عزل الموارد قرار معماري: الـAPI محتاج latency مستقر، والمهمة محتاجة throughput. لا يتنافسوا في نفس العملية."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "cron job إنتاجي",
+          "md": "اختار أداة (Hangfire أو Quartz) ونفّذ مهمتين: واحدة كل 5 دقائق والأخرى يومية بوقت محدد بمنطقة زمنية صريحة. أضف مخزنًا دائمًا، منع تداخل، إعادة محاولة، و`ExecutionKey` idempotent.",
+          "criteria": [
+            "إعادة تشغيل التطبيق لا تفقد الجدولة (المهام محفوظة في المخزن)",
+            "تشغيل المهمة يدويًا مرتين بنفس المفتاح → تنفيذ واحد فعلي (اختبار)",
+            "لوحة التحكم محمية بدور admin ولا تعرض connection string",
+            "قياسات (duration/success/failure) منشورة",
+            "health check «freshness» يفشل لو عطّلت المهمة (جرّب)"
+          ],
+          "hint": "لو المهمة بتتنفذ مرتين عند الإقلاع: راجع سياسة الـmisfire، وتأكد إن `AddOrUpdate` بيستخدم نفس الاسم الثابت في كل تشغيل."
+        },
+        {
+          "id": "t2",
+          "title": "مهمة عبر MediatR بدل كود مكرر",
+          "md": "حوّل منطق موجود (تقرير/مزامنة) إلى command/handler واحد يستخدمه الـAPI والمجدول، بحيث المهمة بقت «توصيل» فقط. واكتب اختبارًا للـhandler بلا أي مجدول.",
+          "criteria": [
+            "لا تكرار للمنطق بين endpoint والمهمة",
+            "اختبار handler مستقل عن أداة الجدولة",
+            "المهمة بتنادي `ISender.Send` بس (أقل من 10 أسطر)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Hangfire documentation",
+          "url": "https://docs.hangfire.io/"
+        },
+        {
+          "label": "Quartz.NET documentation",
+          "url": "https://www.quartz-scheduler.net/"
+        },
+        {
+          "label": "Quartz.NET tutorials (persistent store & clustering)",
+          "url": "https://www.quartz-scheduler.net/documentation/quartz-3.x/tutorial/"
+        },
+        {
+          "label": "MediatR",
+          "url": "https://github.com/jbogard/MediatR"
+        },
+        {
+          "label": "Enterprise Integration Patterns — Idempotent Receiver",
+          "url": "https://www.enterpriseintegrationpatterns.com/patterns/messaging/IdempotentReceiver.html"
+        }
+      ]
+    }
+  ]
+}

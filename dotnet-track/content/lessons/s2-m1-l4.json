@@ -1,0 +1,321 @@
+{
+  "id": "s2-m1-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nكل طلب في ASP.NET Core بيمرّ في **سلسلة middleware** قبل ما يوصل للـendpoint وبعدها في طريق الرجوع.\nفهم السلسلة دي مش «نظرية» — ده اللي بيحدد: أنهي middleware يقدر يمسك الاستثناء، مين بيضيف رؤوس،\nومين بيشوف الهوية. ومين بيشتغل **على كل طلب** (فالغلط هنا بيتضاعف في كل استجابة).\n\nالدرس ده: تكتب middleware مخصص بأداء مقبول، تفهم الترتيب وأثره على الأخطاء، وتعرف إمتى تستخدم\nEndpoint Filter بدل الـmiddleware.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Pipeline",
+          "def": "سلسلة middleware: كل واحدة تنادي `next()` للتي بعدها، وترجع الاستجابة في طريق العودة."
+        },
+        {
+          "term": "Terminal middleware",
+          "def": "آخر نقطة في السلسلة (الـendpoints) — ما بتناديش `next`."
+        },
+        {
+          "term": "Conventional middleware",
+          "def": "كلاس بـconstructor ياخد `RequestDelegate next` — **يُنشأ مرة واحدة** (singleton)."
+        },
+        {
+          "term": "Factory-based (`IMiddleware`)",
+          "def": "يُحلّ من DI **لكل طلب** — يقبل خدمات scoped، بتكلفة حلّ بسيطة."
+        },
+        {
+          "term": "`RequestDelegate`",
+          "def": "`Func<HttpContext, Task>` — توقيع الـpipeline كله."
+        },
+        {
+          "term": "`Response.HasStarted`",
+          "def": "لما تبدأ الاستجابة في الإرسال، ما تقدرش تغيّر الحالة/الرؤوس ولا تتعامل مع الخطأ."
+        },
+        {
+          "term": "`Response.OnStarting`",
+          "def": "callback قبل إرسال أول بايت — المكان الآمن لإضافة رؤوس."
+        },
+        {
+          "term": "`EnableBuffering`",
+          "def": "يخلي جسم الطلب/الاستجابة قابلًا لإعادة القراءة — بتكلفة ذاكرة وأداء."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الترتيب: ده مش تفصيلة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Program.cs",
+      "title": "الترتيب الموثّق — وأي تبديل له أثر ملموس",
+      "code": "\nvar app = builder.Build();\n\n// 1) معالج الأخطاء أولًا: عشان يقدر يمسك استثناءات كل ما بعده\napp.UseExceptionHandler(string.Empty);          // + IExceptionHandler المسجّل في DI\napp.UseProblemDetails();\n\n// 2) أمان النقل (إنتاج فقط)\nif (!app.Environment.IsDevelopment())\n{\n    app.UseHsts();\n    app.UseHttpsRedirection();\n}\n\n// 3) رؤوس الأمان المخصصة (قبل أي استجابة ممكن تخرج)\napp.UseSecurityHeaders();\n\n// 4) ملفات ثابتة (لو فيه) — قبل الـrouting عشان ما تدفعش تكلفة التوجيه\napp.UseStaticFiles();\n\n// 5) correlation id والتسجيل — بعد رؤوس الأمان، وقبل المصادقة عشان تسجّل الهوية كمان\napp.UseCorrelationId();\napp.UseSerilogRequestLogging();\n\n// 6) التوجيه (ضمني في Minimal APIs، صريح مع Controllers)\napp.UseRouting();\n\n// 7) CORS بعد الـrouting (يعرف المسار) وقبل المصادقة (يرفض الطلبات غير المسموحة مبكرًا)\napp.UseCors(\"spa\");\n\n// 8) المصادقة ثم التفويض — بالترتيب ده دائمًا\napp.UseAuthentication();\napp.UseAuthorization();\n\n// 9) حدود الاستهلاك — بعد المصادقة عشان تقدر تقسّم بحسب المستخدم\napp.UseRateLimiter();\n\n// 10) الكاش عند الخروج — بعد التفويض (لا تخزّن استجابة مستخدم لآخر)\napp.UseOutputCache();\n\n// 11) الـendpoints (terminal)\napp.MapOrdersApi();\napp.MapCatalogApi();\napp.MapHealthEndpoints();\n\napp.Run();\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "لو حطيت…",
+        "الأثر"
+      ],
+      "rows": [
+        [
+          "`UseExceptionHandler` بعد `UseRouting`",
+          "أخطاء التوجيه/الـmiddleware المبكرة ما بتتلحقش → استجابة خام أو اتصال مقطوع"
+        ],
+        [
+          "`UseAuthorization` قبل `UseAuthentication`",
+          "كل الطلبات مجهولة → 401/403 غلط"
+        ],
+        [
+          "`UseCors` قبل `UseRouting`",
+          "الـpreflight ممكن ما يتعرفش صح، والسياسات المعتمدة على المسار تفشل"
+        ],
+        [
+          "`UseRateLimiter` قبل `UseAuthentication`",
+          "ما تعرفش المستخدم → تقسيم بـIP فقط (وورا الـproxy كل المستخدمين واحد)"
+        ],
+        [
+          "`UseOutputCache` قبل `UseAuthorization`",
+          "خطر تسريب: تخزين استجابة مستخدم وتقديمها لآخر"
+        ],
+        [
+          "`UseHttpsRedirection` قبل `UseExceptionHandler`",
+          "أخطاء التحويل ما بتتلحقش"
+        ],
+        [
+          "تسجيل جسم الطلب في middleware مبكر",
+          "تكلفة `EnableBuffering` على **كل** طلب، وتسريب بيانات حساسة في اللوجات"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "middleware مخصص: مثالان حقيقيان"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Middleware/CorrelationIdMiddleware.cs",
+      "title": "Conventional (singleton) — الأسرع، وبلا خدمات scoped",
+      "code": "\n/// <summary>\n/// ربط الطلب بسياق واحد عبر الخدمات والـlogs والعميل.\n/// ★ conventional middleware: يُنشأ مرة واحدة → لا تحقن فيه DbContext أو أي scoped.\n/// </summary>\npublic sealed class CorrelationIdMiddleware(RequestDelegate next, ILogger<CorrelationIdMiddleware> log)\n{\n    private const string Header = \"X-Correlation-Id\";\n    private static readonly string[] AcceptedPrefixes = [\"0HM\", \"00-\", \"|\"];   // أمثلة لتنقية المدخل\n\n    public async Task InvokeAsync(HttpContext context)\n    {\n        var correlationId = GetOrGenerate(context);\n\n        // ✓ أضف الرأس للاستجابة قبل ما تبدأ (بعد البدء مستحيل)\n        context.Response.OnStarting(() =>\n        {\n            context.Response.Headers[Header] = correlationId;\n            return Task.CompletedTask;\n        });\n\n        // ✓ وسّع نطاق اللوجات: أي log داخل هذا الطلب يحمل المعرّف تلقائيًا\n        using (Serilog.Context.LogContext.PushProperty(\"CorrelationId\", correlationId))\n        {\n            await next(context);\n        }\n    }\n\n    private string GetOrGenerate(HttpContext context)\n    {\n        var incoming = context.Request.Headers[Header].FirstOrDefault();\n\n        // لا تثق في رأس من العميل بلا تنقية: طول معقول + أحرف آمنة فقط\n        if (!string.IsNullOrWhiteSpace(incoming)\n            && incoming.Length is >= 8 and <= 64\n            && incoming.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '.'))\n            return incoming;\n\n        if (!string.IsNullOrWhiteSpace(incoming))\n            log.LogWarning(\"rejected malformed correlation id header\");\n\n        return context.TraceIdentifier;\n    }\n}\n\npublic static class CorrelationIdExtensions\n{\n    public static IApplicationBuilder UseCorrelationId(this IApplicationBuilder app) =>\n        app.UseMiddleware<CorrelationIdMiddleware>();\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Middleware/RequestMetricsMiddleware.cs",
+      "title": "قياس زمن الطلب + تسجيل الاستثناءات المتأخرة",
+      "code": "\nusing System.Diagnostics;\n\npublic static class RequestMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Api\", \"1.0.0\");\n\n    public static readonly Histogram<double> Duration =\n        Meter.CreateHistogram<double>(\"http.server.request.duration\", unit: \"s\",\n            description: \"زمن معالجة الطلب\");\n    public static readonly Counter<long> Rejections =\n        Meter.CreateCounter<long>(\"http.server.rejections\", description: \"4xx/5xx counts\");\n}\n\npublic sealed class RequestMetricsMiddleware(RequestDelegate next)\n{\n    public async Task InvokeAsync(HttpContext context)\n    {\n        // ✓ Activity موجودة أصلًا من ASP.NET Core — نثريها بدل إنشاء واحدة جديدة\n        var activity = Activity.Current;\n        var started = Stopwatch.GetTimestamp();\n\n        try\n        {\n            await next(context);\n        }\n        finally\n        {\n            var elapsed = Stopwatch.GetElapsedTime(started);\n            var tags = new TagList\n            {\n                { \"http.request.method\", context.Request.Method },\n                { \"url.path\", context.Request.Path.Value },\n                { \"http.response.status_code\", context.Response.StatusCode },\n            };\n\n            RequestMetrics.Duration.Record(elapsed.TotalSeconds, tags);\n\n            if (context.Response.StatusCode >= 400)\n                RequestMetrics.Rejections.Add(1, tags);\n\n            if (activity is not null && elapsed.TotalSeconds > 1)\n                activity.SetTag(\"slow_request\", true);      // يظهر في التتبع الموزع\n        }\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Middleware/TenantMiddleware.cs",
+      "title": "IMiddleware (factory-based) — لما تحتاج خدمة scoped",
+      "code": "\n/// <summary>\n/// IMiddleware يُحلّ من DI لكل طلب → تقدر تحقن خدمات scoped.\n/// التكلفة: حلّ اعتمادية لكل طلب (صغيرة، لكنها ليست صفرًا).\n/// </summary>\npublic sealed class TenantMiddleware(ITenantStore tenants) : IMiddleware\n{\n    public async Task InvokeAsync(HttpContext context, RequestDelegate next)\n    {\n        var host = context.Request.Host.Host;\n        var tenant = await tenants.ResolveAsync(host, context.RequestAborted);\n\n        if (tenant is null)\n        {\n            // ✓ ارفض مبكرًا — لا تكمل السلسلة بحالة غير معروفة\n            context.Response.StatusCode = StatusCodes.Status404NotFound;\n            await context.Response.WriteAsJsonAsync(new ProblemDetails\n            {\n                Status = 404, Title = \"نطاق غير معروف\",\n                Extensions = { [\"traceId\"] = context.TraceIdentifier },\n            }, context.RequestAborted);\n            return;\n        }\n\n        context.Items[\"tenant\"] = tenant;\n        using (Serilog.Context.LogContext.PushProperty(\"TenantId\", tenant.Id))\n            await next(context);\n    }\n}\n\n// التسجيل: النوع نفسه يُسجَّل في DI (IMiddleware يُحلّ من الحاوية)\nbuilder.Services.AddScoped<TenantMiddleware>();\napp.UseMiddleware<TenantMiddleware>();\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أداء الـmiddleware: كل سطر بيتنفذ على كل طلب",
+      "md": "\n- **conventional = singleton**: لا تحقن scoped (هترمي أو تستخدم كائن مغلق). لو محتاج scoped → `IMiddleware` أو `CreateAsyncScope`.\n- **تجنّب التخصيص في المسار الساخن**: `string.Concat` لكل طلب، `ToList()`، closures، و`new JsonSerializerOptions` (ده الأخير كارثة — أنشئه مرة واحدة).\n- **لا تقرأ جسم الطلب** إلا لو لازم فعلًا: `EnableBuffering()` = نسخ للذاكرة (وللملف لو كبير).\n- **لا تعمل sync-over-async** (`.Result`/`.Wait()`) → تجويع thread pool.\n- **اخرج مبكرًا**: لو Middleware يخص مسارًا معينًا، افحص `context.Request.Path.StartsWithSegments(...)` أول سطر و`return next(context)` فورًا.\n- **`Response.OnStarting` مش داخل الـtry/finally بعد `next`**: بعد بدء الاستجابة تغيير الرؤوس بيرمي.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الأخطاء: مين بيمسكها فعلًا؟"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "القاعدة: الماسك لازم يكون *قبل* مصدر الخطأ في السلسلة",
+      "code": "\nطلب  ↓\n ┌─ UseExceptionHandler        ← يمسك أي استثناء من كل ما تحته\n │   UseSecurityHeaders\n │   UseCorrelationId\n │   UseRouting\n │   UseAuthentication          ← استثناء هنا: يُمسَك (ExceptionHandler فوقه)\n │   UseAuthorization\n │   Endpoint filters           ← استثناء هنا: يُمسَك أيضًا\n │   Endpoint handler           ← استثناء هنا: IExceptionHandler يتولاه\n └─ الاستجابة ↑ (تُبنى في طريق العودة — أول من يضيف رأسًا هو الأقرب للعميل)\n\n★ لكن: لو الاستجابة **بدأت** (HasStarted = true) — مثلًا داخل streaming أو بعد كتابة جسم —\n  لا يمكن تغيير الحالة ولا تحويل الخطأ لـproblem+json. الحل: افشل قبل الكتابة، أو استخدم\n  قناة/طابور للأعمال الطويلة وأعد 202 مع مسار تقدم (درس SSE).\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الأداة",
+        "النطاق",
+        "أنسب استخدام"
+      ],
+      "rows": [
+        [
+          "`IExceptionHandler`",
+          "استثناءات غير معالجة في كل الـpipeline",
+          "ترجمة استثناءات الـdomain لحالات HTTP + problem+json"
+        ],
+        [
+          "`UseExceptionHandler` + صفحة/مسار",
+          "نفسه، بصيغة أقدم",
+          "تطبيقات MVC/HTML أو معالجة مخصصة"
+        ],
+        [
+          "Endpoint filter `try/catch`",
+          "endpoint أو مجموعة واحدة",
+          "أخطاء متوقعة في مسار معين (validation, conflict)"
+        ],
+        [
+          "Middleware مخصص",
+          "كل الطلبات أو مسارات مختارة",
+          "سلوك غير مرتبط بالاستثناء (correlation, metrics, tenant)"
+        ],
+        [
+          "`Results.Problem`/TypedResults",
+          "داخل الـhandler",
+          "الحالات المتوقعة — الأفضل: لا ترمي استثناء أصلًا"
+        ],
+        [
+          "Polly / resilience",
+          "حول استدعاءات خارجية",
+          "timeout/retry/circuit breaker للتبعيات"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Endpoint Filters: التركيب والترتيب"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Filters/IdempotencyFilter.cs",
+      "title": "Filter حقيقي القيمة: منع التنفيذ المزدوج للكتابات",
+      "code": "\n/// <summary>\n/// العميل يبعت `Idempotency-Key`؛ أول تنفيذ يُخزَّن ويُعاد نفس الرد للمفتاح نفسه.\n/// مهم جدًا لعمليات الدفع/الإنشاء عند إعادة المحاولة من العميل أو الشبكة.\n/// </summary>\npublic sealed class IdempotencyFilter(IIdempotencyStore store, TimeProvider time) : IEndpointFilter\n{\n    private static readonly TimeSpan Ttl = TimeSpan.FromHours(24);\n\n    public async ValueTask<object?> InvokeAsync(\n        EndpointFilterInvocationContext ctx, EndpointFilterDelegate next)\n    {\n        var http = ctx.HttpContext;\n        var key = http.Request.Headers[\"Idempotency-Key\"].FirstOrDefault();\n\n        // بلا مفتاح: نفّذ عادي (اجعل المفتاح إلزاميًا في endpoints محددة فقط)\n        if (string.IsNullOrWhiteSpace(key) || key.Length > 128)\n            return await next(ctx);\n\n        var route = $\"{http.Request.Method}:{http.Request.Path}\";\n        var scopeKey = $\"{route}:{key}\";\n\n        // ✓ لو اتنفذ قبل كده: أعد نفس الاستجابة بدون تنفيذ المنطق مرة تانية\n        if (await store.TryGetAsync(scopeKey, http.RequestAborted) is { } cached)\n        {\n            http.Response.Headers[\"Idempotency-Replayed\"] = \"true\";\n            return cached.Result;\n        }\n\n        // حجز المفتاح: لو طلب متوازٍ بنفس المفتاح → 409 بدل تنفيذين\n        if (!await store.TryReserveAsync(scopeKey, time.GetUtcNow().Add(Ttl), http.RequestAborted))\n            return TypedResults.Conflict(new ProblemDetails\n            {\n                Status = 409, Title = \"طلب مماثل قيد المعالجة\",\n                Detail = \"أعد المحاولة بعد لحظات بنفس Idempotency-Key.\",\n            });\n\n        var result = await next(ctx);\n\n        // خزّن النتيجة للطلبات اللاحقة (2xx فقط — لا تخزن فشلًا مؤقتًا)\n        if (result is IStatusCodeHttpResult { StatusCode: >= 200 and < 300 } ok)\n            await store.SaveAsync(scopeKey, ok, time.GetUtcNow().Add(Ttl), http.RequestAborted);\n        else\n            await store.ReleaseAsync(scopeKey, http.RequestAborted);\n\n        return result;\n    }\n}\n\n// التركيب: الترتيب = ترتيب الإضافة (الأول هو الخارجي)\nvar group = app.MapGroup(\"/api/orders\")\n    .AddEndpointFilter<TimingEndpointFilter>()          // 1) خارجي: يقيس الكل\n    .AddEndpointFilter<ValidationEndpointFilter<CreateOrderRequest>>()   // 2) يرفض مبكرًا\n    .AddEndpointFilter<IdempotencyFilter>();            // 3) داخل: ينفذ أو يعيد الرد\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قاعدة القرار: filter ولا middleware؟",
+      "md": "\nاسأل: **«هل السلوك ده يخص endpoint معين/مجموعة، ولا كل الطلبات؟»**\n- يخص endpoint (validation، idempotency، authorization إضافي، تحويل نتيجة) → **Endpoint Filter** (أرخص، أوضح، قابل للتركيب).\n- يخص كل الطلبات (correlation id، رؤوس أمان، metrics، tenant) → **Middleware**.\n- يخص استثناءات من أي مكان → **`IExceptionHandler`**.\n\nوفلتر واحد بيعمل حاجة واحدة. ثلاثة فلاتر صغيرة أوضح من فلتر واحد فيه 3 مسؤوليات —\nلأن ترتيبهم هو اللي بيحدد السلوك.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أرتب الـpipeline عن فهم وأعرف أثر كل تبديل على الأخطاء والأمان.",
+        "أكتب conventional middleware (singleton) و`IMiddleware` (scoped) وأختار الصح بحسب الحاجة.",
+        "أتجنب أخطاء الأداء: بلا قراءة جسم الطلب، بلا تخصيص في المسار الساخن، وخروج مبكر للمسارات غير المعنية.",
+        "أستخدم Endpoint Filters للسلوك الخاص بالـendpoints وأركّبها بترتيب مقصود."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "conventional middleware بياخد `AppDbContext` في الـconstructor. إيه المشكلة؟",
+          "options": [
+            "بطء",
+            "الـmiddleware singleton والـDbContext scoped → استثناء عند الإقلاع أو سياق مغلق/مشترك",
+            "لا مشكلة",
+            "يفقد الترتيب"
+          ],
+          "answer": 1,
+          "explain": "الحل: `IMiddleware` (يُحلّ لكل طلب) أو `IServiceScopeFactory` و`CreateAsyncScope()` داخل `InvokeAsync`."
+        },
+        {
+          "q": "استثناء حصل بعد ما الاستجابة بدأت (`HasStarted = true`). إيه اللي هيحصل؟",
+          "options": [
+            "`IExceptionHandler` بيحوّله لـproblem+json عادي",
+            "ما يمكنش تغيير الحالة/الرؤوس؛ الاتصال بيتقطع أو بيكمل بجزء ناقص — لذا افشل قبل الكتابة أو استخدم 202 + مسار تقدّم",
+            "يُسجَّل فقط",
+            "يعيد المحاولة"
+          ],
+          "answer": 1,
+          "explain": "ده سبب مهم لتصميم streaming/exports كـ202 Accepted + SSE بدل محاولة إرسال كل شيء في استجابة واحدة."
+        },
+        {
+          "q": "`UseRateLimiter` قبل `UseAuthentication` — إيه الأثر؟",
+          "options": [
+            "لا أثر",
+            "ما تعرفش هوية المستخدم، فالتقسيم يبقى بـIP فقط — وورا proxy كل العملاء يبدون IP واحد",
+            "يرفض كل الطلبات",
+            "يبطئ المصادقة"
+          ],
+          "answer": 1,
+          "explain": "الحد العادل يحتاج هوية. الترتيب الصحيح: مصادقة → تفويض → rate limiting → output cache → endpoints."
+        },
+        {
+          "q": "ليه `new JsonSerializerOptions(...)` داخل middleware خطأ أداء؟",
+          "options": [
+            "يرمي استثناء",
+            "بناء cache التسلسل في كل طلب (تخصيص + إعادة حساب metadata) — أنشئه مرة واحدة static",
+            "يغيّر الترميز",
+            "لا خطأ"
+          ],
+          "answer": 1,
+          "explain": "نفس القاعدة لأي كائن ثقيل: `RegexOptions.Compiled` regex، caches، pools. الـmiddleware بيتنفذ لكل طلب."
+        },
+        {
+          "q": "idempotency + validation على نفس المجموعة — أنهي ترتيب صح؟",
+          "options": [
+            "idempotency أولًا ثم validation",
+            "validation أولًا (يرفض الطلبات الباطلة بلا حجز مفتاح)، ثم idempotency، ثم التنفيذ",
+            "لا فرق",
+            "لا يُركّبان معًا"
+          ],
+          "answer": 1,
+          "explain": "لو idempotency بره: كل طلب باطل هيحجز مفتاحًا ويلوث المخزن. رتّب الفلاتر بحيث الأرخص والأكثر رفضًا في الخارج."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "correlation id من الطرف للطرف",
+          "md": "نفّذ `CorrelationIdMiddleware` بتنقية الرأس، وأضفه لكل الاستجابات ولـproblem+json (`traceId`/`correlationId`) وللسجلات (Serilog `LogContext`). تأكّد إنه بيظهر في اختبارات الـintegration من المرحلة 1.",
+          "criteria": [
+            "كل استجابة فيها `X-Correlation-Id` (حتى 404 و500)",
+            "رأس وارد صالح (16 حرفًا مثلًا) بيُعاد كما هو، وتالف بيُستبدل (اختباران)",
+            "أي سطر log داخل الطلب يحمل المعرّف",
+            "زمن الوسيط < 1ms في المسار الساخن (قِس بـStopwatch أو من الـmetrics)"
+          ],
+          "hint": "لو الرأس مش بيظهر في الاستجابات: استخدم `Response.OnStarting` بدل تعيينه بعد `next(context)` — بعد بدء الاستجابة التعديل بيرمي."
+        },
+        {
+          "id": "t2",
+          "title": "Idempotency للكتابات",
+          "md": "أضف `IdempotencyFilter` على `POST /api/orders` بمخزن في Redis أو جدول في القاعدة، بحيث إعادة نفس المفتاح ترجع نفس الاستجابة بلا تنفيذ ثانٍ، وطلبات متوازية بنفس المفتاح ترجع 409.",
+          "criteria": [
+            "طلب مكرر بنفس المفتاح → نفس الاستجابة + رأس `Idempotency-Replayed` (اختبار)",
+            "طلبان متوازيان بنفس المفتاح → واحد 201 والآخر 409 أو إعادة (اختبار)",
+            "فشل التنفيذ (500/400) لا يخزَّن كمفتاح مستهلَك",
+            "TTL واضح ومخزّن (مش في الذاكرة فقط) أو قرار موثق ليه في الذاكرة كافٍ"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "ASP.NET Core middleware",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/middleware/"
+        },
+        {
+          "label": "Factory-based middleware (IMiddleware)",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/middleware/extensibility"
+        },
+        {
+          "label": "Endpoint filters",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis/filters"
+        },
+        {
+          "label": "Error handling & IExceptionHandler",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/error-handling"
+        },
+        {
+          "label": "High-performance logging with LoggerMessage",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/high-performance-logging"
+        }
+      ]
+    }
+  ]
+}

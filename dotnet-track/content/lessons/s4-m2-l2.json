@@ -1,0 +1,359 @@
+{
+  "id": "s4-m2-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nCQRS كلمة بتتقال كتير وبتُفهم غلط في الغالب: **مش معناها Event Sourcing**، ومش معناها إنك تعمل\n40 نوع DTO لكل جدول. معناها ببساطة: **نموذج للقراءة مختلف عن نموذج للكتابة**، لأن المتطلبات مختلفة فعلًا.\n\nوالأهم: CQRS **مستويات**، مش زر تشغيل/إيقاف. أغلب المشاريع لازم تبدأ بالمستوى الأول\n(فصل الاستعلامات عن الأوامر) وتقف هناك. المستوى التالت (read models منفصلة + أحداث) بيحتاج سببًا مقاسًا.\n\nوهنبني هنا المستوى الأول والتاني بـMediatR: commands/queries/handlers + **pipelines** (validation، logging،\nمعاملات، أداء، idempotency) — وهي القيمة الحقيقية لـMediatR، مش الـdispatch نفسه.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "CQS",
+          "def": "مبدأ أصغر وأقدم: الدالة إما تعدّل أو ترجع بيانات — لا الاثنين. CQRS هو تطبيقه على مستوى المعمارية."
+        },
+        {
+          "term": "Command",
+          "def": "نية تغيير حالة (`PlaceOrder`) — لا ترجع بيانات عرض، وترجع نجاح/فشل أو معرّف."
+        },
+        {
+          "term": "Query",
+          "def": "طلب بيانات (`GetOrderDetails`) — لا يعدّل شيئًا، ويرجع DTO مُصمَّمًا للعرض."
+        },
+        {
+          "term": "Read Model / Projection",
+          "def": "بنية بيانات مُحسَّنة للقراءة (جدول منسوخ، view، مستند) تُبنى من أحداث/استعلامات."
+        },
+        {
+          "term": "Mediator",
+          "def": "وسيط يفصل المُرسِل عن المعالج: `ISender.Send(request)`. بيفتح الباب لـpipelines مشتركة."
+        },
+        {
+          "term": "Pipeline Behavior",
+          "def": "وسيط حول كل handler: validation، logging، معاملات، قياس أداء، idempotency — مكانه الوحيد بدل تكراره."
+        },
+        {
+          "term": "Notification",
+          "def": "حدث بلا متلقٍّ محدد (`INotification`) — يُبث لكل المعالجات المسجلة (أساس أحداث المجال محليًا)."
+        },
+        {
+          "term": "Eventual Consistency",
+          "def": "لو الـread model بيتبنى من أحداث، فهناك نافذة عدم اتساق — لازم تكون مقاسة ومعلنة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) المستويات الأربعة (اختار أدنى مستوى يكفيك)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المستوى",
+        "الوصف",
+        "التكلفة",
+        "الفائدة",
+        "إمتى"
+      ],
+      "rows": [
+        [
+          "**0** — نفس النموذج",
+          "Entity واحدة للقراءة والكتابة (CRUD)",
+          "الأقل",
+          "بسيطة، لكن الاستعلامات بتتقيد بـEF والعلاقات",
+          "أدوات صغيرة/لوحات إدارة"
+        ],
+        [
+          "**1** — فصل الأنواع (الأشهر)",
+          "Commands وQueries منفصلة، كل واحد بـDTO خاصه، نفس قاعدة البيانات",
+          "منخفضة",
+          "★ وضوح، validation مختلف لكل اتجاه، قراءة بلا قيود الكتابة",
+          "**ابدأ هنا** — يكفي أغلب المشاريع"
+        ],
+        [
+          "**2** — Read models منفصلة",
+          "جداول/views منسوخة للقراءة (نفس القاعدة أو Redis/OpenSearch)",
+          "متوسطة",
+          "استعلامات معقدة/سريعة بلا joins، وفصل حمل القراءة",
+          "لو القراءة 20× الكتابة وفيها تجميعات ثقيلة"
+        ],
+        [
+          "**3** — Event Sourcing",
+          "الأحداث مصدر الحقيقة، والحالة تُبنى منها",
+          "عالية جدًا",
+          "تدقيق كامل، إعادة بناء projections، time travel",
+          "مجال مالي/حجوزات بتدقيق صارم (درس 4.2.4)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "خرافات CQRS اللي بتكلف فرق كتير",
+      "md": "\n- **«CQRS يتطلب Event Sourcing»** → غلط. المستوى 1 و2 بلا أي event sourcing.\n- **«CQRS يعني قاعدتين بيانات»** → نادرًا لازم. أغلب الوقت نفس Postgres بجداول/views مختلفة.\n- **«كل عملية تحتاج Command + Query + 4 DTOs»** → للـCRUD البسيط ده ضجيج. استخدمه لما فيه فرق حقيقي بين نموذجي القراءة والكتابة.\n- **«MediatR إجباري لـCQRS»** → الـpattern مستقل. MediatR بيضيف قيمة حقيقية في الـ**pipelines**، مش في الـdispatch.\n- **«القراءة من projection أفضل دائمًا»** → لو الاستعلام بسيط، القراءة المباشرة من جداول الكتابة أبسط وأدق (بلا نافذة اتساق).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) الأمر ومسار الكتابة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Application/Orders/PlaceOrder.cs",
+      "title": "Command + Handler + Validator (مسار الكتابة عبر الـDomain)",
+      "code": "\nusing Shop.Domain.Orders;\n\nnamespace Shop.Application.Orders;\n\npublic sealed record PlaceOrderCommand(\n    Guid CustomerId, string CustomerEmail, ShippingAddressInput Address, IReadOnlyList<OrderLineInput> Lines)\n    : IRequest<PlaceOrderResult>;\n\npublic sealed record ShippingAddressInput(string Line1, string City, string Country, string? PostalCode);\npublic sealed record OrderLineInput(Guid ProductId, string Name, int Quantity, decimal UnitPrice, string Currency);\npublic sealed record PlaceOrderResult(Guid OrderId, string Status, decimal Total, string Currency);\n\npublic sealed class PlaceOrderValidator : AbstractValidator<PlaceOrderCommand>\n{\n    public PlaceOrderValidator()\n    {\n        RuleFor(x => x.CustomerId).NotEmpty();\n        RuleFor(x => x.CustomerEmail).NotEmpty().EmailAddress().MaximumLength(320);\n        RuleFor(x => x.Address).NotNull();\n        RuleFor(x => x.Address.Country).Length(2);\n        RuleFor(x => x.Lines).NotEmpty().Must(l => l.Count <= Order.MaxLines);\n        RuleForEach(x => x.Lines).ChildRules(line =>\n        {\n            line.RuleFor(l => l.Quantity).InclusiveBetween(1, OrderLine.MaxQuantity);\n            line.RuleFor(l => l.UnitPrice).GreaterThanOrEqualTo(0);\n            line.RuleFor(l => l.Currency).Length(3);\n        });\n    }\n}\n\npublic sealed class PlaceOrderHandler(\n    IOrderRepository orders, IUnitOfWork uow, IClock clock, ILogger<PlaceOrderHandler> log)\n    : IRequestHandler<PlaceOrderCommand, PlaceOrderResult>\n{\n    public async Task<PlaceOrderResult> Handle(PlaceOrderCommand cmd, CancellationToken ct)\n    {\n        // ① تحويل المدخلات لأنواع المجال (VOs تتحقق تاني — دفاع مزدوج مقصود)\n        var address = new Address(cmd.Address.Line1, cmd.Address.City, cmd.Address.Country, cmd.Address.PostalCode);\n        var lines = cmd.Lines.Select(l => (l.ProductId, l.Name, l.Quantity, new Money(l.UnitPrice, l.Currency)));\n\n        // ② المنطق في الـDomain (factory + invariants)\n        var order = Order.Place(cmd.CustomerId, new Email(cmd.CustomerEmail), address, lines, clock);\n\n        // ③ الحفظ + كتابة الأحداث في outbox ذرّيًا (درس 4.2.3)\n        orders.Add(order);\n        await uow.SaveChangesAsync(ct);\n\n        log.LogInformation(\"order placed {OrderId} total={Total}\", order.Id, order.Total);\n        return new PlaceOrderResult(order.Id, order.Status.ToString(), order.Total.Amount, order.Total.Currency);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) الاستعلام ومسار القراءة (بلا قيود الكتابة)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Application/Orders/GetOrderDetails.cs",
+      "title": "Query بيرجع DTO مصمم للعرض — عبر Dapper لا EF",
+      "code": "\nnamespace Shop.Application.Orders;\n\n// ★ الاستعلام يرجع **شكل الشاشة**، لا شكل الـDomain\npublic sealed record OrderDetailsResponse(\n    Guid Id, string Reference, string CustomerName, string CustomerEmail, string Status,\n    string StatusLabel, decimal Total, string Currency, string ShippingSummary,\n    DateTimeOffset PlacedAt, IReadOnlyList<OrderLineDto> Lines, IReadOnlyList<OrderTimelineEntry> Timeline);\n\npublic sealed record OrderLineDto(Guid ProductId, string Name, int Quantity, decimal UnitPrice, decimal Subtotal);\npublic sealed record OrderTimelineEntry(string Event, DateTimeOffset At, string? Detail);\n\npublic sealed record GetOrderDetailsQuery(Guid OrderId) : IRequest<OrderDetailsResponse?>;\n\n/// <summary>\n/// مسار القراءة **لا يمر بالـDomain ولا بـEF tracking**: SQL واحد مُصمَّم للشاشة.\n/// ده المعنى العملي لـCQRS: الكتابة تحمي القواعد، والقراءة تُحسَّن للعرض والأداء.\n/// </summary>\npublic sealed class GetOrderDetailsHandler(IOrderReadModel readModel)\n    : IRequestHandler<GetOrderDetailsQuery, OrderDetailsResponse?>\n{\n    public Task<OrderDetailsResponse?> Handle(GetOrderDetailsQuery q, CancellationToken ct) =>\n        readModel.GetDetailsAsync(q.OrderId, ct);\n}\n\n// ── المنفذ في Application، والتنفيذ في Infrastructure (Dapper، درس 3.1.3) ──\npublic interface IOrderReadModel\n{\n    Task<OrderDetailsResponse?> GetDetailsAsync(Guid orderId, CancellationToken ct);\n    Task<PagedResult<OrderSummaryResponse>> ListAsync(OrderListCriteria criteria, CancellationToken ct);\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Infrastructure/ReadModels/OrderReadModel.cs",
+      "title": "التنفيذ: SQL واحد بـQueryMultiple بدل 5 استعلامات",
+      "code": "\n/// <summary>ترجمة الحالة لنص معروض — في Infrastructure لأن العرض قرار تسليم.</summary>\ninternal static class StatusLabels\n{\n    public static string Of(string status) => status switch\n    {\n        \"Placed\"    => \"تم التسجيل\",\n        \"Shipped\"   => \"قيد الشحن\",\n        \"Delivered\" => \"تم التسليم\",\n        \"Cancelled\" => \"ملغى\",\n        _           => status,\n    };\n}\n\npublic sealed class OrderReadModel(AppDbContext db) : IOrderReadModel\n{\n    private const string DetailsSql = \"\"\"\n        SELECT o.id, o.reference, c.name AS customer_name, o.customer_email, o.status,\n               o.total_amount, o.total_currency, o.created_at,\n               a.line1 || ', ' || a.city || ', ' || a.country AS shipping_summary\n        FROM orders.orders o\n        JOIN catalog.customers c ON c.id = o.customer_id\n        LEFT JOIN LATERAL (SELECT * FROM orders.order_addresses WHERE order_id = o.id AND kind = 'shipping') a ON TRUE\n        WHERE o.id = @OrderId;\n\n        SELECT product_id, name, quantity, unit_price_amount AS unit_price,\n               quantity * unit_price_amount AS subtotal\n        FROM orders.order_lines WHERE order_id = @OrderId ORDER BY name;\n\n        SELECT event_type AS event, occurred_at AS at, detail\n        FROM orders.order_timeline WHERE order_id = @OrderId ORDER BY occurred_at DESC LIMIT 20;\n        \"\"\";\n\n    public async Task<OrderDetailsResponse?> GetDetailsAsync(Guid orderId, CancellationToken ct)\n    {\n        var connection = db.Database.GetDbConnection();          // ★ مشاركة الاتصال (درس 3.1.3)\n        if (connection.State != ConnectionState.Open) await connection.OpenAsync(ct);\n\n        using var multi = await connection.QueryMultipleAsync(\n            new CommandDefinition(DetailsSql, new { OrderId = orderId },\n                commandTimeout: 5, cancellationToken: ct));\n\n        var head = await multi.ReadSingleOrDefaultAsync<OrderHeadRowAsync>();\n        if (head is null) return null;\n\n        var lines = (await multi.ReadAsync<OrderLineRow>()).ToList();\n        var timeline = (await multi.ReadAsync<OrderTimelineRow>()).ToList();\n\n        return new OrderDetailsResponse(\n            head.Id, head.Reference, head.CustomerName, head.CustomerEmail,\n            head.Status, StatusLabels.Of(head.Status), head.TotalAmount, head.TotalCurrency,\n            head.ShippingSummary ?? \"—\", head.CreatedAt,\n            lines.Select(l => new OrderLineDto(l.ProductId, l.Name, l.Quantity, l.UnitPrice, l.Subtotal)).ToList(),\n            timeline.Select(t => new OrderTimelineEntry(t.Event, t.At, t.Detail)).ToList());\n    }\n\n    private sealed record OrderHeadRowAsync(Guid Id, string Reference, string CustomerName, string CustomerEmail,\n        string Status, decimal TotalAmount, string TotalCurrency, DateTimeOffset CreatedAt, string? ShippingSummary);\n    private sealed record OrderLineRow(Guid ProductId, string Name, int Quantity, decimal UnitPrice, decimal Subtotal);\n    private sealed record OrderTimelineRow(string Event, DateTimeOffset At, string? Detail);\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) القيمة الحقيقية لـMediatR: الـPipelines"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Application/Common/Behaviors.cs",
+      "title": "5 behaviors: validation، logging، أداء، معاملة، idempotency",
+      "code": "\n// ═══ ① Validation: مكان واحد بدل نسيانه في كل handler ═══\npublic sealed class ValidationBehavior<TRequest, TResponse>(IEnumerable<IValidator<TRequest>> validators)\n    : IPipelineBehavior<TRequest, TResponse> where TRequest : IRequest<TResponse>\n{\n    // ✓ التوقيع في MediatR 12.5+/13: RequestHandlerDelegate<TResponse> (في إصدارات أقدم: <TRequest, TResponse>)\n    //   تحقق من توقيع الإصدار عندك قبل النسخ.\n    public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)\n    {\n        if (!validators.Any()) return await next();\n\n        var context = new ValidationContext<TRequest>(request);\n        var failures = (await Task.WhenAll(validators.Select(v => v.ValidateAsync(context, ct))))\n            .SelectMany(r => r.Errors).Where(f => f is not null).ToList();\n\n        if (failures.Count > 0) throw new ValidationException(failures);   // → 400 عبر IExceptionHandler\n        return await next();\n    }\n}\n\n// ═══ ② Performance: يكشف الـhandlers البطيئة تلقائيًا ═══\npublic sealed class PerformanceBehavior<TRequest, TResponse>(\n    ILogger<PerformanceBehavior<TRequest, TResponse>> log, TimeProvider time)\n    : IPipelineBehavior<TRequest, TResponse> where TRequest : IRequest<TResponse>\n{\n    private static readonly System.Diagnostics.Metrics.Histogram<double> Duration =\n        new System.Diagnostics.Metrics.Meter(\"Shop.Application\", \"1.0.0\")\n            .CreateHistogram<double>(\"handler.duration\", unit: \"ms\");\n\n    public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)\n    {\n        var start = time.GetTimestamp();\n        var name = typeof(TRequest).Name;\n        try { return await next(); }\n        finally\n        {\n            var elapsed = time.GetElapsedTime(start).TotalMilliseconds;\n            Duration.Record(elapsed, new KeyValuePair<string, object?>(\"handler\", name));\n            if (elapsed > 500) log.LogWarning(\"slow handler {Handler}: {Elapsed:F0}ms\", name, elapsed);\n        }\n    }\n}\n\n// ═══ ③ Transaction: معاملة لكل أمر (وليس للاستعلامات) ═══\npublic sealed class TransactionBehavior<TRequest, TResponse>(AppDbContext db, ILogger<TransactionBehavior<TRequest, TResponse>> log)\n    : IPipelineBehavior<TRequest, TResponse> where TRequest : IRequest<TResponse>\n{\n    public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)\n    {\n        // ★ الاستعلامات لا تفتح معاملات (تكلفة بلا فائدة)\n        if (typeof(TRequest).Name.EndsWith(\"Query\", StringComparison.Ordinal)) return await next();\n\n        // ✓ مع استراتيجية إعادة المحاولة: لازم نلف المعاملة داخل الـexecution strategy (درس 3.1.2)\n        var strategy = db.Database.CreateExecutionStrategy();\n        return await strategy.ExecuteAsync(async () =>\n        {\n            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);\n            try\n            {\n                var response = await next();          // handler يعمل SaveChanges + يكتب الـoutbox\n                await tx.CommitAsync(ct);\n                return response;\n            }\n            catch\n            {\n                await tx.RollbackAsync(ct);\n                log.LogWarning(\"transaction rolled back for {Handler}\", typeof(TRequest).Name);\n                throw;\n            }\n        });\n    }\n}\n\n// ═══ ④ Idempotency: نفس مفتاح الطلب مرتين = أثر واحد ═══\npublic sealed class IdempotencyBehavior<TRequest, TResponse>(AppDbContext db, ILogger<IdempotencyBehavior<TRequest, TResponse>> log)\n    : IPipelineBehavior<TRequest, TResponse>\n    where TRequest : IRequest<TResponse>, IIdempotentRequest\n{\n    public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)\n    {\n        var existing = await db.IdempotencyKeys.FindAsync([request.IdempotencyKey], ct);\n        if (existing is not null)\n        {\n            log.LogInformation(\"replay of {Key} → نتيجة مخزنة\", request.IdempotencyKey);\n            return JsonSerializer.Deserialize<TResponse>(existing.ResponseJson)!;   // ✓ نفس الاستجابة\n        }\n\n        var response = await next();\n\n        db.IdempotencyKeys.Add(new IdempotencyKey(request.IdempotencyKey, typeof(TRequest).Name,\n            JsonSerializer.Serialize(response), DateTimeOffset.UtcNow));\n        await db.SaveChangesAsync(ct);            // داخل نفس معاملة الـbehavior السابق\n        return response;\n    }\n}\npublic interface IIdempotentRequest { string IdempotencyKey { get; } }\n\n// ═══ ⑤ Logging: سجل موحّد لكل عملية (بلا تكرار في كل handler) ═══\npublic sealed class LoggingBehavior<TRequest, TResponse>(ILogger<LoggingBehavior<TRequest, TResponse>> log)\n    : IPipelineBehavior<TRequest, TResponse> where TRequest : IRequest<TResponse>\n{\n    public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken ct)\n    {\n        using (log.BeginScope(new Dictionary<string, object> { [\"handler\"] = typeof(TRequest).Name }))\n        {\n            log.LogDebug(\"→ {Request}\", Summarize(request));\n            try\n            {\n                var response = await next();\n                log.LogDebug(\"← {Request} ok\", typeof(TRequest).Name);\n                return response;\n            }\n            catch (Exception ex)\n            {\n                log.LogError(ex, \"✗ {Request} failed\", typeof(TRequest).Name);\n                throw;\n            }\n        }\n    }\n    private static string Summarize(object r) =>       // ✓ لا تسجل بيانات حساسة كاملة\n        r is IIdempotentRequest i ? i.IdempotencyKey : r.GetType().Name;\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Api/Program.cs",
+      "title": "التركيب: ترتيب الـpipelines مهم",
+      "code": "\nbuilder.Services.AddMediatR(cfg =>\n{\n    cfg.RegisterServicesFromAssemblyContaining<PlaceOrderCommand>();\n\n    // ★ الترتيب من الخارج للداخل: ما يُنفَّذ أولًا يُسجَّل أولًا\n    cfg.AddOpenBehavior(typeof(LoggingBehavior<,>));        // 1. سجل كل شيء\n    cfg.AddOpenBehavior(typeof(PerformanceBehavior<,>));    // 2. قِس زمن الكل (بما فيه الـvalidation)\n    cfg.AddOpenBehavior(typeof(ValidationBehavior<,>));     // 3. ارفض المدخلات الغلط بدريًا (قبل معاملة)\n    cfg.AddOpenBehavior(typeof(IdempotencyBehavior<,>));    // 4. تحقق من التكرار\n    cfg.AddOpenBehavior(typeof(TransactionBehavior<,>));    // 5. المعاملة حول التنفيذ الفعلي\n});\n\nbuilder.Services.AddValidatorsFromAssemblyContaining<PlaceOrderValidator>(ServiceLifetime.Scoped);\n\n// ── Endpoint رفيع: تسليم فقط ──\n// ★ انتبه: لا تنادِ sender.Send مرتين في نفس السطر (ينفّذ الأمر مرتين!) — خزّن النتيجة أولًا\napp.MapPost(\"/api/orders\", async (PlaceOrderCommand cmd, ISender sender, CancellationToken ct) =>\n{\n    var result = await sender.Send(cmd, ct);\n    return Results.Created($\"/api/orders/{result.OrderId}\", result);\n}).WithName(\"PlaceOrder\").WithTags(\"Orders\").RequireAuthorization(\"Orders.Write\");\n\napp.MapGet(\"/api/orders/{id:guid}\", async (Guid id, ISender sender, CancellationToken ct) =>\n    await sender.Send(new GetOrderDetailsQuery(id), ct) is { } details ? Results.Ok(details) : Results.NotFound());\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) المستوى 2: read model منفصل (projection)"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "db/011_order_summary_projection.sql",
+      "title": "جدول projection — يُبنى من الأحداث ولا يُكتب يدويًا",
+      "code": "\nCREATE SCHEMA IF NOT EXISTS reporting;\n\n-- ★ جدول قراءة مُحسَّن: صف واحد لكل طلب، بلا joins وقت القراءة\nCREATE TABLE reporting.order_summary (\n    order_id       uuid PRIMARY KEY,\n    reference      text        NOT NULL,\n    customer_id    uuid        NOT NULL,\n    customer_name  text        NOT NULL,\n    status         text        NOT NULL,\n    total_amount   numeric(18,2) NOT NULL,\n    total_currency char(3)     NOT NULL,\n    line_count     int         NOT NULL DEFAULT 0,\n    country        char(2)     NOT NULL,\n    placed_at      timestamptz NOT NULL,\n    last_event_at  timestamptz NOT NULL,\n    projection_ver bigint      NOT NULL DEFAULT 0        -- ★ لـidempotency والترتيب\n);\n\nCREATE INDEX ix_order_summary_customer_placed\n    ON reporting.order_summary (customer_id, placed_at DESC);\nCREATE INDEX ix_order_summary_status_placed\n    ON reporting.order_summary (status, placed_at DESC) INCLUDE (total_amount, reference);\n\n-- نقطة تفتيش الـprojection: إلى أين وصلنا في الـoutbox/الأحداث\nCREATE TABLE reporting.projection_checkpoints (\n    projection     text PRIMARY KEY,\n    last_event_id  bigint NOT NULL,\n    updated_at     timestamptz NOT NULL DEFAULT now()\n);\n\n-- إعادة بناء كاملة لو لزم (rebuild) — لازم تكون ممكنة دائمًا\n-- TRUNCATE reporting.order_summary; ثم شغّل الـprojector من البداية\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Infrastructure/Projections/OrderSummaryProjector.cs",
+      "title": "عامل projection: idempotent، قابل لإعادة البناء",
+      "code": "\n/// <summary>\n/// يقرأ الأحداث من الـoutbox بالترتيب ويحدّث جدول القراءة.\n/// ★ idempotent: `projection_ver` يمنع تطبيق حدث قديم فوق حالة أحدث.\n/// ★ قابل لإعادة البناء: احذف الجدول وشغّل من البداية (بلا فقدان).\n/// </summary>\n/// <summary>مقاييس الـprojection — التأخير أهم رقم تشغيلي هنا.</summary>\npublic static class Metrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Infrastructure.projections\", \"1.0.0\");\n    public static readonly Histogram<long> ProjectorLag =\n        Meter.CreateHistogram<long>(\"projector.batch.size\", unit: \"events\");\n    public static readonly ObservableGauge<long> Age =\n        Meter.CreateObservableGauge(\"projector.lag.seconds\", () => 0L, unit: \"s\",\n            description: \"عمر أقدم حدث غير معالَج — يُحسب من نقطة التفتيش\");\n}\n\npublic sealed class OrderSummaryProjector(\n    AppDbContext db, IServiceScopeFactory scopes, ILogger<OrderSummaryProjector> log) : BackgroundService\n{\n    private const string Name = \"order_summary\";\n    private const int Batch = 100;\n\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        while (!stoppingToken.IsCancellationRequested)\n        {\n            try\n            {\n                await using var scope = scopes.CreateAsyncScope();\n                var ctx = scope.ServiceProvider.GetRequiredService<AppDbContext>();\n\n                var lastId = await ctx.ProjectionCheckpoints\n                    .Where(c => c.Projection == Name).Select(c => c.LastEventId)\n                    .FirstOrDefaultAsync(stoppingToken);\n\n                // ✓ SKIP LOCKED: عدة نسخ لا تعالج نفس الأحداث (درس 2.3.x)\n                var events = await ctx.OutboxMessages\n                    .Where(m => m.Id > lastId && m.Type.StartsWith(\"order.\"))\n                    .OrderBy(m => m.Id).Take(Batch)\n                    .ToListAsync(stoppingToken);\n\n                if (events.Count == 0) { await Task.Delay(500, stoppingToken); continue; }\n\n                foreach (var message in events)\n                {\n                    switch (message.Type)\n                    {\n                        case \"order.placed\":   await ApplyPlacedAsync(ctx, message, stoppingToken); break;\n                        case \"order.cancelled\": await ApplyStatusAsync(ctx, message, \"Cancelled\", stoppingToken); break;\n                        case \"order.shipped\":  await ApplyStatusAsync(ctx, message, \"Shipped\", stoppingToken); break;\n                        default: log.LogDebug(\"ignoring {Type}\", message.Type); break;\n                    }\n\n                    // ✓ تقدم نقطة التفتيش في نفس معاملة التغيير (بلا فقد ولا تكرار ضار)\n                    await UpsertCheckpointAsync(ctx, message.Id, stoppingToken);\n                }\n\n                await ctx.SaveChangesAsync(stoppingToken);\n                Metrics.ProjectorLag.Record(events.Count, new KeyValuePair<string, object?>(\"projection\", Name));\n            }\n            catch (OperationCanceledException) { break; }\n            catch (Exception ex)\n            {\n                log.LogError(ex, \"projection {Name} failed; retrying\", Name);\n                await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);\n            }\n        }\n    }\n\n    private static async Task ApplyPlacedAsync(AppDbContext ctx, OutboxMessage m, CancellationToken ct)\n    {\n        var e = JsonSerializer.Deserialize<OrderPlaced>(m.Payload)!;\n        await ctx.Database.ExecuteSqlInterpolatedAsync($\"\"\"\n            INSERT INTO reporting.order_summary\n                (order_id, reference, customer_id, customer_name, status,\n                 total_amount, total_currency, line_count, country, placed_at, last_event_at, projection_ver)\n            SELECT o.id, o.reference, o.customer_id, c.name, 'Placed',\n                   {e.Total.Amount}, {e.Total.Currency}, o.line_count, o.country, o.created_at,\n                   {m.OccurredAt}, {m.Id}\n            FROM orders.orders o JOIN catalog.customers c ON c.id = o.customer_id\n            WHERE o.id = {e.OrderId}\n            ON CONFLICT (order_id) DO UPDATE SET\n                status = EXCLUDED.status, last_event_at = EXCLUDED.last_event_at,\n                projection_ver = EXCLUDED.projection_ver\n            WHERE reporting.order_summary.projection_ver < EXCLUDED.projection_ver;\n            \"\"\", ct);\n    }\n\n    private static Task ApplyStatusAsync(AppDbContext ctx, OutboxMessage m, string status, CancellationToken ct) =>\n        ctx.Database.ExecuteSqlInterpolatedAsync($\"\"\"\n            UPDATE reporting.order_summary\n            SET status = {status}, last_event_at = {m.OccurredAt}, projection_ver = {m.Id}\n            WHERE order_id = {(JsonSerializer.Deserialize<OrderStatusEvent>(m.Payload)).OrderId}\n              AND projection_ver < {m.Id};\n            \"\"\", ct);\n\n    private static Task UpsertCheckpointAsync(AppDbContext ctx, long eventId, CancellationToken ct) =>\n        ctx.Database.ExecuteSqlInterpolatedAsync($\"\"\"\n            INSERT INTO reporting.projection_checkpoints (projection, last_event_id, updated_at)\n            VALUES ({Name}, {eventId}, now())\n            ON CONFLICT (projection) DO UPDATE\n            SET last_event_id = EXCLUDED.last_event_id, updated_at = now();\n            \"\"\", ct);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "تكلفة المستوى 2: نافذة عدم اتساق",
+      "md": "\nالقراءة من `reporting.order_summary` **ليست لحظية**: فيه تأخير (عادةً 50ms–2s) بين الكتابة وظهورها.\n\n**التعامل العملي:**\n- **قيس التأخير** وانشره كـmetric (`projector.lag`) ونبّه لو تجاوز حدًا (مثلًا 5s).\n- **بعد الكتابة، اقرأ من مصدر الكتابة** في نفس الطلب (أو أرجع النتيجة من الـcommand نفسه) —\n  المستخدم ما يستناش الـprojection عشان يشوف اللي عمله.\n- **اجعل إعادة البناء ممكنة دائمًا** (truncate + projector من الصفر) — هتحتاجها لما تضيف حقلًا.\n- **لا تخلط**: استعلامات التقارير من الـprojection، واستعلامات التفاصيل الدقيقة من جداول الكتابة.\n- لو التأخير غير مقبول في حالة ما → استخدم المستوى 1 (استعلام مباشر مع index جيد) لهذه الحالة تحديدًا.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "6) MediatR: إمتى يستحق وإمتى يكون ضجيجًا؟"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الحالة",
+        "MediatR؟",
+        "السبب"
+      ],
+      "rows": [
+        [
+          "عندك behaviors مشتركة (validation/معاملات/قياس)",
+          "✓ نعم",
+          "دي القيمة الحقيقية — مكان واحد بدل تكراره في كل مسار"
+        ],
+        [
+          "ميزات كتير بنمط موحد وفريق متوسط",
+          "✓ نعم",
+          "نمط متوقع يسهّل الـonboarding والمراجعة"
+        ],
+        [
+          "CRUD بسيط بـ3 عمليات",
+          "✗ لا",
+          "واجهة مباشرة (`IOrderService`) أوضح وبلا indirection"
+        ],
+        [
+          "مسار أداء حرج (hot path)",
+          "△ قِس",
+          "فيه overhead بسيط للتوزيع؛ قارن بنداء مباشر"
+        ],
+        [
+          "فريق بيشتكي من صعوبة تتبع التنفيذ",
+          "△ راجع",
+          "الحل: تسمية واضحة + مجلد لكل feature + توثيق النمط"
+        ],
+        [
+          "محتاج أحداث داخلية (domain events)",
+          "✓ مفيد",
+          "`INotification` + `IPublisher` بدل بناء ناقل داخلي"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أختار مستوى CQRS الأدنى الكافي (الأغلب: المستوى 1) وأسجّل القرار في ADR.",
+        "أفصل الأوامر (عبر Domain + معاملة + outbox) عن الاستعلامات (DTO للشاشة، Dapper/view، بلا tracking).",
+        "أستخدم MediatR لقيمته الحقيقية: pipelines مشتركة (validation، logging، قياس، معاملات، idempotency) بترتيب مقصود.",
+        "لو بنيت projection: أقيس التأخير، وأجعل القراءة بعد الكتابة من مصدر الكتابة، وأضمن إمكانية إعادة البناء."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "CQRS بالحد الأدنى يعني إيه؟",
+          "options": [
+            "Event Sourcing + قاعدتين",
+            "نموذج قراءة مختلف عن نموذج الكتابة (commands/queries بأنواع مختلفة) — حتى لو على نفس قاعدة البيانات",
+            "استخدام MediatR",
+            "فصل الـAPI عن الـUI"
+          ],
+          "answer": 1,
+          "explain": "المستوى 1 (فصل الأنواع) يكفي أغلب المشاريع. القواعد المنفصلة والأحداث مستوى أعلى يحتاج سببًا مقاسًا."
+        },
+        {
+          "q": "ليه مسار القراءة ما يمرش بالـDomain؟",
+          "options": [
+            "للأداء فقط",
+            "لأن القراءة لا تغيّر حالة ولا تحتاج فرض invariants؛ شكلها الأمثل هو شكل الشاشة (DTO) وSQL مُحسَّن بلا قيود الكتابة",
+            "الـDomain بطيء",
+            "ممنوع تقنيًا"
+          ],
+          "answer": 1,
+          "explain": "ده جوهر CQRS: الكتابة تحمي القواعد، والقراءة تُصمَّم للعرض والأداء. لو القراءة محتاجة قواعد → فيه خلل في الحدود."
+        },
+        {
+          "q": "ترتيب behaviors: validation قبل المعاملة ولا بعدها؟",
+          "options": [
+            "بعدها — أدق",
+            "قبلها — ارفض المدخلات الغلط قبل فتح معاملة (توفير اتصال/قفل وسجل أنظف)",
+            "الترتيب غير مهم",
+            "في نفس الوقت"
+          ],
+          "answer": 1,
+          "explain": "القاعدة: الأرخص والأكثر رفضًا أولًا (logging → قياس → validation → idempotency → معاملة → تنفيذ)."
+        },
+        {
+          "q": "read model من أحداث — المستخدم عدّل بياناته وفتح الصفحة فلم يرَ التغيير. السبب والحل؟",
+          "options": [
+            "bug في الـUI",
+            "نافذة عدم اتساق في الـprojection؛ الحل: أرجع النتيجة من الـcommand نفسه أو اقرأ من مصدر الكتابة بعد التعديل، وقِس الـlag",
+            "زد الـTTL",
+            "استخدم Redis"
+          ],
+          "answer": 1,
+          "explain": "الاتساق eventual تكلفة مقصودة للمستوى 2 — لازم تكون مقاسة ومعلنة، والتجربة الحرجة (بعد كتابة مباشرة) تُعالج صراحة."
+        },
+        {
+          "q": "projection بيستقبل نفس الحدث مرتين (إعادة تسليم). الحماية؟",
+          "options": [
+            "تجاهل المشكلة",
+            "idempotency: مفتاح/إصدار (`projection_ver`) مع شرط في UPDATE/UPSERT يرفض تطبيق حدث أقدم أو مكرر",
+            "إيقاف المستهلك",
+            "حذف الجدول"
+          ],
+          "answer": 1,
+          "explain": "at-least-once = تكرار متوقع. كمان `projection_ver` بيحل مشكلة الترتيب لو وصل حدث قديم بعد حدث أحدث."
+        },
+        {
+          "q": "مشروع CRUD صغير (لوحة إدارة) — CQRS وMediatR؟",
+          "options": [
+            "إلزامي دائمًا",
+            "غالبًا مبالغة: واجهة مباشرة + Minimal APIs أبسط وأوضح، وأضف الأنماط لما يظهر ألم حقيقي",
+            "ممنوع",
+            "MediatR فقط"
+          ],
+          "answer": 1,
+          "explain": "الأنماط أدوات لمشاكل محددة. استخدامها بلا مشكلة = تعقيد وتكلفة صيانة بلا عائد (وسجّل القرار في ADR)."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "افصل مسار قراءة واحد (المستوى 1)",
+          "md": "اختار استعلامًا ثقيلًا في مشروعك (قائمة/تفاصيل) وأعد بناءه كـQuery منفصل يرجع DTO مصممًا للشاشة عبر Dapper/view — بلا EF tracking وبلا مرور بالـDomain. قِس الفرق.",
+          "criteria": [
+            "Query + Response DTO في Application، والتنفيذ (SQL) في Infrastructure خلف منفذ",
+            "الاستعلام يرجع **فقط** الحقول المعروضة (لا كيان كامل)، وعدد round-trips ≤ 1 (QueryMultiple أو join)",
+            "قياس قبل/بعد (p95 وعدد الاستعلامات) في ملف النتائج",
+            "اختبار تكامل على Postgres حقيقي يقارن النتيجة مع البيانات المزروعة",
+            "لا معاملة ولا tracking في مسار القراءة (اختبار/مراجعة)"
+          ],
+          "hint": "لو النتيجة محتاجة بيانات من موديول تاني: اعمل join داخل SQL (نفس القاعدة) أو اقرأ عبر عقد الموديول — ولا تنسخ جداوله."
+        },
+        {
+          "id": "t2",
+          "title": "Pipelines + قرار مستوى CQRS",
+          "md": "أضف 3 behaviors على الأقل (validation، قياس، معاملات للأوامر فقط) بترتيب مقصود، واكتب ADR يحدد مستوى CQRS في مشروعك مع شروط الانتقال للمستوى التالي.",
+          "criteria": [
+            "3 behaviors مسجلة بترتيب موثق + تعليق يشرح ليه الترتيب ده",
+            "الاستعلامات لا تفتح معاملات (اختبار يثبتها)",
+            "مقياس `handler.duration` بوسم لكل handler + تنبيه للبطيء",
+            "ADR: المستوى الحالي، البدائل، التكاليف، وشرط مقاس للانتقال للمستوى 2",
+            "اختبار: أمر ببيانات غلط → 400 قبل فتح أي معاملة (يُثبت بالسجل/العدّاد)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "CQRS pattern (MS Learn)",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/cqrs"
+        },
+        {
+          "label": "CQRS in .NET architecture guide",
+          "url": "https://learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/cqrs-microservice-reads"
+        },
+        {
+          "label": "MediatR",
+          "url": "https://github.com/jbogard/MediatR"
+        },
+        {
+          "label": "Dapper",
+          "url": "https://github.com/DapperLib/Dapper"
+        },
+        {
+          "label": "FluentValidation — ASP.NET integration",
+          "url": "https://docs.fluentvalidation.net/en/latest/aspnet.html"
+        },
+        {
+          "label": "Materialized views (PostgreSQL)",
+          "url": "https://www.postgresql.org/docs/current/rules-materializedviews.html"
+        }
+      ]
+    }
+  ]
+}

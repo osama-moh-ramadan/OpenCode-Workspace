@@ -1,0 +1,384 @@
+{
+  "id": "s4-m1-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nالمعمارية مش شكل المجلدات — المعمارية هي **قواعد اتجاه الاعتماد**: مين يُسمح له إنه يعرف مين.\nالقاعدة دي هي اللي بتحدد إن تغيير في قاعدة البيانات ما يكسرش منطق العمل، وإن اختبارات الـDomain تشتغل بلا قاعدة،\nوإن مطور جديد يعرف فين يحط الكود من غير ما يسأل.\n\nClean/Onion Architecture هي الأشهر في .NET، وموجودة في مرجع مايكروسوفت الرسمي وفي مشاريع حقيقية زي eShop.\nلكن 90% من التطبيقات اللي بتستخدمها **بتطبقها غلط**: طبقات فاضية، Domain بلا سلوك (anemic)،\nو`Application` معتمد على `Infrastructure` من وراء الستار. هنا هنبنيها صح ونفرضها باختبارات.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Dependency Rule",
+          "def": "الاعتمادات تتجه للداخل فقط. `Domain` لا يعتمد على شيء، و`Application` على `Domain`، و`Infrastructure`/`Api` على الاثنين."
+        },
+        {
+          "term": "Domain",
+          "def": "قواعد العمل الجوهرية: Entities بسلوك، Value Objects، Domain Events، استثناءات مجال. **بلا أي اعتماد تقني** (لا EF، لا JSON، لا HTTP)."
+        },
+        {
+          "term": "Application",
+          "def": "حالات الاستخدام (use cases): أوامر/استعلامات، DTOs، validation، و**المنافذ** (interfaces) اللي بتعرفها الطبقة الخارجية."
+        },
+        {
+          "term": "Infrastructure",
+          "def": "التفاصيل التقنية: EF Core DbContext وMigrations، مخازن، عملاء HTTP خارجيين، تخزين ملفات، مراسلة. بتنفّذ منافذ `Application`."
+        },
+        {
+          "term": "Port (منفذ)",
+          "def": "واجهة معرّفة في `Application` (مثل `IOrderRepository`) — العقد اللي `Infrastructure` بتنفّذه. ده اللي بيعكس اتجاه الاعتماد."
+        },
+        {
+          "term": "Adapter",
+          "def": "التنفيذ في `Infrastructure` (`EfOrderRepository`). ممكن تستبدله (اختبارات: in-memory/fake)."
+        },
+        {
+          "term": "Composition Root",
+          "def": "المكان الوحيد اللي بيتسجل فيه كل شيء في الـDI — في `Program.cs` (طبقة `Api`). الطبقات الداخلية لا تعرف عن DI."
+        },
+        {
+          "term": "Anemic Domain Model",
+          "def": "كيانات بلا سلوك (getters/setters فقط) وكل المنطق في services → أشهر فشل في تطبيق Clean Architecture."
+        },
+        {
+          "term": "Architecture Test",
+          "def": "اختبار يفحص التجميعات (assemblies) ويرفض أي اعتماد ممنوع — بيحوّل القاعدة المعمارية من وثيقة لـCI أحمر."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) الهيكل واتجاه الاعتماد"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحل (solution) بالمشاريع والمراجع",
+      "code": "\n# ── المشاريع ──\ndotnet new classlib -n Shop.Domain          -o src/Shop.Domain\ndotnet new classlib -n Shop.Application     -o src/Shop.Application\ndotnet new classlib -n Shop.Infrastructure  -o src/Shop.Infrastructure\ndotnet new web      -n Shop.Api             -o src/Shop.Api\ndotnet new xunit    -n Shop.UnitTests       -o tests/Shop.UnitTests\ndotnet new xunit    -n Shop.ArchTests       -o tests/Shop.ArchTests\ndotnet new xunit    -n Shop.IntegrationTests -o tests/Shop.IntegrationTests\n\n# ── اتجاه الاعتماد (القاعدة الوحيدة اللي لازم تتحفظ) ──\ndotnet add src/Shop.Application    reference src/Shop.Domain\ndotnet add src/Shop.Infrastructure reference src/Shop.Application   # (وبيجيب Domain بالتبعية)\ndotnet add src/Shop.Api            reference src/Shop.Application src/Shop.Infrastructure\n\n# ★ انتبه: Domain بلا مراجع إطلاقًا. Application لا يرجع Infrastructure.\n# لو حصل، عندك دائرة (circular reference) — والمشروع أصلًا مش هيترجم.\n\n# ── أدوات فرض المعمارية ──\ndotnet add tests/Shop.ArchTests package NetArchTest.Rules\n# بديل: ArchUnitNET (أقوى في قواعد الطبقات والـslices)\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "نوع الكود",
+        "المشروع",
+        "ملاحظة حاسمة"
+      ],
+      "rows": [
+        [
+          "Entity بسلوك (`Order.Cancel()`)",
+          "**Domain**",
+          "يرفع Domain Event بدل ما ينادي خدمة خارجية"
+        ],
+        [
+          "Value Object (`Money`, `Address`)",
+          "**Domain**",
+          "`readonly record struct` + تحقق في الـconstructor"
+        ],
+        [
+          "Domain Event (`OrderCancelled`)",
+          "**Domain**",
+          "record بسيط — بلا اعتماد على MediatR/RabbitMQ"
+        ],
+        [
+          "استثناء مجال (`InsufficientStockException`)",
+          "**Domain**",
+          "تُترجم لـHTTP في `Api` (مش تُرمى كـ400 من Domain)"
+        ],
+        [
+          "خدمة مجال نقية (`PricingPolicy`)",
+          "**Domain**",
+          "لو القاعدة تخص عدة aggregates"
+        ],
+        [
+          "Command/Query + Handler",
+          "**Application**",
+          "حالة استخدام واحدة لكل ملف/مجلد"
+        ],
+        [
+          "منفذ (`IOrderRepository`, `IClock`, `IEventPublisher`)",
+          "**Application**",
+          "التعريف هنا، التنفيذ في Infrastructure"
+        ],
+        [
+          "DTO / Response records",
+          "**Application**",
+          "لا تُرجع Entity للـAPI"
+        ],
+        [
+          "Validators (FluentValidation)",
+          "**Application**",
+          "تحقق الشكل/المدخلات؛ قواعد العمل في Domain"
+        ],
+        [
+          "DbContext + Mappings + Migrations",
+          "**Infrastructure**",
+          "EF هنا فقط — ولا attribute واحد في Domain"
+        ],
+        [
+          "تنفيذ المنافذ (`EfOrderRepository`, `SystemClock`)",
+          "**Infrastructure**",
+          "قابل للاستبدال في الاختبارات"
+        ],
+        [
+          "عملاء خارجيين (Stripe/SendGrid/HttpClient)",
+          "**Infrastructure**",
+          "خلف منفذ + Polly (درس المرحلة 2)"
+        ],
+        [
+          "Endpoints / Middleware / Auth / DI wiring",
+          "**Api**",
+          "طبقة تسليم رقيقة — لا منطق عمل"
+        ],
+        [
+          "اختبارات وحدة للـDomain",
+          "**tests/UnitTests**",
+          "تشتغل بلا قاعدة ولا شبكة (في أجزاء من الثانية)"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) Domain: سلوك وقواعد، لا حقول"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Domain/Orders/Order.cs",
+      "title": "Entity غني: الحالة تتغير من خلال السلوك فقط",
+      "code": "\nnamespace Shop.Domain.Orders;\n\npublic class Order : AggregateRoot\n{\n    private readonly List<OrderLine> _lines = [];\n\n    public Guid Id { get; private init; }                 // ✓ private setters: التعديل عبر السلوك فقط\n    public Guid CustomerId { get; private init; }\n    public OrderStatus Status { get; private set; }\n    public Money Total { get; private set; }\n    public DateTimeOffset CreatedAt { get; private init; }\n    public DateTimeOffset? CancelledAt { get; private set; }\n    public string? CancellationReason { get; private set; }\n    public IReadOnlyList<OrderLine> Lines => _lines;      // ✓ لا تسريب للمجموعة الداخلية\n\n    private Order() { }                                   // لـEF فقط\n\n    public static Order Place(Guid customerId, IEnumerable<OrderLine> lines, IClock clock)\n    {\n        ArgumentNullException.ThrowIfNull(customerId);\n        var materialized = lines.ToList();\n        if (materialized.Count == 0)\n            throw new EmptyOrderException(customerId);    // ★ استثناء مجال (يُترجم في Api)\n\n        var order = new Order\n        {\n            Id = Guid.NewGuid(),\n            CustomerId = customerId,\n            Status = OrderStatus.Placed,\n            CreatedAt = clock.UtcNow,\n        };\n\n        foreach (var line in materialized) order.AddLine(line);   // كل سطر يمر بنفس القاعدة\n        order.RecalculateTotal();\n\n        order.Raise(new OrderPlaced(order.Id, order.CustomerId, order.Total, order.CreatedAt));\n        return order;\n    }\n\n    public void Cancel(string reason, IClock clock)\n    {\n        if (Status is OrderStatus.Shipped or OrderStatus.Delivered)\n            throw new OrderCannotBeCancelledException(Id, Status);     // ← قاعدة عمل في مكانها الصحيح\n\n        if (string.IsNullOrWhiteSpace(reason))\n            throw new ArgumentException(\"سبب الإلغاء مطلوب\", nameof(reason));\n\n        Status = OrderStatus.Cancelled;\n        CancelledAt = clock.UtcNow;\n        CancellationReason = reason.Trim();\n\n        Raise(new OrderCancelled(Id, CustomerId, Total, CancelledAt.Value, CancellationReason));\n    }\n\n    public void Ship(IClock clock)\n    {\n        if (Status != OrderStatus.Placed)\n            throw new InvalidOrderTransitionException(Id, Status, OrderStatus.Shipped);\n\n        Status = OrderStatus.Shipped;\n        Raise(new OrderShipped(Id, clock.UtcNow));\n    }\n\n    private void AddLine(OrderLine line)\n    {\n        if (Status != OrderStatus.Placed)\n            throw new InvalidOperationException(\"لا يمكن تعديل طلب غير بحالة Placed\");\n\n        // ★ قاعدة عمل: منع تكرار نفس المنتج في سطرين\n        var existing = _lines.FirstOrDefault(l => l.ProductId == line.ProductId);\n        if (existing is not null) existing.IncreaseQuantity(line.Quantity);\n        else _lines.Add(line);\n    }\n\n    private void RecalculateTotal() =>\n        Total = _lines.Aggregate(Money.Zero, (sum, l) => sum + l.Subtotal);\n}\n\npublic abstract class AggregateRoot\n{\n    private readonly List<IDomainEvent> _events = [];\n    public IReadOnlyList<IDomainEvent> DomainEvents => _events;\n    protected void Raise(IDomainEvent e) => _events.Add(e);\n    public void ClearEvents() => _events.Clear();          // تُنادى بعد النشر (من Infrastructure)\n}\n\npublic interface IDomainEvent { DateTimeOffset OccurredAt { get; } }\npublic interface IClock { DateTimeOffset UtcNow { get; } }   // ★ منفذ في Domain: الزمن قابل للاختبار\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "علامات Anemic Domain Model (افحص مشروعك)",
+      "md": "\n- كل خصائص الكيان `public set` ومفيش ولا method غير getters → الكيان **مجموعة بيانات**، مش نموذج مجال.\n- فيه `OrderService.CancelOrder(orderId, reason)` بيعدّل الحالة من بره → القاعدة مبعثرة وكل خدمة ممكن تعدلها بشكل مختلف.\n- اختباراتك كلها بتختبر services، ولا اختبار واحد لكيان → **قواعد العمل غير محمية**.\n- الـvalidation كله في الـAPI/DTO → Domain ممكن تدخله حالة غير صالحة من أي مسار تاني (job، مستهلك حدث، migration).\n- `if (order.Status == \"cancelled\")` منتشرة في 14 مكان → مفيش مكان واحد بيعرّف «إيه معنى الإلغاء».\n\n**الإصلاح:** انقل كل `if` يخص حالة الكيان لجوه الكيان كـmethod، واجعل setters خاصة، وارفع Domain Events بدل نداء خدمات خارجية.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Application: حالات الاستخدام والمنافذ"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Application/Orders/CancelOrder.cs",
+      "title": "Command + Handler + منفذ — بلا أي اعتماد تقني",
+      "code": "\nusing Shop.Domain.Orders;\n\nnamespace Shop.Application.Orders;\n\n// ── الطلب والاستجابة: records بسيطة ──\npublic sealed record CancelOrderCommand(Guid OrderId, string Reason);\npublic sealed record CancelOrderResult(Guid OrderId, string Status, DateTimeOffset CancelledAt);\n\n// ── المنافذ: تُعرَّف هنا، وتُنفَّذ في Infrastructure ──\npublic interface IOrderRepository\n{\n    Task<Order?> FindAsync(Guid id, CancellationToken ct);\n    void Add(Order order);                                  // Add فقط — الحفظ مسؤولية الـUnitOfWork\n}\n\npublic interface IUnitOfWork\n{\n    /// <summary>يحفظ التغييرات وينشر أحداث الـDomain المتراكمة في نفس المعاملة (outbox).</summary>\n    Task<int> SaveChangesAsync(CancellationToken ct);\n}\n\npublic interface IEventPublisher\n{\n    Task PublishAsync(IDomainEvent domainEvent, CancellationToken ct);\n}\n\n// ── حالة الاستخدام: تنسيق، لا قواعد عمل ──\npublic sealed class CancelOrderHandler(\n    IOrderRepository orders, IUnitOfWork uow, IEventPublisher publisher,\n    IClock clock, ILogger<CancelOrderHandler> log)\n{\n    public async Task<CancelOrderResult> HandleAsync(CancelOrderCommand command, CancellationToken ct)\n    {\n        var order = await orders.FindAsync(command.OrderId, ct)\n                    ?? throw new OrderNotFoundException(command.OrderId);     // استثناء تطبيق\n\n        order.Cancel(command.Reason, clock);              // ★ القاعدة في Domain — هنا مجرد تنسيق\n\n        await uow.SaveChangesAsync(ct);                   // يحفظ + يكتب الأحداث في outbox ذرّيًا\n\n        log.LogInformation(\"order {OrderId} cancelled: {Reason}\", order.Id, command.Reason);\n        return new CancelOrderResult(order.Id, order.Status.ToString(), order.CancelledAt!.Value);\n    }\n}\n\n// ── استثناءات التطبيق (تُترجم لـHTTP في طبقة Api) ──\npublic sealed class OrderNotFoundException(Guid id)\n    : Exception($\"الطلب {id} غير موجود\");\n\n// ── Validator: تحقق من شكل المدخلات (مش قواعد العمل) ──\npublic sealed class CancelOrderCommandValidator : AbstractValidator<CancelOrderCommand>\n{\n    public CancelOrderCommandValidator()\n    {\n        RuleFor(x => x.OrderId).NotEmpty();\n        RuleFor(x => x.Reason).NotEmpty().MaximumLength(500);\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Infrastructure/Persistence/EfOrderRepository.cs",
+      "title": "Adapter + UnitOfWork ينشر الأحداث عبر outbox",
+      "code": "\nusing Shop.Application.Orders;\nusing Shop.Domain.Orders;\n\nnamespace Shop.Infrastructure.Persistence;\n\npublic sealed class EfOrderRepository(AppDbContext db) : IOrderRepository\n{\n    public Task<Order?> FindAsync(Guid id, CancellationToken ct) =>\n        db.Orders.Include(o => o.Lines).FirstOrDefaultAsync(o => o.Id == id, ct);\n        // ★ EF-specific (Include) يبقى هنا — مش في Application\n}\n\npublic sealed class UnitOfWork(AppDbContext db, IEventPublisher publisher, ILogger<UnitOfWork> log)\n    : IUnitOfWork\n{\n    public async Task<int> SaveChangesAsync(CancellationToken ct)\n    {\n        // ① اجمع أحداث الـDomain من كل الـaggregates المتتبَّعة\n        var roots = db.ChangeTracker.Entries<AggregateRoot>()\n            .Where(e => e.Entity.DomainEvents.Count > 0)\n            .Select(e => e.Entity)\n            .ToList();\n\n        var events = roots.SelectMany(r => r.DomainEvents).ToList();\n\n        // ② حوّلها لرسائل outbox **قبل** الالتزام (ذرّية مع البيانات)\n        foreach (var domainEvent in events)\n            db.OutboxMessages.Add(OutboxMessage.From(domainEvent));\n\n        // ③ احفظ البيانات والـoutbox في SaveChanges واحد\n        var saved = await db.SaveChangesAsync(ct);\n\n        // ④ انشر في العملية (للمستهلكين المحليين) ونظّف\n        foreach (var domainEvent in events)\n        {\n            try { await publisher.PublishAsync(domainEvent, ct); }\n            catch (Exception ex)\n            {\n                // ✓ الفشل هنا لا يلغي المعاملة: الـoutbox هيسلّم الرسالة لاحقًا\n                log.LogWarning(ex, \"in-process publish failed for {Event}; outbox will retry\",\n                    domainEvent.GetType().Name);\n            }\n        }\n\n        foreach (var root in roots) root.ClearEvents();\n        return saved;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) فرض المعمارية باختبار (مش بوثيقة)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.ArchTests/LayerDependencyTests.cs",
+      "title": "NetArchTest: الاتجاه ممنوع عكسه",
+      "code": "\nusing NetArchTest.Rules;\nusing Xunit;\n\npublic class LayerDependencyTests\n{\n    private static readonly Assembly Domain = typeof(Shop.Domain.Orders.Order).Assembly;\n    private static readonly Assembly Application = typeof(Shop.Application.Orders.CancelOrderCommand).Assembly;\n    private static readonly Assembly Infrastructure = typeof(Shop.Infrastructure.Persistence.EfOrderRepository).Assembly;\n\n    [Fact]\n    public void Domain_does_not_depend_on_any_other_layer()\n    {\n        var result = Types.InAssembly(Domain)\n            .ShouldNot()\n            .HaveDependencyOnAny(\"Shop.Application\", \"Shop.Infrastructure\", \"Shop.Api\",\n                                 \"Microsoft.EntityFrameworkCore\", \"Microsoft.AspNetCore\",\n                                 \"System.Text.Json\", \"MediatR\", \"Npgsql\", \"StackExchange.Redis\")\n            .GetResult();\n\n        result.IsSuccessful.Should().BeTrue(FailureList(result));\n    }\n\n    [Fact]\n    public void Application_does_not_depend_on_Infrastructure_or_Api()\n    {\n        var result = Types.InAssembly(Application)\n            .ShouldNot()\n            .HaveDependencyOnAny(\"Shop.Infrastructure\", \"Shop.Api\", \"Microsoft.EntityFrameworkCore\")\n            .GetResult();\n\n        result.IsSuccessful.Should().BeTrue(FailureList(result));\n    }\n\n    [Fact]\n    public void Domain_entities_do_not_expose_public_setters()\n    {\n        var offenders = Types.InAssembly(Domain)\n            .That().Inherit(typeof(AggregateRoot))\n            .GetTypes()\n            .SelectMany(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance))\n            .Where(p => p.SetMethod is { IsPublic: true })\n            .Select(p => $\"{p.DeclaringType!.Name}.{p.Name}\")\n            .ToList();\n\n        offenders.Should().BeEmpty(\"خصائص الـaggregate تُعدَّل عبر السلوك فقط: {0}\", string.Join(\", \", offenders));\n    }\n\n    [Fact]\n    public void Handlers_are_sealed_and_have_single_dependency_source()\n    {\n        var result = Types.InAssembly(Application)\n            .That().HaveNameEndingWith(\"Handler\")\n            .Should().BeSealed()\n            .GetResult();\n\n        result.IsSuccessful.Should().BeTrue(FailureList(result));\n    }\n\n    private static string FailureList(ArchTestResult result) =>\n        \"المخالفات: \" + string.Join(\", \", result.FailingTypeNames?.Take(15) ?? []);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "متى Clean Architecture مبالغة؟",
+      "md": "\n- **أداة سطر أوامر صغيرة / سكربت / نموذج أولي** → مشروع واحد ومجلدات. التكلفة > العائد.\n- **CRUD بلا قواعد عمل** (لوحة إدارة، تقرير) → طبقات كاملة = نسخ ولصق بين DTO وEntity بلا فائدة.\n  استخدم بنية أبسط (Feature folders داخل مشروع واحد).\n- **فريق من شخص واحد ولمدة شهرين** → الحدود بتحميك من نفسك، لكنها بتبطئك؛ خذ القرار بوعي وسجّله في ADR.\n\nالقاعدة: **العمارة تتناسب مع تعقيد المجال وعمر المشروع وحجم الفريق**. ابدأ بسيط،\nوأضف حدودًا لما يظهر الألم (اختبارات بطيئة، تغييرات بتكسر حاجات بعيدة، فرق متعددة).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) Repository مقابل DbContext مباشرة"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الحالة",
+        "القرار",
+        "السبب"
+      ],
+      "rows": [
+        [
+          "Domain فيه سلوك وقواعد حقيقية",
+          "✓ Repository خلف منفذ",
+          "يحمي Domain من EF ويخلي الاختبارات بلا قاعدة"
+        ],
+        [
+          "CRUD بسيط على جداول",
+          "✗ DbContext مباشرة في الـHandler",
+          "Repository بيصير غلاف شفاف = طبقة بلا قيمة (درس 1.1.1)"
+        ],
+        [
+          "مسار قراءة ساخن يحتاج Dapper/projection معقدة",
+          "✓ منفذ read-model مخصص",
+          "`IOrderReadModel` (درس 3.1.3) — مش repository عام"
+        ],
+        [
+          "اختبارات وحدة للـDomain",
+          "✓ لا repository ولا DbContext",
+          "اختبر الكيان نفسه (بلا أي mock)"
+        ],
+        [
+          "اختبارات تكامل للـHandlers",
+          "✓ DbContext حقيقي + Testcontainers",
+          "mock الـrepository بيخفي أخطاء EF الفعلية"
+        ],
+        [
+          "تحتاج `IQueryable` في Application",
+          "△ بحذر شديد",
+          "بيسرّب EF لـApplication؛ لو لازم، استخدم Specification pattern أو منفذ ضيق"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أرسم اتجاه الاعتماد (Domain ← Application ← Infrastructure/Api) وأمنع عكسه بمراجع المشاريع واختبارات معمارية.",
+        "أوزّع الكود صح: قواعد العمل في Domain بسلوك، حالات الاستخدام في Application، التفاصيل التقنية في Infrastructure.",
+        "أتجنب Anemic Domain Model: setters خاصة، أحداث مجال، واستثناءات مجال تُترجم في طبقة التسليم.",
+        "أعرّف Repository فقط لما بيضيف قيمة، وأختبر التكامل بـDbContext حقيقي بدل mock."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه `IClock` (منفذ للزمن) معرّف في Domain مش في Infrastructure؟",
+          "options": [
+            "عشان الأداء",
+            "لأن Domain محتاج الزمن لتطبيق قواعده (CreatedAt/CancelledAt)، والاتجاه الصحيح هو تعريف العقد في الداخل والتنفيذ في الخارج",
+            "عشان DateTime بطيء",
+            "متطلب EF Core"
+          ],
+          "answer": 1,
+          "explain": "ده جوهر Dependency Inversion: الطبقة الداخلية تعرّف **ما تحتاجه**، والخارجية تنفّذه. النتيجة: اختبارات Domain بتتحكم في الزمن."
+        },
+        {
+          "q": "`Order` فيه `public string Status { get; set; }` و`OrderService` بيعدّله. المشكلة الأساسية؟",
+          "options": [
+            "الأداء",
+            "Anemic Domain Model: قواعد الانتقال بين الحالات مش محمية — أي كود يقدر يخالفها",
+            "حجم الملف",
+            "محتاج interface"
+          ],
+          "answer": 1,
+          "explain": "الإصلاح: `private set` + methods (`Cancel()`/`Ship()`) بترفع استثناء لو الانتقال غير مسموح، واختبارات وحدة للقواعد دي."
+        },
+        {
+          "q": "استثناء `InsufficientStockException` يُرمى من Domain — مين يحوّله لـ409؟",
+          "options": [
+            "Domain نفسه (يرجع كود HTTP)",
+            "طبقة Api عبر `IExceptionHandler` (درس 2.1.4) — Domain لا يعرف شيئًا عن HTTP",
+            "Infrastructure",
+            "المترجم"
+          ],
+          "answer": 1,
+          "explain": "لو Domain عرف HTTP/StatusCode، بقي معتمدًا على ASP.NET → كسرنا Dependency Rule واختبارات Domain بقت تحتاج ويب."
+        },
+        {
+          "q": "متى Repository بيصير طبقة بلا قيمة؟",
+          "options": [
+            "دائمًا",
+            "لما بيكون غلاف شفاف لـDbContext في CRUD بسيط (Find/Save بلا منطق) — `DbContext` نفسه هو UoW + Repository",
+            "لما فيه Domain غني",
+            "لما نستخدم Testcontainers"
+          ],
+          "answer": 1,
+          "explain": "القاعدة: أضف abstraction لما فيه سبب (حماية Domain، استبدال، مسار قراءة مختلف). بلا سبب = boilerplate وصيانة إضافية."
+        },
+        {
+          "q": "اختبار تكامل لـ`CancelOrderHandler` — إزاي تجهز `IOrderRepository`؟",
+          "options": [
+            "Mock بـNSubstitute",
+            "DbContext حقيقي (Testcontainers/Postgres) مع الـadapter الحقيقي — عشان تختبر التخطيط والاستعلامات فعليًا",
+            "In-memory provider",
+            "لا تختبره"
+          ],
+          "answer": 1,
+          "explain": "mock الـrepository بيثبت إن كودك بينادي الـmock صح، مش إن الاستعلام يشتغل. الـmockات للوحدات المعزولة (ساعة، عميل خارجي)."
+        },
+        {
+          "q": "`Shop.Application` فيه `using Microsoft.EntityFrameworkCore;` — ده يعني إيه؟",
+          "options": [
+            "عادي",
+            "كسر للمعمارية: تفاصيل تقنية تسربت لطبقة حالات الاستخدام (اختباراتك بقت تحتاج قاعدة، وأي تغيير في EF بيوصل لجوه)",
+            "تحسين أداء",
+            "مطلوب لـInclude"
+          ],
+          "answer": 1,
+          "explain": "اختبار المعمارية بيرفضه تلقائيًا (`HaveDependencyOnAny` بيمنع `Microsoft.EntityFrameworkCore`). الحل: نقل الكود لـInfrastructure خلف منفذ."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "أعد هيكلة aggregate واحد",
+          "md": "اختار أهم كيان في مشروعك وانقله لنموذج غني: setters خاصة، methods للسلوك مع فرض القواعد، Domain Events، واستثناءات مجال. حدّث الـhandlers والـAPI، وأضف اختبارات وحدة للقواعد.",
+          "criteria": [
+            "لا `public set` على خصائص الـaggregate (اختبار معماري يثبتها)",
+            "كل انتقال حالة ممنوع بيرفع استثناء مجال، مع اختبار وحدة لكل حالة",
+            "اختبارات Domain تشتغل بلا قاعدة بيانات ولا mocks وفي أقل من ثانية",
+            "الـhandler بقى تنسيقًا فقط (لا `if` يخص قواعد العمل)",
+            "ترجمة استثناءات المجال لـHTTP في `IExceptionHandler` (مش في Domain)",
+            "لا attributes تقنية (EF/JSON) على أنواع الـDomain"
+          ],
+          "hint": "لو EF بيشتكي من الـconstructors الخاصة: أضف `private` constructor فاضي واستخدم `HasColumnName`/shadow properties في `IEntityTypeConfiguration` داخل Infrastructure."
+        },
+        {
+          "id": "t2",
+          "title": "اختبارات معمارية في CI",
+          "md": "أضف مشروع `ArchTests` بقواعد: Domain بلا اعتماد تقني، Application بلا Infrastructure/EF، handlers sealed، ولا public setters في الـaggregates. شغّلها في CI كخطوة إلزامية.",
+          "criteria": [
+            "4 قواعد معمارية على الأقل، كل واحدة برسالة فشل تشرح القاعدة والمخالفة",
+            "الاختبار يفشل فعلًا عند مخالفة مفتعلة (جرّب وأثبت في الـPR)",
+            "خطوة في GitHub Actions تشغّل `ArchTests` قبل النشر",
+            "قاعدة إضافية تخص مشروعك (تسمية، مكان DTOs، منع `IQueryable` في Application)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": ".NET architecture guides (MS Learn)",
+          "url": "https://learn.microsoft.com/dotnet/architecture/"
+        },
+        {
+          "label": "Clean Architecture example — eShop",
+          "url": "https://github.com/dotnet-architecture/eShop"
+        },
+        {
+          "label": "ardaris/CleanArchitecture",
+          "url": "https://github.com/ardaris/CleanArchitecture"
+        },
+        {
+          "label": "The Clean Architecture (Uncle Bob)",
+          "url": "https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html"
+        },
+        {
+          "label": "NetArchTest",
+          "url": "https://github.com/BenMorris/NetArchTest"
+        },
+        {
+          "label": "Repository & Unit of Work pattern",
+          "url": "https://learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,271 @@
+{
+  "id": "s2-m3-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\n`BackgroundService` شكله أبسط كلاس في .NET — وهو مصدر أشهر الباجات المتقطعة:\nتسريب scopes، استثناء بيوقف التطبيق كله، شغل بيكمل بعد الإيقاف، ومهام بتتنفذ مرتين على أكثر من نسخة.\n\nالدرس ده: تكتب hosted service **آمن** (scope لكل تكرار، تعامل مع `StoppingToken`، عزل الاستثناءات)،\nوتبني نمط producer/consumer بـ`Channels` — وبعدين تقرر إمتى تحتاج queue worker بدل in-process.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "`IHostedService`",
+          "def": "عقد `StartAsync`/`StopAsync` — الـhost بيناديهم عند الإقلاع والإيقاف."
+        },
+        {
+          "term": "`BackgroundService`",
+          "def": "تنفيذ جاهز لـ`IHostedService` مع `ExecuteAsync(stoppingToken)`. singleton بطبيعته."
+        },
+        {
+          "term": "`IServiceScopeFactory`",
+          "def": "الطريقة الصحيحة للحصول على خدمات scoped (DbContext) من singleton."
+        },
+        {
+          "term": "`StoppingToken`",
+          "def": "إلغاء عند الإيقاف. لازم توصل **لكل** عملية I/O وإلا الإيقاف هيتأخر/يتوقف."
+        },
+        {
+          "term": "`BackgroundServiceExceptionBehavior`",
+          "def": "سلوك الـhost عند استثناء غير معالج: `StopHost` (الافتراضي في .NET 6+) أو `Ignore`."
+        },
+        {
+          "term": "Channel",
+          "def": "طابور داخل العملية (`System.Threading.Channels`) بحدود وback-pressure — أنضف من `ConcurrentQueue` + polling."
+        },
+        {
+          "term": "`PeriodicTimer`",
+          "def": "مؤقت دوري بسيط ومحترم للإلغاء — بديل أنظف من `Task.Delay` في حلقة."
+        },
+        {
+          "term": "Graceful shutdown",
+          "def": "الإيقاف اللطيف: إشارة → إنهاء الشغل الجاري → خروج ضمن `ShutdownTimeout` (افتراضيًا 30 ثانية)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "النمط الصحيح: scope لكل تكرار + عزل الأخطاء"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Background/AbandonedOrderWorker.cs",
+      "title": "worker دوري مكتوب بشكل آمن",
+      "code": "\nusing Microsoft.Extensions.Hosting;\n\npublic sealed class AbandonedOrderWorker(\n    IServiceScopeFactory scopeFactory,          // ★ singleton لا يأخذ DbContext مباشرة\n    ILogger<AbandonedOrderWorker> log,\n    TimeProvider time) : BackgroundService\n{\n    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(5);\n    private const int BatchSize = 50;\n\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        // ✓ تأخير البدء: اترك التطبيق يكمل إقلاعه (health checks, migrations) قبل أول تشغيل\n        await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken).ConfigureAwait(false);\n\n        using var timer = new PeriodicTimer(Interval);\n\n        // ✓ الحلقة كلها داخل try: استثناء غير معالج في ExecuteAsync بيوقف الـhost (الافتراضي StopHost)\n        try\n        {\n            do\n            {\n                try\n                {\n                    await RunOnceAsync(stoppingToken).ConfigureAwait(false);\n                }\n                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)\n                {\n                    break;                       // إيقاف لطيف — مش خطأ\n                }\n                catch (Exception ex)\n                {\n                    // ✓ سجّل واستمر: فشل دورة واحدة لا يجب أن يسقط العملية كلها\n                    log.LogError(ex, \"abandoned-order sweep failed; will retry next interval\");\n                    Metrics.WorkerFailures.Add(1, new(\"worker\", \"abandoned-orders\"));\n                }\n            }\n            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));\n        }\n        catch (OperationCanceledException)\n        {\n            log.LogInformation(\"abandoned-order worker stopping\");\n        }\n    }\n\n    private async Task RunOnceAsync(CancellationToken ct)\n    {\n        // ★ scope جديد لكل دورة: DbContext scoped، ولا يجوز مشاركته بين الدورات\n        await using var scope = scopeFactory.CreateAsyncScope();\n        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();\n        var orders = scope.ServiceProvider.GetRequiredService<IOrderService>();\n\n        var cutoff = time.GetUtcNow() - TimeSpan.FromMinutes(30);\n\n        var stale = await db.Orders\n            .Where(o => o.Status == OrderStatus.New && o.CreatedAt < cutoff)\n            .OrderBy(o => o.CreatedAt)\n            .Take(BatchSize)\n            .Select(o => o.Id)\n            .ToListAsync(ct);                    // ✓ ct مُمرَّر\n\n        if (stale.Count == 0) return;\n\n        var cancelled = 0;\n        foreach (var id in stale)\n        {\n            ct.ThrowIfCancellationRequested();\n            try\n            {\n                await orders.CancelAbandonedAsync(id, ct);\n                cancelled++;\n            }\n            catch (ConflictException)\n            {\n                // عنصر واحد غير قابل للإلغاء (اتدفع مثلًا) — لا توقف الدفعة كلها\n                log.LogInformation(\"skipped order {OrderId}: state changed\", id);\n            }\n            catch (Exception ex) when (ex is not OperationCanceledException)\n            {\n                log.LogError(ex, \"failed cancelling abandoned order {OrderId}\", id);\n            }\n        }\n\n        log.LogInformation(\"abandoned sweep: {Found} found, {Cancelled} cancelled\", stale.Count, cancelled);\n        Metrics.WorkerRuns.Add(1, new(\"worker\", \"abandoned-orders\", \"result\", \"ok\"));\n    }\n}\n\n// Program.cs\nbuilder.Services.AddHostedService<AbandonedOrderWorker>();\n\n// سلوك الاستثناءات: قرّر عمدًا (الافتراضي StopHost)\nbuilder.Services.Configure<HostOptions>(o =>\n{\n    o.ShutdownTimeout = TimeSpan.FromSeconds(20);                       // مهلة الإيقاف اللطيف\n    o.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.StopHost;\n    // في Kubernetes: StopHost أفضل — الـpod يعيد التشغيل. Ignore يخفي الأعطال.\n});\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "أشهر 6 أخطاء في BackgroundService",
+      "md": "\n1. **حقن `AppDbContext` مباشرة في الـconstructor** → الـservice singleton والـDbContext scoped: استثناء\n   أو (أسوأ) context مشترك بين دورات متوازية → `InvalidOperationException` متقطعة وتسريب ذاكرة.\n2. **مفيش `try/catch` حول الحلقة** → استثناء واحد (timeout شبكة) بيقفل التطبيق كله في .NET 6+.\n3. **عدم تمرير `stoppingToken`** → `ToListAsync()`/`HttpClient` بيكملوا بعد الإيقاف، والـhost بيستنى 30 ثانية ثم يقتل.\n4. **`ExecuteAsync` بيعمل `await` لعمل طويل قبل أول `await` حقيقي** → `StartAsync` بيتأخر والإقلاع يتجمد. ابدأ الشغل بعد أول نقطة تعليق، أو استخدم قناة.\n5. **شغل متوازي بلا حدود** (`Parallel.ForEach` على 10 آلاف عنصر) → استنزاف اتصال القاعدة. حدد درجة توازي.\n6. **نسخ متعددة بتنفذ نفس المهمة** → تكرار شحنات/رسائل. تحتاج distributed lock أو queue أو leader election.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "producer/consumer بقناة: أنضف نمط لعمل داخل العملية"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Background/EmailQueue.cs",
+      "title": "قناة محدودة + consumer + معالجة دفعية",
+      "code": "\nusing System.Threading.Channels;\n\n/// <summary>\n/// طابور داخل العملية. الحدود (Bounded) مهمة: بلا حدود، أي تباطؤ في المعالجة = ذاكرة بلا سقف.\n/// `Wait` عند الامتلاء = back-pressure طبيعي على الـAPI بدل الانهيار.\n/// </summary>\npublic sealed class EmailQueue\n{\n    private readonly Channel<OutgoingEmail> _channel = Channel.CreateBounded<OutgoingEmail>(\n        new BoundedChannelOptions(capacity: 500)\n        {\n            FullMode = BoundedChannelFullMode.Wait,\n            SingleReader = true,\n            SingleWriter = false,\n        });\n\n    public ValueTask EnqueueAsync(OutgoingEmail email, CancellationToken ct) =>\n        _channel.Writer.WriteAsync(email, ct);\n\n    public IAsyncEnumerable<OutgoingEmail> ReadAllAsync(CancellationToken ct) =>\n        _channel.Reader.ReadAllAsync(ct);\n\n    public bool TryComplete() => _channel.Writer.TryComplete();\n}\n\npublic sealed record OutgoingEmail(Guid Id, string To, string Subject, string Body);\n\npublic sealed class EmailSenderWorker(\n    EmailQueue queue, IEmailSender sender, ILogger<EmailSenderWorker> log,\n    IServiceScopeFactory scopeFactory) : BackgroundService\n{\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        log.LogInformation(\"email sender started\");\n\n        await foreach (var email in queue.ReadAllAsync(stoppingToken).ConfigureAwait(false))\n        {\n            try\n            {\n                await using var scope = scopeFactory.CreateAsyncScope();\n                var store = scope.ServiceProvider.GetRequiredService<IOutboxStore>();\n\n                // ✓ idempotency: لو الرسالة اتبعتت قبلًا (إعادة تشغيل بعد crash) ما تتبعتش تاني\n                if (await store.IsSentAsync(email.Id, stoppingToken)) continue;\n\n                await sender.SendAsync(email, stoppingToken);\n                await store.MarkSentAsync(email.Id, stoppingToken);\n            }\n            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)\n            {\n                break;\n            }\n            catch (Exception ex)\n            {\n                // ✗ ما تبتلعش الرسالة: أرجعها للطابور بعد تأخير (أو لطابور dead-letter)\n                log.LogError(ex, \"failed sending email {EmailId}\", email.Id);\n                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);\n                await queue.EnqueueAsync(email with { }, stoppingToken);\n            }\n        }\n\n        log.LogInformation(\"email sender stopped\");\n    }\n\n    public override async Task StopAsync(CancellationToken cancellationToken)\n    {\n        queue.TryComplete();                       // أوقف القبول، واملأ ما في الطابور\n        await base.StopAsync(cancellationToken);\n    }\n}\n\n// الاستخدام من handler — بلا انتظار الإرسال في مسار الطلب (يقلل زمن الاستجابة)\nawait emailQueue.EnqueueAsync(new OutgoingEmail(id, to, subject, body), ct);\nreturn TypedResults.Accepted();                    // 202: اتقبلت، هتتنفذ قريبًا\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "حدود القنوات داخل العملية",
+      "md": "\nالقناة **في الذاكرة**: لو العملية وقعت، كل الرسائل اللي جواها ضاعت. مقبول لـ: إشعارات قابلة لإعادة التوليد،\nمهام غير حرجة. غير مقبول لـ: مدفوعات، شحن، فواتير، رسائل يجب ألا تُفقد.\n\nللحالات الحرجة استخدم واحدًا من:\n- **Outbox في قاعدة البيانات**: اكتب الرسالة في نفس transaction تغيير الحالة، وworker بيقراها ويخلصها (at-least-once + idempotent).\n- **Queue حقيقي**: RabbitMQ / Azure Service Bus / SQS عبر MassTransit (إعادة محاولة، DLQ، ترتيب، تعدد مستهلكين).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "القرار: hosted service ولا queue worker ولا scheduler؟"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الاحتياج",
+        "الحل",
+        "ليه"
+      ],
+      "rows": [
+        [
+          "مهمة دورية بسيطة داخل العملية",
+          "`BackgroundService` + `PeriodicTimer`",
+          "بلا بنية إضافية؛ مقبول لو فشل دورة مش كارثة"
+        ],
+        [
+          "شغل ناتج عن طلب ويب (بلا انتظار)",
+          "Channel + consumer worker",
+          "فصل زمن الاستجابة عن زمن المعالجة"
+        ],
+        [
+          "جدولة cron مع إعادة محاولة ولوحة تحكم",
+          "Hangfire أو Quartz (الدرس الجاي)",
+          "تخزين دائم، retries، رؤية، إعادة تشغيل بعد سقوط العملية"
+        ],
+        [
+          "رسائل يجب ألا تُفقد / تعدد خدمات",
+          "MassTransit + RabbitMQ/Service Bus",
+          "تسليم مضمون، DLQ، تعدد مستهلكين، فصل تشغيلي"
+        ],
+        [
+          "مهام ثقيلة/متقطعة (تقارير ليلية)",
+          "مهمة مجدولة منفصلة (K8s CronJob / Functions)",
+          "عزل الموارد عن خدمة الـAPI"
+        ],
+        [
+          "نفس المهمة على أكثر من نسخة",
+          "Distributed lock أو queue واحد",
+          "منع التنفيذ المزدوج"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "نسخ متعددة: قفل موزّع بسيط بـPostgres (advisory lock)",
+      "code": "\n/// <summary>\n/// يمنع تنفيذ نفس الدورة على أكثر من نسخة في نفس الوقت.\n/// advisory lock في Postgres: يُحرَّر تلقائيًا عند انتهاء الجلسة (لا يتعلّق لو fellت النسخة).\n/// </summary>\npublic sealed class PostgresSweepLock(AppDbContext db, ILogger<PostgresSweepLock> log)\n{\n    public async Task<IDisposable?> TryAcquireAsync(long key, CancellationToken ct)\n    {\n        var acquired = await db.Database\n            .SqlQueryRaw<bool>(\"SELECT pg_try_advisory_lock({0}) AS value\", key)\n            .SingleAsync(ct);\n\n        if (!acquired)\n        {\n            log.LogDebug(\"sweep {Key} already running on another instance\", key);\n            return null;\n        }\n        return new Releaser(db, key, log);\n    }\n\n    private sealed class Releaser(AppDbContext db, long key, ILogger log) : IDisposable\n    {\n        public void Dispose()\n        {\n            try { db.Database.ExecuteSqlRaw(\"SELECT pg_advisory_unlock({0})\", key); }\n            catch (Exception ex) { log.LogWarning(ex, \"failed releasing advisory lock {Key}\", key); }\n        }\n    }\n}\n\n// في الـworker\nusing var gate = await sweepLock.TryAcquireAsync(key: 4242, stoppingToken);\nif (gate is null) return;                 // نسخة تانية شغالة — تخطَّ الدورة بهدوء\nawait RunOnceAsync(stoppingToken);\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "اختبار الـworker"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "اختبر المنطق، مش الحلقة",
+      "code": "\npublic sealed class AbandonedOrderWorkerTests\n{\n    [Fact]\n    public async Task Cancels_only_orders_older_than_cutoff()\n    {\n        // ★ المنطق مستخرج في service قابل للاختبار — الـworker مجرد حلقة توقيت\n        var service = new AbandonedOrderSweeper(db, clock, notifier);\n        clock.Set(new DateTimeOffset(2026, 10, 22, 12, 0, 0, TimeSpan.Zero));\n\n        db.Orders.AddRange(\n            AnOrder.WithStatus(OrderStatus.New).CreatedAt(clock.Now - TimeSpan.FromMinutes(45)).Build(),\n            AnOrder.WithStatus(OrderStatus.New).CreatedAt(clock.Now - TimeSpan.FromMinutes(5)).Build(),\n            AnOrder.WithStatus(OrderStatus.Paid).CreatedAt(clock.Now - TimeSpan.FromHours(3)).Build());\n        await db.SaveChangesAsync();\n\n        var result = await service.SweepAsync(batchSize: 50, CancellationToken.None);\n\n        result.Cancelled.Should().Be(1);\n        result.Skipped.Should().Be(2);\n    }\n\n    [Fact]\n    public async Task Worker_stops_promptly_on_cancellation()\n    {\n        using var cts = new CancellationTokenSource();\n        var worker = new AbandonedOrderWorker(scopeFactory, log, clock);\n\n        var run = worker.StartAsync(cts.Token);\n        cts.CancelAfter(TimeSpan.FromMilliseconds(200));\n\n        // ✓ لو الـstoppingToken مُمرَّر صح، الإيقاف فوري — وإلا الاختبار ده هيتعلّق\n        await worker.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));\n    }\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أكتب `BackgroundService` بـscope لكل دورة و`try/catch` حول الحلقة وتمرير `stoppingToken` في كل مكان.",
+        "أستخدم `Channels` بحدود (back-pressure) لنمط producer/consumer وأفهم حدوده في الذاكرة.",
+        "أختار بين hosted service وscheduler وqueue worker بمعيار الدوام والتسليم المضمون.",
+        "أمنع التنفيذ المزدوج على نسخ متعددة (lock/queue) وأجعل المعالج idempotent."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه `AppDbContext` في constructor الـ`BackgroundService` خطأ؟",
+          "options": [
+            "بطيء",
+            "الـworker singleton والـDbContext scoped → عمر غير متطابق: سياق مشترك/مغلق واستثناءات متقطعة",
+            "EF Core ما بيدعمش",
+            "يحتاج transaction"
+          ],
+          "answer": 1,
+          "explain": "الحل: `IServiceScopeFactory` و`CreateAsyncScope()` **داخل كل دورة**، ثم التخلص منه في نهاية الدورة."
+        },
+        {
+          "q": "استثناء غير معالج داخل `ExecuteAsync` — إيه اللي بيحصل افتراضيًا في .NET 6+؟",
+          "options": [
+            "يُسجَّل ويُكمل",
+            "الـhost بيتوقف بالكامل (`BackgroundServiceExceptionBehavior.StopHost`)",
+            "يعيد المحاولة تلقائيًا",
+            "يوقف الـworker فقط"
+          ],
+          "answer": 1,
+          "explain": "سلوك مقصود: فشل صامت أخطر. في K8s الـpod هيتعاد تشغيله — لكن الأفضل `try/catch` داخل الحلقة مع تسجيل وقياس."
+        },
+        {
+          "q": "القناة (Channel) غير محدودة `CreateUnbounded` — الخطر؟",
+          "options": [
+            "أبطأ",
+            "استهلاك ذاكرة بلا سقف لو المستهلك أبطأ من المنتج (والانهيار بدل الـback-pressure)",
+            "فقدان ترتيب",
+            "تعارضات"
+          ],
+          "answer": 1,
+          "explain": "`Bounded` مع `FullMode.Wait` بيديك back-pressure طبيعي: المنتج يستنى بدل ما الذاكرة تنفجر."
+        },
+        {
+          "q": "تطبيقك على 3 نسخ بيوقف الطلبات المتروكة. النتيجة المتوقعة من غير قفل؟",
+          "options": [
+            "أسرع",
+            "التنفيذ الثلاثي: محاولات متضاربة، رسائل مكررة، وسجلات مضللة",
+            "لا شيء",
+            "قفل تلقائي"
+          ],
+          "answer": 1,
+          "explain": "الحل: قفل موزّع (advisory lock/Redis)، أو queue بمستهلك واحد، أو K8s CronJob منفصل، أو leader election."
+        },
+        {
+          "q": "ليه تمرير `stoppingToken` لكل عملية I/O مهم؟",
+          "options": [
+            "متطلب ترجمة",
+            "الإيقاف اللطيف: بدونه الشغل بيكمل بعد إشارة الإيقاف فيستهلك مهلة `ShutdownTimeout` ثم يُقتل قسرًا",
+            "لتقليل اللوجات",
+            "لتحسين الأداء"
+          ],
+          "answer": 1,
+          "explain": "في K8s القتل القسري = transaction ناقصة وحالة متضاربة. مرّر التوكن في `ToListAsync`, `HttpClient`, `Task.Delay`, `WaitForNextTickAsync`."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "worker آمن ومختبر",
+          "md": "حوّل أي مهمة دورية عندك (تنظيف، مزامنة، تقارير) إلى `BackgroundService` بالنمط الآمن: scope لكل دورة، `PeriodicTimer`، `try/catch` داخل الحلقة، `stoppingToken` في كل I/O، واستخرج المنطق في service قابل للاختبار.",
+          "criteria": [
+            "لا يوجد DbContext أو أي خدمة scoped في الـconstructor",
+            "فشل دورة واحدة لا يوقف التطبيق (اختبار: اجعل الـservice يرمي مرة وأكد الاستمرار)",
+            "إيقاف التطبيق يتم في أقل من 5 ثوانٍ (قِس ووثّق)",
+            "قياس (metric) لعدد الدورات والفشل",
+            "اختباران unit للمنطق المستخرج"
+          ],
+          "hint": "لو الإيقاف بطيء: ابحث عن أي نداء I/O بلا `stoppingToken` — غالبًا `Task.Delay` أو استعلام قاعدة بيانات."
+        },
+        {
+          "id": "t2",
+          "title": "طابور داخل العملية مع idempotency",
+          "md": "انقل عملًا بطيئًا من مسار الطلب (إرسال بريد/إشعار/توليد ملف) إلى قناة محدودة + consumer، وأعد 202 فورًا. أضف outbox/idempotency key بحيث إعادة التشغيل لا تكرر التنفيذ.",
+          "criteria": [
+            "قناة `Bounded` بحد معلن و`FullMode.Wait`",
+            "زمن استجابة الـendpoint قلّ (قِس قبل/بعد)",
+            "إعادة تشغيل التطبيق أثناء المعالجة لا ترسل نفس الرسالة مرتين (اختبار أو تحقق)",
+            "فشل عنصر واحد لا يفقد الطابور ولا يوقف المستهلك",
+            "قرار موثق: هل الحالة دي محتاجة queue حقيقي بدل قناة في الذاكرة؟"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Background tasks with hosted services",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/background-service"
+        },
+        {
+          "label": "Queued background service example",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/host/hosted-services"
+        },
+        {
+          "label": "System.Threading.Channels",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/channels"
+        },
+        {
+          "label": "Graceful shutdown / HostOptions",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/generic-host"
+        },
+        {
+          "label": "PostgreSQL advisory locks",
+          "url": "https://www.postgresql.org/docs/current/explicit-locking.html"
+        }
+      ]
+    }
+  ]
+}

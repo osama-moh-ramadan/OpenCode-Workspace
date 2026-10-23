@@ -1,0 +1,220 @@
+{
+  "id": "s1-m2-l5",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nاختبارات EF Core على `InMemory` provider بتكذب عليك: مفيش transactions حقيقية، مفيش قيود (unique/FK/check)،\nالـraw SQL ما بيشتغلش، وترجمة LINQ بتختلف. وSQLite أقرب — لكنها لسه مش Postgres/SQL Server\n(الفهارس، أنواع JSON، السلوك تحت التزامن).\n\n**Testcontainers** بيحل المسألة دي: يشغّل قاعدة بيانات **حقيقية** في Docker، ويعطيك connection string،\nوينضّف وراها. نفس الفكرة لـRedis وRabbitMQ وKafka — أي تبعية كانت بتخليك تكتب mocks كاذبة.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Testcontainers",
+          "def": "مكتبة تبني وتشغّل حاويات مُدارة من داخل الاختبارات (Docker API مباشرة، بلا docker-compose)."
+        },
+        {
+          "term": "PostgreSqlBuilder",
+          "def": "وحدة جاهزة لحاوية Postgres مع ضبط الصورة وقاعدة البيانات والمستخدم."
+        },
+        {
+          "term": "Ryuk",
+          "def": "حاوية جانبية تنظّف الحاويات المتبقية لو الاختبارات اتقتلت فجأة."
+        },
+        {
+          "term": "Resource reuse",
+          "def": "`WithReuse(true)` لإعادة استخدام نفس الحاوية بين تشغيلات — أسرع تطويرًا (انتبه للبيانات المتبقية)."
+        },
+        {
+          "term": "Respawn",
+          "def": "مكتبة تصفّر جداول قاعدة البيانات بين الاختبارات بسرعة (بدل إعادة إنشاء الحاوية)."
+        },
+        {
+          "term": "IAsyncLifetime",
+          "def": "بدء/إنهاء غير متزامن — المكان الطبيعي لتشغيل الحاوية وإيقافها."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم والمتطلبات",
+      "code": "\n# المتطلب: Docker شغال (Docker Desktop على Windows/macOS، أو Docker Engine على Linux)\ndocker info\n\n# الحزم\ndotnet add Shop.Tests package Testcontainers.PostgreSql\ndotnet add Shop.Tests package Testcontainers.Redis        # اختياري\ndotnet add Shop.Tests package Testcontainers.RabbitMq     # اختياري\ndotnet add Shop.Tests package Respawn                     # اختياري: تصفير سريع\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Tests/PostgresFixture.cs",
+      "title": "حاوية حقيقية + ترحيل EF + تصفير بين الاختبارات",
+      "code": "\nusing Respawn;\nusing Testcontainers.PostgreSql;\n\npublic sealed class PostgresFixture : IAsyncLifetime\n{\n    private readonly PostgreSqlContainer _db = new PostgreSqlBuilder()\n        .WithImage(\"postgres:17-alpine\")\n        .WithDatabase(\"shop_tests\")\n        .WithUsername(\"test\")\n        .WithPassword(\"test\")\n        .WithCleanUp(true)            // Ryuk ينظّف لو العملية اتقتلت\n        .Build();\n\n    private Respawner? _respawner;\n\n    public string ConnectionString => _db.GetConnectionString();\n\n    public async ValueTask InitializeAsync()\n    {\n        await _db.StartAsync();\n\n        await using var ctx = CreateContext();\n        await ctx.Database.MigrateAsync();          // ✓ نفس migrations الإنتاج\n\n        _respawner = await Respawner.CreateAsync(ConnectionString, new RespawnerOptions\n        {\n            DbAdapter = DbAdapter.Postgres,\n            SchemasToInclude = [\"public\"],\n        });\n    }\n\n    public async ValueTask DisposeAsync() => await _db.DisposeAsync();\n\n    public AppDbContext CreateContext() =>\n        new(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(ConnectionString).Options);\n\n    /// <summary>نادِ عليها في بداية كل اختبار: قاعدة نظيفة بأقل تكلفة.</summary>\n    public async Task ResetAsync()\n    {\n        if (_respawner is not null) await _respawner.ResetAsync(ConnectionString);\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Tests/OrderQueryTests.cs",
+      "title": "اختبارات تعتمد على سلوك Postgres الحقيقي",
+      "code": "\n[Collection(\"Postgres\")]\npublic sealed class OrderQueryTests(PostgresFixture db) : IAsyncLifetime\n{\n    public ValueTask InitializeAsync() => new(db.ResetAsync().AsTask());\n    public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n\n    [Fact]\n    public async Task Unique_email_constraint_is_enforced()\n    {\n        // ده اختبار مستحيل على InMemory provider: قيد فريد في قاعدة البيانات\n        await using (var ctx = db.CreateContext())\n        {\n            ctx.Customers.Add(new Customer { Id = Guid.NewGuid(), Email = \"dup@example.com\" });\n            await ctx.SaveChangesAsync();\n        }\n\n        await using var second = db.CreateContext();\n        second.Customers.Add(new Customer { Id = Guid.NewGuid(), Email = \"dup@example.com\" });\n\n        var act = () => second.SaveChangesAsync();\n\n        await act.Should().ThrowAsync<DbUpdateException>();\n    }\n\n    [Fact]\n    public async Task Projection_translates_to_sql_and_returns_only_needed_columns()\n    {\n        await using var ctx = db.CreateContext();\n        ctx.Orders.AddRange(\n            AnOrder.WithCountry(\"EG\").WithTotal(228m).Build(),\n            AnOrder.WithCountry(\"SA\").WithTotal(230m).Build());\n        await ctx.SaveChangesAsync();\n\n        var totals = await ctx.Orders\n            .GroupBy(o => o.Customer.Country)\n            .Select(g => new { Country = g.Key, Sum = g.Sum(o => o.Total) })\n            .OrderByDescending(x => x.Sum)\n            .ToListAsync();\n\n        totals.Should().HaveCount(2);\n        totals[0].Sum.Should().Be(230m);\n    }\n\n    [Fact]\n    public async Task ExecuteUpdateAsync_updates_rows_without_loading_them()\n    {\n        await using var ctx = db.CreateContext();\n        ctx.Orders.AddRange([..Enumerable.Range(0, 5).Select(_ => AnOrder.WithStatus(OrderStatus.Abandoned).Build())]);\n        await ctx.SaveChangesAsync();\n\n        var affected = await ctx.Orders\n            .Where(o => o.Status == OrderStatus.Abandoned)\n            .ExecuteUpdateAsync(s => s.SetProperty(o => o.Status, OrderStatus.Cancelled));\n\n        affected.Should().Be(5);\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "ربط الحاوية بـWebApplicationFactory",
+      "md": "\nبدل SQLite في درس الـIntegration، بدّل التسجيل في `CustomWebApplicationFactory` لـPostgres:\n```csharp\npublic sealed class CustomWebApplicationFactory(PostgresFixture db)\n    : WebApplicationFactory<Program>, IAsyncLifetime\n{\n    protected override void ConfigureWebHost(IWebHostBuilder builder) =>\n        builder.ConfigureTestServices(services =>\n        {\n            services.RemoveAll(typeof(DbContextOptions<AppDbContext>));\n            services.AddDbContext<AppDbContext>(o => o.UseNpgsql(db.ConnectionString));\n        });\n\n    public ValueTask InitializeAsync() => new(db.ResetAsync().AsTask());\n    public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n}\n```\nوالأفضل: حاوية واحدة لكل مجموعة الاختبارات (assembly fixture) عشان ما تدفعش تكلفة الإقلاع لكل كلاس.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "تبعيات تانية: Redis وRabbitMQ"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "حاويات جاهزة لأي تبعية",
+      "code": "\n// Redis: اختبار IDistributedCache / rate limiting / distributed lock حقيقيًا\nvar redis = new RedisBuilder().WithImage(\"redis:7-alpine\").Build();\nawait redis.StartAsync();\nservices.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(redis.GetConnectionString()));\n\n// RabbitMQ: اختبار نشر/استهلاك حدث حقيقي (MassTransit in-memory بديل أبسط للاختبارات السريعة)\nvar rabbit = new RabbitMqBuilder().WithImage(\"rabbitmq:3-management-alpine\").Build();\nawait rabbit.StartAsync();\nvar amqp = rabbit.GetConnectionString();      // amqp://guest:guest@localhost:<port>\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المزوّد",
+        "السرعة",
+        "الدقة",
+        "إمتى تستخدمه"
+      ],
+      "rows": [
+        [
+          "EF InMemory",
+          "الأعلى",
+          "منخفضة — مفيش transactions/قيود/SQL",
+          "اختبارات منطق صرف لا تلمس SQL (نادراً)"
+        ],
+        [
+          "SQLite (ملف/ذاكرة)",
+          "عالية",
+          "متوسطة — SQL حقيقي لكن ليس مزوّدك",
+          "تطوير سريع واختبارات CRUD بسيطة"
+        ],
+        [
+          "Testcontainers (Postgres/SQL Server)",
+          "متوسطة (ثوانٍ للإقلاع)",
+          "عالية — نفس محرك الإنتاج",
+          "أي اختبار يعتمد على SQL/قيود/أداء/ترحيلات"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "تكلفة وأداء",
+      "md": "\n- **أول تشغيل بيسحب الصور** (مئات الميجابايت): اسحبها مسبقًا في الـCI (`docker pull postgres:17-alpine`) وخبّئها (cache).\n- **حاوية واحدة لكل الـassembly** (assembly fixture) بدل حاوية لكل كلاس — الفرق ثواني × عدد الكلاسات.\n- `WithReuse(true)` بيسرّع التطوير المحلي، لكنه **بيسيب بيانات من التشغيل السابق**: لا تستخدمه مع اختبارات حساسة للبيانات.\n- **لا تشغّل اختبارات بالتوازي على نفس الحاوية** من غير عزل (Respawn قبل كل اختبار + معرّفات فريدة).\n- علّمها `[Trait(\"Category\",\"Integration\")]` عشان تتفادى تشغيلها في كل حفظ.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أشغّل Postgres حقيقي في اختباراتي بـTestcontainers مع `MigrateAsync`.",
+        "أستخدم Respawn لتصفير البيانات بين الاختبارات بدل إعادة إنشاء الحاوية.",
+        "أختبر سلوكًا يعتمد على قاعدة البيانات فعلًا (قيود، ترجمة LINQ، ExecuteUpdate).",
+        "أربط الحاوية بـWebApplicationFactory وأتحكم في التوازي والتكلفة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "أنهي اختبار **يستحيل** ينجح بشكل صحيح على EF InMemory provider؟",
+          "options": [
+            "حفظ كيان وقراءته",
+            "التحقق من إن قيد Unique على Email بيسبب `DbUpdateException`",
+            "اختبار سياسة خصم على كيان",
+            "اختبار validator"
+          ],
+          "answer": 1,
+          "explain": "InMemory ما بتطبقش قيود قاعدة البيانات. ده بالظبط نوع الباج اللي بيظهر في الإنتاج بس."
+        },
+        {
+          "q": "إيه وظيفة Ryuk في Testcontainers؟",
+          "options": [
+            "يسرّع الاستعلامات",
+            "ينظّف الحاويات المتبقية لو عملية الاختبار اتقتلت فجأة",
+            "يشفّر الاتصال",
+            "يدير الـmigrations"
+          ],
+          "answer": 1,
+          "explain": "حاوية جانبية بتتبع الموارد اللي أنشأتها المكتبة وتوقفها لو العملية الأم اختفت — عشان ما تفضلش حاويات تأكل موارد جهازك."
+        },
+        {
+          "q": "الاختبارات بقت بطيئة (30 ثانية). أنهي إصلاح له أكبر أثر؟",
+          "options": [
+            "زيادة `maxParallelThreads` مع قاعدة مشتركة",
+            "حاوية واحدة لكل الـassembly + Respawn بين الاختبارات بدل حاوية لكل كلاس",
+            "حذف الاختبارات",
+            "استخدام InMemory لكل حاجة"
+          ],
+          "answer": 1,
+          "explain": "تكلفة إقلاع الحاوية هي الغالبة. مشاركتها + تصفير سريع للبيانات بيوفر أغلب الوقت. (زيادة التوازي على قاعدة مشتركة بيسبب تعارض.)"
+        },
+        {
+          "q": "`WithReuse(true)` — إمتى يكون خطر؟",
+          "options": [
+            "في الـCI",
+            "لما الاختبارات بتفترض قاعدة فاضية والحاوية محتفظة ببيانات من تشغيل سابق",
+            "مع Redis",
+            "لما الصور كبيرة"
+          ],
+          "answer": 1,
+          "explain": "إعادة الاستخدام بتسيب الحالة. لو محتاجها للسرعة، اضمن تصفير البيانات (Respawn) في بداية كل اختبار."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "استبدال SQLite بـPostgres حقيقي",
+          "md": "حوّل الـfactory من درس الـIntegration لتشتغل على Postgres بـTestcontainers، وأضف 3 اختبارات تعتمد على سلوك قاعدة البيانات: قيد فريد، ترجمة استعلام مجمّع (GroupBy/Sum)، و`ExecuteUpdateAsync`.",
+          "criteria": [
+            "الاختبارات الثلاثة تفشل لو رجّعت لـInMemory provider (جرّب وتأكد)",
+            "حاوية واحدة مشتركة (assembly/collection fixture)",
+            "Respawn أو ما يعادله بين الاختبارات",
+            "زمن التشغيل الكلي أقل من 60 ثانية على جهازك"
+          ],
+          "hint": "لو `docker` مش متاح في البيئة، الاختبار يفشل بسرعة وواضح: أضف فحصًا في `InitializeAsync` يرمي رسالة مفهومة («Docker مطلوب») بدل stack trace غامض."
+        },
+        {
+          "id": "t2",
+          "title": "حاوية لتبعية تانية",
+          "md": "شغّل Redis أو RabbitMQ في اختبار واحد حقيقي: إما كاش موزع تثبت إن القيمة اتخزنت واتقرأت، أو حدث منشور ومستهلَك.",
+          "criteria": [
+            "الاختبار بيتصل بالحاوية الحقيقية (مش in-memory fake)",
+            "بيؤكد على الأثر (القيمة موجودة / الرسالة اتستهلكت)",
+            "الحاوية بتتنضّف بعد الاختبار"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Testcontainers",
+          "url": "https://testcontainers.com/"
+        },
+        {
+          "label": "EF Core testing providers",
+          "url": "https://learn.microsoft.com/ef/core/testing/"
+        },
+        {
+          "label": "Respawn",
+          "url": "https://github.com/jbogard/Respawn"
+        },
+        {
+          "label": "Npgsql EF Core provider",
+          "url": "https://www.npgsql.org/efcore/"
+        }
+      ]
+    }
+  ]
+}

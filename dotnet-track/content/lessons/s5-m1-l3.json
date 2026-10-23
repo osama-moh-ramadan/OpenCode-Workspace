@@ -1,0 +1,373 @@
+{
+  "id": "s5-m1-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nبين الخدمات، JSON/REST بيكلفك: تسلسل أكبر، عقود مكتوبة بإيدك (وبتختلف عن التنفيذ)،\nوبلا streaming حقيقي. **gRPC** بيحل التلاتة: عقود `.proto` مولّدة لكود في الطرفين (تغيير العقد = خطأ ترجمة)،\nبروتوكول ثنائي أصغر، HTTP/2 (multiplexing، بلا head-of-line بين النداءات)، ومهل (deadlines) وإلغاء مدمجين.\n\nالقاعدة العملية في .NET: **gRPC داخليًا بين خدماتك، وREST/OpenAPI خارجيًا للمتصفحين والشركاء**.\nالدرس ده: عقود proto صحيحة (وقابلة للتطور)، خادم بـinterceptors، عميل بـdeadline وresilience،\nstreaming، واختبارات — وأخطاء بتخلّي gRPC أبطأ من REST لو عملتها.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "`.proto` / Protocol Buffers",
+          "def": "لغة تعريف العقد: رسائل وخدمات بأرقام حقول. **رقم الحقل هو الهوية** — الاسم للراحة فقط."
+        },
+        {
+          "term": "Unary / Streaming RPC",
+          "def": "4 أنماط: نداء واحد/رد واحد، server streaming، client streaming، bidirectional."
+        },
+        {
+          "term": "Deadline",
+          "def": "مهلة زمنية يحملها النداء عبر كل الخدمات. انتهت → `DEADLINE_EXCEEDED` تلقائيًا (بديل timeout اليدوي)."
+        },
+        {
+          "term": "Channel مقابل Client",
+          "def": "الـ`GrpcChannel` هو الاتصال (مكلف — **singleton**)، والـclient غلاف خفيف يُنشأ لكل نداء."
+        },
+        {
+          "term": "Interceptor",
+          "def": "وسيط على الخادم/العميل: logging، auth، تحويل استثناءات، مقاييس — مكان واحد بدل تكراره."
+        },
+        {
+          "term": "Status / StatusCode",
+          "def": "حالة النداء (`OK`, `NotFound`, `InvalidArgument`, `Unavailable`, `DeadlineExceeded`…) — تقابل أكواد HTTP دلاليًا."
+        },
+        {
+          "term": "Well-known types",
+          "def": "أنواع جاهزة: `Timestamp`, `Duration`, `Empty`, `Any`, `FieldMask` — استخدمها بدل اختراع equivalents."
+        },
+        {
+          "term": "Reflection & Health",
+          "def": "خدمتان إضافيتان: `grpcurl` للاستكشاف في التطوير، وفحص صحة gRPC لـload balancers."
+        },
+        {
+          "term": "gRPC-Web",
+          "def": "بروتوكول وسيط للمتصفحات (لا يدعم client streaming/bidi) — تحتاجه لو العميل متصفح مباشرة."
+        },
+        {
+          "term": "Backward compatibility",
+          "def": "قواعد proto: إضافة حقل جديد آمن؛ حذف/تغيير رقم أو نوع حقل كاسر (استخدم `reserved`)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) العقود: مشروع proto مشترك"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم وتوليد الكود",
+      "code": "\n# ── مشروع العقود (يُشارك بين الخدمات — بلا أي تنفيذ) ──\ndotnet new classlib -n Shop.Contracts.Grpc -o src/Contracts/Shop.Contracts.Grpc\ncd src/Contracts/Shop.Contracts.Grpc\ndotnet add package Google.Protobuf\ndotnet add package Grpc.Tools                 # مولّد الكود وقت البناء\ndotnet add package Grpc.Net.Client            # للأنواع الأساسية (ClientBase)\nmkdir -p Protos/v1\n\n# ── الخادم (الخدمة المزوِّدة) ──\ndotnet add src/Services/Catalog package Grpc.AspNetCore\n\n# ── العميل (الخدمة المستهلكة) ──\ndotnet add src/Services/Orders package Grpc.Net.ClientFactory\ndotnet add src/Services/Orders package Microsoft.Extensions.Http.Resilience\n\n# ── أدوات التطوير والتشغيل ──\ndotnet add src/Services/Catalog package Grpc.AspNetCore.Server.Reflection   # grpcurl\ndotnet add src/Services/Catalog package Grpc.HealthCheck                     # فحص صحة gRPC\n\n# ── أداة سطر الأوامر للاختبار اليدوي ──\n# grpcurl -plaintext -d '{\"sku\":\"KB-1\"}' localhost:5081 shop.catalog.v1.Catalog/GetProduct\n"
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "filename": "src/Contracts/Shop.Contracts.Grpc/Shop.Contracts.Grpc.csproj",
+      "title": "توليد الكود من الـprotos",
+      "code": "\n<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <Nullable>enable</Nullable>\n    <!-- ★ مشروع العقود: client + server stubs معًا، عشان أي خدمة تستخدمه -->\n  </PropertyGroup>\n\n  <ItemGroup>\n    <PackageReference Include=\"Google.Protobuf\" Version=\"3.*\" />\n    <PackageReference Include=\"Grpc.Net.Client\" Version=\"2.*\" />\n    <PackageReference Include=\"Grpc.Tools\" Version=\"2.*\" PrivateAssets=\"All\" />\n  </ItemGroup>\n\n  <ItemGroup>\n    <!-- Client: للمستهلكين · Server: للمزوِّدين -->\n    <Protobuf Include=\"Protos\\v1\\catalog.proto\" GrpcServices=\"Both\" />\n    <Protobuf Include=\"Protos\\v1\\common.proto\"  GrpcServices=\"None\" />\n  </ItemGroup>\n</Project>\n"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "filename": "src/Contracts/Shop.Contracts.Grpc/Protos/v1/catalog.proto",
+      "title": "عقد proto3: unary + server streaming + قواعد التطور",
+      "code": "\nsyntax = \"proto3\";\n\npackage shop.catalog.v1;                     // ★ إصدار في اسم الحزمة (v1) — مش في اسم الملف فقط\n\nimport \"google/protobuf/timestamp.proto\";\nimport \"google/protobuf/empty.proto\";\nimport \"protos/v1/common.proto\";\n\noption csharp_namespace = \"Shop.Contracts.Grpc.Catalog.V1\";\n\nservice Catalog {\n  // ── unary: نداء/رد ──\n  rpc GetProduct(GetProductRequest) returns (Product);\n  rpc GetProducts(GetProductsRequest) returns (GetProductsResponse);\n  rpc CheckStock(CheckStockRequest) returns (CheckStockResponse);\n\n  // ── server streaming: رد متعدد الأجزاء (تصدير/تقدُّم) ──\n  rpc StreamPriceChanges(PriceWatchRequest) returns (stream PriceChange);\n\n  // ── client streaming: رفع دفعات ──\n  rpc ImportProducts(stream ProductImportItem) returns (ImportSummary);\n}\n\n// ═══ الرسائل ═══\nmessage GetProductRequest {\n  // ★ حقل واحد من مجموعة بدائل: استخدم oneof بدل حقول اختيارية غامضة\n  oneof identifier {\n    string sku = 1;\n    string product_id = 2;                   // UUID كنص (proto3 بلا نوع uuid أصلي)\n  }\n  common.ResponseOptions options = 10;        // حقول اختيارية عامة في آخر الرسالة\n}\n\nmessage Product {\n  string product_id = 1;\n  string sku = 2;\n  string title = 3;\n  string description = 4;\n  common.Money price = 5;                     // ★ لا تستخدم float/double للمال أبدًا\n  int32 available_stock = 6;\n  ProductStatus status = 7;\n  repeated Attribute attributes = 8;\n  google.protobuf.Timestamp updated_at = 9;\n\n  // ✓ إضافة حقل جديد = متوافق خلفيًا (رقم غير مستخدم)\n  string brand = 10;\n\n  // ✗ ممنوع: إعادة استخدام رقم محذوف — احجزه\n  reserved 11, 12;\n  reserved \"legacy_code\", \"old_price\";        // الأسماء كمان تُحجز (لأدوات JSON)\n}\n\nmessage Attribute {\n  string name = 1;\n  string value = 2;\n}\n\nenum ProductStatus {\n  PRODUCT_STATUS_UNSPECIFIED = 0;             // ★ الصفر لازم يكون «غير محدد» — مش قيمة حقيقية\n  PRODUCT_STATUS_DRAFT = 1;\n  PRODUCT_STATUS_ACTIVE = 2;\n  PRODUCT_STATUS_ARCHIVED = 3;\n}\n\nmessage GetProductsRequest {\n  repeated string product_ids = 1;            // ✓ دفعات: نداء واحد بدل N نداءات\n  string category_id = 2;\n  int32 page_size = 3;                        // الخادم يفرض حدًا أقصى (لا تثق بالعميل)\n  string page_token = 4;                      // cursor pagination (درس 2.1.3)\n}\n\nmessage GetProductsResponse {\n  repeated Product products = 1;\n  string next_page_token = 2;                 // فاضي = مفيش المزيد\n  int32 total_size = 3;                       // اختياري: تكلفة عالية — وثّق إنّه تقريبي\n}\n\nmessage CheckStockRequest  { repeated string product_ids = 1; int32 quantity = 2; }\nmessage CheckStockResponse { repeated StockLine lines = 1; bool all_available = 2; }\nmessage StockLine { string product_id = 1; int32 available = 2; bool sufficient = 3; }\n\nmessage PriceWatchRequest { string category_id = 1; int32 max_items = 2; }\nmessage PriceChange {\n  string product_id = 1;\n  common.Money old_price = 2;\n  common.Money new_price = 3;\n  google.protobuf.Timestamp changed_at = 4;\n}\n\nmessage ProductImportItem { string sku = 1; string title = 2; common.Money price = 3; }\nmessage ImportSummary { int32 accepted = 1; int32 rejected = 2; repeated string errors = 3; }\n"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "filename": "src/Contracts/Shop.Contracts.Grpc/Protos/v1/common.proto",
+      "title": "أنواع مشتركة: المال والخيارات",
+      "code": "\nsyntax = \"proto3\";\npackage shop.common;\noption csharp_namespace = \"Shop.Contracts.Grpc.Common\";\n\n// ★ المال: أجزاء أصغر (minor units) + رمز العملة — لا float ولا double\nmessage Money {\n  int64 minor_units = 1;      // 25050 = 250.50\n  string currency_code = 2;   // \"EGP\" (ISO 4217)\n  int32 exponent = 3;         // 2 → القيمة = minor_units / 10^exponent\n}\n\nmessage ResponseOptions {\n  repeated string field_mask_paths = 1;   // لو محتاج إسقاط حقول (قلّل حجم الرد)\n  string locale = 2;\n  bool include_metadata = 3;\n}\n\nmessage ErrorDetail {\n  string code = 1;           // رمز خطأ مستقر (مش رسالة)\n  string message = 2;        // رسالة للبشر (لا تعتمد عليها برمجيًا)\n  repeated string field_names = 3;\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "قواعد تطوّر عقود proto (الكسر الصامت بيحصل هنا)",
+      "md": "\n| التغيير | الحكم | الطريقة |\n|---|---|---|\n| إضافة حقل جديد برقم غير مستخدم | ✓ متوافق | أضف، والعملاء القدامى يتجاهلوه |\n| إضافة قيمة جديدة لـenum | ✓ متوافق | العميل **لازم** يعالج `Unrecognized` (لا استثناء) |\n| إضافة RPC جديد للخدمة | ✓ متوافق | — |\n| حذف حقل | △ | أوقف استخدامه → `reserved <رقم>` و`reserved \"<اسم>\"` → احذف |\n| تغيير رقم حقل | ✗ كاسر |البيانات هتتفسر غلط بصمت. لا تفعلها أبدًا |\n| تغيير نوع حقل | ✗ كاسر (غالبًا) | حقل جديد باسم ورقم جديدين + فترة انتقال |\n| إعادة تسمية حقل | ✓ متوافق ثنائيًا / ✗ كاسر لـJSON | الاسم مش جزء من الترميز الثنائي، لكن أدوات JSON/التوثيق تتأثر |\n| تغيير اسم RPC/الخدمة/الحزمة | ✗ كاسر | إصدار جديد (`v2`) ودعم الاثنين |\n\n**3 قواعد ذهبية:** ① أرقام الحقول للأبد (احجز المحذوف)، ② الصفر في enum = `UNSPECIFIED`،\n③ لا `float`/`double` للمال — استخدم minor units.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) الخادم: تنفيذ + interceptors + صحة + reflection"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Catalog/Grpc/CatalogGrpcService.cs",
+      "title": "unary + streaming + أخطاء بصيغتها الصحيحة",
+      "code": "\nusing Grpc.Core;\nusing Shop.Contracts.Grpc.Catalog.V1;\n\nnamespace Shop.Catalog.Grpc;\n\n/// <summary>\n/// الخادم يرث من الـbase class المولّدة. ★ لا منطق عمل هنا — تنسيق فقط (الموديول/الـhandler بيقرر).\n/// </summary>\npublic sealed class CatalogGrpcService(\n    ICatalogModule catalog, IPublishPriceChanges priceFeed, ILogger<CatalogGrpcService> log)\n    : Catalog.CatalogBase\n{\n    private const int MaxPageSize = 100;\n\n    public override async Task<Product> GetProduct(GetProductRequest request, ServerCallContext context)\n    {\n        // ✓ الإلغاء/المهلة: context.CancellationToken مرتبطة بالـdeadline تلقائيًا\n        context.CancellationToken.ThrowIfCancellationRequested();\n\n        var id = request.IdentifierCase switch\n        {\n            GetProductRequest.IdentifierOneofCase.Sku =>\n                await catalog.FindIdBySkuAsync(request.Sku, context.CancellationToken),\n            GetProductRequest.IdentifierOneofCase.ProductId => Guid.Parse(request.ProductId),\n            _ => throw new RpcException(new Status(StatusCode.InvalidArgument, \"معرّف المنتج مطلوب (sku أو product_id)\")),\n        };\n\n        if (id is null)\n            throw new RpcException(new Status(StatusCode.NotFound, $\"product not found\"),\n                                   CreateTrailers(\"PRODUCT_NOT_FOUND\", request));\n\n        var product = await catalog.GetAsync(id.Value, context.CancellationToken)\n                      ?? throw new RpcException(new Status(StatusCode.NotFound, \"product not found\"));\n\n        return product.ToProto();          // ✓ mapper في مكان واحد (Infrastructure) — لا تسريب Domain\n    }\n\n    public override async Task<GetProductsResponse> GetProducts(GetProductsRequest request, ServerCallContext context)\n    {\n        // ★ لا تثق بحدود العميل: افرض سقفًا\n        var size = Math.Clamp(request.PageSize is 0 ? 20 : request.PageSize, 1, MaxPageSize);\n\n        var page = await catalog.ListAsync(\n            request.CategoryId is \"\" ? null : request.CategoryId,\n            request.PageToken is \"\" ? null : request.PageToken, size, context.CancellationToken);\n\n        var response = new GetProductsResponse { NextPageToken = page.NextCursor ?? string.Empty };\n        response.Products.AddRange(page.Items.Select(ProductMapper.ToProto));\n        return response;\n    }\n\n    /// <summary>Server streaming: دفعة تغييرات لحظية (بديل WebSocket داخليًا).</summary>\n    public override async Task StreamPriceChanges(\n        PriceWatchRequest request, IServerStreamWriter<PriceChange> responseStream, ServerCallContext context)\n    {\n        var max = request.MaxItems is 0 ? 1_000 : request.MaxItems;\n        var sent = 0;\n\n        await foreach (var change in priceFeed.WatchAsync(\n                           request.CategoryId is \"\" ? null : request.CategoryId, context.CancellationToken))\n        {\n            // ✓ الكتابة على الـstream ليست thread-safe بالتوازي — هنا تسلسلية داخل الحلقة\n            await responseStream.WriteAsync(change.ToProto(), context.CancellationToken);\n            if (++sent >= max) break;                        // سقف صريح (لا بث لانهائي)\n        }\n\n        log.LogInformation(\"price stream ended after {Sent} items\", sent);\n    }\n\n    /// <summary>Client streaming: رفع دفعات بلا N نداءات.</summary>\n    public override async Task<ImportSummary> ImportProducts(\n        IAsyncStreamReader<ProductImportItem> requestStream, ServerCallContext context)\n    {\n        var summary = new ImportSummary();\n\n        while (await requestStream.MoveNext(context.CancellationToken))\n        {\n            var item = requestStream.Current;\n            try\n            {\n                await catalog.ImportAsync(item.FromProto(), context.CancellationToken);\n                summary.Accepted++;\n            }\n            catch (ArgumentException ex)\n            {\n                summary.Rejected++;\n                summary.Errors.Add($\"{item.Sku}: {ex.Message}\");\n                if (summary.Errors.Count >= 50) break;        // ✓ لا تجمع أخطاء للأبد\n            }\n        }\n\n        return summary;\n    }\n\n    private static Trailers CreateTrailers(string code, object context) =>\n        new() { { \"error-code\", code } };                     // ★ تفاصيل خطأ منظمة في الـtrailers\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Catalog/Program.cs",
+      "title": "التسجيل: gRPC + interceptors + health + reflection",
+      "code": "\nvar builder = WebApplication.CreateBuilder(args);\n\nbuilder.Services.AddGrpc(options =>\n{\n    options.MaxReceiveMessageSize = 4 * 1024 * 1024;      // ★ حدود صريحة (الافتراضي 4MB استقبال)\n    options.MaxSendMessageSize = 8 * 1024 * 1024;\n    options.EnableDetailedErrors = builder.Environment.IsDevelopment();   // ✓ تفاصيل في الإنتاج = تسريب\n    options.Interceptors.Add<ExceptionInterceptor>();     // تحويل استثناءات المجال → Status صحيح\n    options.Interceptors.Add<LoggingInterceptor>();\n    options.Interceptors.Add<MetricsInterceptor>();\n});\n\nbuilder.Services.AddGrpcHealthChecks()                  // فحص صحة gRPC (للـload balancer)\n    .AddCheck(\"self\", () => HealthCheckResult.Healthy());\nbuilder.Services.AddGrpcReflection();                   // لـgrpcurl في التطوير\n\nbuilder.Services.AddCatalogModule(builder.Configuration);\n\nvar app = builder.Build();\n\napp.MapGrpcService<CatalogGrpcService>();\napp.MapGrpcHealthChecksService();\nif (app.Environment.IsDevelopment()) app.MapGrpcReflectionService();\n\n// ★ لو الخدمة بتستقبل HTTP/JSON كمان: حدد البروتوكولات لكل endpoint\napp.MapGet(\"/\", () => \"catalog gRPC service\").RequireHost(\"*:5080\");\n\napp.Run();\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Catalog/Grpc/Interceptors.cs",
+      "title": "3 interceptors: استثناءات، logging، مقاييس",
+      "code": "\nusing Grpc.Core;\nusing Grpc.Core.Interceptors;\n\n/// <summary>★ أهم interceptor: يحوّل استثناءات المجال لـStatusCode دلالي (بلا 500/Unknown لكل حاجة).</summary>\npublic sealed class ExceptionInterceptor(ILogger<ExceptionInterceptor> log) : Interceptor\n{\n    public override async Task<TResponse> UnaryServerHandler<TRequest, TResponse>(\n        TRequest request, ServerCallContext context, UnaryServerMethod<TRequest, TResponse> continuation)\n    {\n        try { return await continuation(request, context); }\n        catch (RpcException) { throw; }                       // بالفعل gRPC — مرّرها\n        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)\n        {\n            throw new RpcException(new Status(StatusCode.Cancelled, \"cancelled by client/deadline\"));\n        }\n        catch (NotFoundException ex)\n        {\n            throw new RpcException(new Status(StatusCode.NotFound, ex.Message));\n        }\n        catch (ValidationException ex)\n        {\n            var trailers = new Trailers { { \"error-code\", \"VALIDATION_FAILED\" } };\n            foreach (var (field, error) in ex.Errors.Take(10)) trailers.Add($\"field-{field}\", error);\n            throw new RpcException(new Status(StatusCode.InvalidArgument, \"validation failed\"), trailers);\n        }\n        catch (ConflictException ex)\n        {\n            throw new RpcException(new Status(StatusCode.FailedPrecondition, ex.Message));\n        }\n        catch (Exception ex)\n        {\n            log.LogError(ex, \"unhandled error in {Method}\", context.Method);\n            // ✓ لا تسرّب التفاصيل في الإنتاج\n            throw new RpcException(new Status(StatusCode.Internal, \"internal error\"));\n        }\n    }\n}\n\n/// <summary>Logging مع correlation id القادم من الـmetadata (درس 2.1.7).</summary>\npublic sealed class LoggingInterceptor(ILogger<LoggingInterceptor> log) : Interceptor\n{\n    public override async Task<TResponse> UnaryServerHandler<TRequest, TResponse>(\n        TRequest request, ServerCallContext context, UnaryServerMethod<TRequest, TResponse> continuation)\n    {\n        var correlation = context.RequestHeaders.GetValue(\"x-correlation-id\") ?? Guid.NewGuid().ToString(\"N\");\n\n        using (log.BeginScope(new Dictionary<string, object>\n               { [\"correlation_id\"] = correlation, [\"method\"] = context.Method }))\n        {\n            var sw = Stopwatch.StartNew();\n            try\n            {\n                var response = await continuation(request, context);\n                log.LogInformation(\"grpc ok {Method} {Elapsed}ms\", context.Method, sw.ElapsedMilliseconds);\n                return response;\n            }\n            catch (RpcException ex)\n            {\n                log.LogWarning(\"grpc {Status} {Method} {Elapsed}ms\", ex.StatusCode, context.Method, sw.ElapsedMilliseconds);\n                throw;\n            }\n        }\n    }\n}\n\n/// <summary>مقاييس لكل method/status — أساس لوحات gRPC.</summary>\npublic sealed class MetricsInterceptor : Interceptor\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Catalog.grpc\", \"1.0.0\");\n    private static readonly Histogram<double> Duration =\n        Meter.CreateHistogram<double>(\"grpc.server.duration\", unit: \"ms\");\n    private static readonly Counter<long> Calls = Meter.CreateCounter<long>(\"grpc.server.calls\");\n\n    public override async Task<TResponse> UnaryServerHandler<TRequest, TResponse>(\n        TRequest request, ServerCallContext context, UnaryServerMethod<TRequest, TResponse> continuation)\n    {\n        var sw = Stopwatch.StartNew();\n        var status = \"ok\";\n        try { return await continuation(request, context); }\n        catch (RpcException ex) { status = ex.StatusCode.ToString(); throw; }\n        finally\n        {\n            var tags = new KeyValuePair<string, object?>[]\n            {\n                new(\"method\", context.Method), new(\"status\", status),\n            };\n            Duration.Record(sw.Elapsed.TotalMilliseconds, tags);\n            Calls.Add(1, tags);\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) العميل: channel واحد + deadline + resilience"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Infrastructure/CatalogGrpcClient.cs",
+      "title": "التسجيل الصحيح والاستخدام",
+      "code": "\nusing Grpc.Net.Client;\nusing Shop.Contracts.Grpc.Catalog.V1;\n\n// ═══ التسجيل: channel مُدار عبر HttpClientFactory (singleton فعليًا) ═══\npublic static class CatalogClientRegistration\n{\n    public static IServiceCollection AddCatalogGrpcClient(this IServiceCollection services, IConfiguration config)\n    {\n        var address = config[\"Services:Catalog:Address\"]\n                      ?? throw new InvalidOperationException(\"Services:Catalog:Address مطلوب\");\n\n        services.AddGrpcClient<Catalog.CatalogClient>(options =>\n        {\n            options.Address = new Uri(address);\n\n            // ✗ لا تحدد deadline هنا: القيمة تُحسب مرة واحدة وقت التسجيل!\n            //   الـdeadline لازم يُضرب لكل نداء (شوف الغلاف أسفل: deadline: DateTime.UtcNow.AddSeconds(2))\n        })\n        .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler\n        {\n            // ★ الأهم للأداء: اتصال HTTP/2 واحد مُعاد استخدامه (multiplexing)\n            PooledConnectionLifetime = TimeSpan.FromMinutes(10),     // يدور الاتصال (لتغيير DNS)\n            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),\n            EnableMultipleHttp2Connections = true,                   // ✓ يتجاوز حد التدفقات المتزامنة\n            MaxConnectionsPerServer = 4,\n        })\n        // ✓ resilience قياسي: retry + circuit breaker + timeout (درس 5.2.4)\n        .AddStandardResilienceHandler(options =>\n        {\n            options.Retry.MaxRetryAttempts = 2;\n            options.Retry.UseJitter = true;\n            options.Retry.Delay = TimeSpan.FromMilliseconds(200);\n            options.CircuitBreaker.FailureRatio = 0.5;\n            options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(5);   // ★ يشمل كل المحاولات\n        })\n        // ✓ propagation تلقائي للـactivity/trace context (OpenTelemetry)\n        .AddCallInvocationsLogger();\n\n        return services;\n    }\n}\n\n/// <summary>غلاف: يترجم بين نموذجنا وعقد الـproto (ACL — درس 5.1.2).</summary>\npublic sealed class CatalogGrpcClient(Catalog.CatalogClient client, ILogger<CatalogGrpcClient> log)\n    : ICatalogGateway\n{\n    public async Task<IReadOnlyList<CatalogItemRef>> GetItemsAsync(\n        IReadOnlyList<Guid> productIds, CancellationToken ct)\n    {\n        var request = new GetProductsRequest();\n        request.ProductIds.AddRange(productIds.Distinct().Select(id => id.ToString()));\n        request.PageSize = Math.Clamp(productIds.Count, 1, 100);\n\n        try\n        {\n            // ✓ deadline + cancellation من النداء (يتجاوز الافتراضي لو محتاج)\n            var response = await client.GetProductsAsync(request,\n                deadline: DateTime.UtcNow.AddSeconds(2), cancellationToken: ct);\n\n            return response.Products.Select(p => new CatalogItemRef(\n                ProductId: Guid.Parse(p.ProductId),\n                DisplayName: p.Title,\n                UnitPrice: p.Price.ToMoney(),                     // minor units → Money (VO من 4.2.1)\n                AvailableStock: p.AvailableStock,\n                IsSellable: p.Status == ProductStatus.Active && p.AvailableStock > 0)).ToList();\n        }\n        catch (RpcException ex) when (ex.StatusCode is StatusCode.NotFound)\n        {\n            return [];                                            // ✓ حالة متوقعة → نتيجة فارغة\n        }\n        catch (RpcException ex) when (ex.StatusCode is StatusCode.Unavailable or StatusCode.DeadlineExceeded)\n        {\n            log.LogWarning(ex, \"catalog gRPC unavailable ({Status})\", ex.StatusCode);\n            throw new DependencyUnavailableException(\"catalog\");  // → 503 (لا بيانات خاطئة صامتة)\n        }\n        catch (RpcException ex) when (ex.StatusCode == StatusCode.InvalidArgument)\n        {\n            // ✓ تفاصيل التحقق في الـtrailers\n            var fields = ex.Trailers.Where(t => t.Key.StartsWith(\"field-\")).Select(t => t.Value).ToList();\n            throw new ValidationException(fields);\n        }\n    }\n}\n\n/// <summary>تحويل أنواع proto ↔ أنواع المجال في مكان واحد.</summary>\npublic static class GrpcMoneyExtensions\n{\n    public static Money ToMoney(this Shop.Contracts.Grpc.Common.Money m)\n    {\n        var divisor = (decimal)Math.Pow(10, m.Exponent == 0 ? 2 : m.Exponent);\n        return new Money(m.MinorUnits / divisor, m.CurrencyCode);\n    }\n\n    public static Shop.Contracts.Grpc.Common.Money ToProto(this Money m) => new()\n    {\n        MinorUnits = (long)Math.Round(m.Amount * 100m, MidpointRounding.AwayFromZero),\n        CurrencyCode = m.Currency,\n        Exponent = 2,\n    };\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) gRPC مقابل REST داخليًا"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "gRPC",
+        "REST/JSON",
+        "الحكم"
+      ],
+      "rows": [
+        [
+          "حجم الحمولة",
+          "ثنائي (أصغر 3-10×)",
+          "نص (أكبر)",
+          "gRPC للمحمولات الكبيرة/النداءات الكثيرة"
+        ],
+        [
+          "زمن التسلسل",
+          "أقل بوضوح",
+          "أعلى (خاصة مع reflection)",
+          "gRPC"
+        ],
+        [
+          "العقد",
+          "مولّد من .proto — خطأ ترجمة عند الاختلاف",
+          "OpenAPI + مولّدات (اختياري)",
+          "gRPC أقوى"
+        ],
+        [
+          "النقل",
+          "HTTP/2 multiplexing + streaming أصيل",
+          "HTTP/1.1 غالبًا (بلا streaming سهل)",
+          "gRPC"
+        ],
+        [
+          "المتصفحات",
+          "يحتاج gRPC-Web/بروكسي",
+          "✓ مباشر",
+          "REST"
+        ],
+        [
+          "القابلية للتصحيح",
+          "يحتاج grpcurl/reflection",
+          "✓ curl/متصفح",
+          "REST"
+        ],
+        [
+          "شركاء خارجيون",
+          "نادر الدعم",
+          "✓ المعيار الفعلي",
+          "REST"
+        ],
+        [
+          "المهلة/الإلغاء",
+          "deadline مدمج وعابر للخدمات",
+          "يدوي (CancellationToken + timeout)",
+          "gRPC"
+        ],
+        [
+          "دعم .NET",
+          "ممتاز (Grpc.AspNetCore)",
+          "ممتاز",
+          "تعادل"
+        ],
+        [
+          "**الخلاصة**",
+          "**داخلي بين خدماتك**",
+          "**خارجي (متصفحات/شركاء)**",
+          "الاتنين معًا في نظام واحد"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "أخطاء بتخلي gRPC أبطأ من REST",
+      "md": "\n- **إنشاء `GrpcChannel` لكل نداء** → تفاوض TLS/اتصال جديد كل مرة (كارثة). القناة **singleton**.\n- **نداء في حلقة** (N منتجات = N نداء) → استخدم `repeated` (دفعات) أو streaming. نفس خطأ N+1.\n- **بلا deadline** → نداء متعلّق بيشغل خيط/اتصال لحد ما ينفد الـpool.\n- **رسائل ضخمة** (> 4MB) → تجاوز الحد أو ضغط الذاكرة؛ استخدم streaming للتصدير.\n- **تجاهل `StatusCode.Unavailable`** وإعادة المحاولة بلا jitter → عاصفة إعادة محاولة تسقط الخدمة المستهدفة.\n- **HTTP/1.1 proxy في المنتصف** (بعض ingress/موزّعات) → يكسر gRPC. تأكد من `HttpProtocols.Http2`.\n- **منطق عمل في الـservice** → طبقة gRPC تسليم فقط (زي الـendpoints).\n- **`EnableDetailedErrors = true` في الإنتاج** → تسريب تفاصيل داخلية للعميل.\n- **إعادة محاولة نداء غير idempotent** (خصم مبلغ) بلا مفتاح idempotency → أثر مضاعف.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) الاختبار"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.Catalog.Tests/Grpc/CatalogGrpcTests.cs",
+      "title": "وحدة (الخادم مباشرة) + تكامل (قناة حقيقية)",
+      "code": "\n// ═══ ① اختبار وحدة: نداء الخادم مباشرة (بلا شبكة) ═══\npublic class CatalogGrpcUnitTests\n{\n    private static ServerCallContext Ctx(CancellationToken ct = default) =>\n        new TestServerCallContext(ct);                    // تنفيذ بسيط لـServerCallContext (شائع في الاختبارات)\n\n    [Fact]\n    public async Task GetProduct_missing_identifier_throws_InvalidArgument()\n    {\n        var service = new CatalogGrpcService(Substitute.For<ICatalogModule>(),\n                                             Substitute.For<IPublishPriceChanges>(), NullLogger);\n\n        var act = async () => await service.GetProduct(new GetProductRequest(), Ctx());\n\n        var ex = await act.Should().ThrowAsync<RpcException>();\n        ex.Which.StatusCode.Should().Be(StatusCode.InvalidArgument);\n    }\n\n    [Fact]\n    public async Task GetProduct_not_found_maps_to_NotFound_status()\n    {\n        var catalog = Substitute.For<ICatalogModule>();\n        catalog.FindIdBySkuAsync(\"NOPE\", Arg.Any<CancellationToken>()).Returns((Guid?)null);\n        var service = new CatalogGrpcService(catalog, Substitute.For<IPublishPriceChanges>(), NullLogger);\n\n        var act = async () => await service.GetProduct(\n            new GetProductRequest { Sku = \"NOPE\" }, Ctx());\n\n        (await act.Should().ThrowAsync<RpcException>()).Which.StatusCode.Should().Be(StatusCode.NotFound);\n    }\n}\n\n// ═══ ② اختبار تكامل: خادم حقيقي + قناة حقيقية (WebApplicationFactory) ═══\npublic class CatalogGrpcIntegrationTests(CatalogWebFactory factory) : IClassFixture<CatalogWebFactory>\n{\n    [Fact]\n    public async Task GetProduct_returns_product_over_real_grpc_channel()\n    {\n        await factory.SeedProductAsync(sku: \"KB-1\", title: \"Keyboard\", priceMinor: 25050);\n\n        // ★ القناة لازم تستخدم نفس HttpClient (بشهادته/اتصاله) — مش عنوان خارجي\n        var channel = GrpcChannel.ForAddress(factory.Server!.BaseAddress, new GrpcChannelOptions\n        {\n            HttpClient = factory.CreateClient(),\n        });\n        var client = new Catalog.CatalogClient(channel);\n\n        var product = await client.GetProductAsync(new GetProductRequest { Sku = \"KB-1\" });\n\n        product.Title.Should().Be(\"Keyboard\");\n        product.Price.MinorUnits.Should().Be(25050);\n        product.Price.CurrencyCode.Should().Be(\"EGP\");\n    }\n\n    [Fact]\n    public async Task Deadline_exceeded_is_surfaced_as_DeadlineExceeded()\n    {\n        var channel = GrpcChannel.ForAddress(factory.Server!.BaseAddress,\n            new GrpcChannelOptions { HttpClient = factory.CreateClient() });\n        var client = new Catalog.CatalogClient(channel);\n\n        var act = async () => await client.GetProductAsync(new GetProductRequest { Sku = \"SLOW\" },\n            deadline: DateTime.UtcNow.AddMilliseconds(50));      // ✓ مهلة ضيقة مقصودة\n\n        (await act.Should().ThrowAsync<RpcException>()).Which.StatusCode\n            .Should().BeOneOf(StatusCode.DeadlineExceeded, StatusCode.NotFound);\n    }\n\n    [Fact]\n    public async Task Server_streaming_returns_bounded_items()\n    {\n        var channel = GrpcChannel.ForAddress(factory.Server!.BaseAddress,\n            new GrpcChannelOptions { HttpClient = factory.CreateClient() });\n        var client = new Catalog.CatalogClient(channel);\n\n        using var call = client.StreamPriceChanges(new PriceWatchRequest { MaxItems = 3 });\n        var received = new List<PriceChange>();\n        while (await call.ResponseStream.MoveNext(CancellationToken.None)) received.Add(call.ResponseStream.Current);\n\n        received.Count.Should().BeLessThanOrEqualTo(3);\n    }\n}\n\n/// <summary>خادم اختباري حقيقي (بلا Kestrel خارجي) — نفس نمط REST لكن بـAllowSynchronousIO بلا حاجة.</summary>\npublic class CatalogWebFactory : WebApplicationFactory<Program>\n{\n    protected override void ConfigureWebHost(IWebHostBuilder builder) =>\n        builder.ConfigureTestServices(services =>\n        {\n            services.RemoveAll<ICatalogModule>();\n            services.AddSingleton<ICatalogModule, FakeCatalogModule>();   // أو Postgres عبر Testcontainers\n        });\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أستخدم gRPC للاتصال الداخلي وREST/OpenAPI للخارجي، وأعرف سبب كل اختيار.",
+        "أصمم عقود proto قابلة للتطور (أرقام محفوظة، `UNSPECIFIED` للصفر، minor units للمال، `oneof` للبدائل).",
+        "أبني خادمًا بـinterceptors (استثناءات→Status، logging، مقاييس) وحدود رسائل وصحة وreflection في التطوير.",
+        "أبني عميلًا بقناة مُدارة (singleton) وdeadline وresilience وACL، وأتعامل مع كل StatusCode بشكل صريح."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه أرقام الحقول في proto أهم من الأسماء؟",
+          "options": [
+            "للترتيب الأبجدي",
+            "الترميز الثنائي يعتمد على الرقم فقط — تغيير الرقم يكسر التوافق بصمت، بينما تغيير الاسم آمن ثنائيًا",
+            "للأداء",
+            "مطلب grpcurl"
+          ],
+          "answer": 1,
+          "explain": "عشان كده القاعدة: احجز الأرقام المحذوفة (`reserved 11; reserved \"old_price\";`) ولا تعِد استخدامها أبدًا."
+        },
+        {
+          "q": "قيمة الصفر في enum لازم تكون…",
+          "options": [
+            "أول قيمة حقيقية",
+            "`*_UNSPECIFIED` — لأن القيمة الافتراضية لأي حقل في proto3 هي الصفر، فلو كانت قيمة حقيقية هتتفسر غلط",
+            "محذوفة",
+            "`UNKNOWN_ERROR`"
+          ],
+          "answer": 1,
+          "explain": "بلا `UNSPECIFIED`: عميل ما بعتش الحقل خالص هيظهر كأنه بعت القيمة الأولى الحقيقية — خطأ صامت شائع."
+        },
+        {
+          "q": "إزاي تخزن المال في proto؟",
+          "options": [
+            "double",
+            "float",
+            "minor units (int64) + رمز العملة + exponent",
+            "string فقط"
+          ],
+          "answer": 2,
+          "explain": "`float`/`double` لهما أخطاء تقريب — مرفوضان للمال. `string` مقبول لكن أقل كفاءة وأضعف تحققًا."
+        },
+        {
+          "q": "إنشاء `GrpcChannel` داخل كل handler — النتيجة؟",
+          "options": [
+            "أفضل عزلًا",
+            "كارثة أداء: تفاوض TLS/اتصال جديد لكل نداء واستنزاف منافذ؛ القناة يجب أن تكون singleton (عبر HttpClientFactory)",
+            "بلا أثر",
+            "أكثر أمانًا"
+          ],
+          "answer": 1,
+          "explain": "الـclient رخيص ويُنشأ لكل نداء؛ الـchannel هو الاتصال ويُشارك. `AddGrpcClient` بيدير ده صح."
+        },
+        {
+          "q": "خدمة gRPC رجعت `StatusCode.Unavailable`. أحسن تصرف في العميل؟",
+          "options": [
+            "أعد المحاولة فورًا وبلا حد",
+            "إعادة محاولة محدودة بـbackoff وjitter (لنداء idempotent) + circuit breaker، وإلا فشل صريح 503",
+            "تجاهل الخطأ",
+            "أعد تشغيل الخدمة"
+          ],
+          "answer": 1,
+          "explain": "إعادة المحاولة بلا حدود وjitter بتعمل «عاصفة» تسقط الخدمة المستهدفة أكتر. `AddStandardResilienceHandler` بيعمل ده جاهزًا."
+        },
+        {
+          "q": "متى تختار REST بدل gRPC؟",
+          "options": [
+            "دائمًا",
+            "للواجهات العامة/المتصفحات، تكاملات شركاء خارجيين، والمسارات اللي محتاجة تصحيح سهل (curl) — gRPC يبقى داخليًا",
+            "لما البيانات كبيرة",
+            "لما فيه streaming"
+          ],
+          "answer": 1,
+          "explain": "النمط الشائع: BFF/gateway بيقدّم REST/OpenAPI للخارج، وبينادي الخدمات داخليًا بـgRPC."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "خدمة gRPC داخلية بعقد مشترك",
+          "md": "ابنِ مشروع عقود (`.proto`) + خدمة gRPC لموديول (Catalog) + عميل في موديول تاني (Orders) عبر ACL. شغّلها محليًا واختبر unary وحالة خطأ واحدة على الأقل.",
+          "criteria": [
+            "مشروع `Contracts.Grpc` مستقل بلا تنفيذ، والكود مولّد من `.proto` وقت البناء",
+            "proto3 بقواعد صحيحة: `UNSPECIFIED` للصفر، `reserved` بلا أرقام محذوفة، Money بـminor units",
+            "خادم بـ3 interceptors (استثناءات→Status، logging بـcorrelation id، مقاييس)",
+            "عميل بقناة مُدارة عبر `AddGrpcClient` + deadline + resilience",
+            "تعامل صريح مع ≥ 4 حالات Status (OK/NotFound/InvalidArgument/Unavailable)",
+            "اختبار وحدة (الخادم مباشرة) + اختبار تكامل (قناة حقيقية عبر WebApplicationFactory)",
+            "grpcurl يعمل ضد الخدمة في التطوير (reflection مفعّل في Development فقط)"
+          ],
+          "hint": "لو `WebApplicationFactory` مع gRPC بيرفض: تأكد إن القناة مبنية على `factory.CreateClient()` و`factory.Server.BaseAddress` (مش عنوان خارجي)، وإن Kestrel مضبوط على HTTP/2 للاختبار."
+        },
+        {
+          "id": "t2",
+          "title": "streaming + قياس مقارنة",
+          "md": "أضف RPC واحد بـserver streaming (تصدير/تقدُّم/تغييرات أسعار) واستخدمه في عميل. ثم قِس الفرق بين مسار gRPC ومسار REST مكافئ لنفس العملية (حجم الحمولة والزمن) بـBenchmarkDotNet أو k6.",
+          "criteria": [
+            "streaming بسقف صريح (`max_items`) وإلغاء عبر CancellationToken (اختبار)",
+            "العميل يقرأ الـstream بشكل تسلسلي ويتعامل مع الإلغاء/الانقطاع",
+            "جدول مقارنة: حجم الحمولة والزمن p50/p95 لـgRPC مقابل JSON لنفس العملية",
+            "استنتاج مكتوب: هل الفرق يبرر التعقيد في حالتك؟",
+            "ملاحظة عن حدود الرسائل (MaxReceive/Send) وليه اخترت القيم دي"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "gRPC for .NET",
+          "url": "https://learn.microsoft.com/aspnet/core/grpc/"
+        },
+        {
+          "label": "Protocol Buffers — Language guide (proto3)",
+          "url": "https://protobuf.dev/programming-guides/proto3/"
+        },
+        {
+          "label": "Proto best practices (versioning)",
+          "url": "https://protobuf.dev/programming-guides/dos-donts/"
+        },
+        {
+          "label": "gRPC — Deadlines & cancellation",
+          "url": "https://learn.microsoft.com/aspnet/core/grpc/deadlines"
+        },
+        {
+          "label": "Grpc.Net.ClientFactory",
+          "url": "https://learn.microsoft.com/aspnet/core/grpc/clientfactory"
+        },
+        {
+          "label": "grpcurl",
+          "url": "https://github.com/fullstorydev/grpcurl"
+        },
+        {
+          "label": "gRPC-Web",
+          "url": "https://github.com/grpc/grpc-web"
+        }
+      ]
+    }
+  ]
+}

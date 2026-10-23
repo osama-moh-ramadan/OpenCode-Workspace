@@ -1,0 +1,485 @@
+{
+  "id": "s6-m3-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "النشر اللحظي (كل commit بينزل إنتاج فورًا) مش هدف في حد ذاته — الهدف **تقليل زمن الرجوع وخطر التغيير**. في الدرس ده: استراتيجيات النشر الخمسة بأرقامها (Recreate · Rolling · Blue-Green · Canary · Shadow) وتنفيذها الفعلي على **App Service slots** و**Container Apps revisions** و**Kubernetes ingress canary / Argo Rollouts**. والأهم: **توافق قاعدة البيانات أثناء وجود إصدارين شغالين في نفس الوقت** (لأن canary معناه كده بالظبط)، والتحقق بعد النشر، والرجوع التلقائي المبني على مؤشرات مش على الإحساس، وفصل **النشر عن الإصدار** بـfeature flags."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "Recreate",
+          "def": "أوقف القديم ثم شغّل الجديد: **توقف كامل** لكنه الأبسط. ينفع لبيئات التطوير أو لتغييرات غير متوافقة."
+        },
+        {
+          "term": "Rolling update",
+          "def": "استبدال النسخ تدريجيًا (K8s: `maxUnavailable`/`maxSurge`). بلا توقف، بس الإصدارين شغالين معًا لفترة — وده يفرض توافق قاعدة البيانات."
+        },
+        {
+          "term": "Blue-Green",
+          "def": "بيئتان متطابقتان: الأخضر يستقبل الحركة، والأزرق بيتنشر فيه الإصدار الجديد، ثم **تحويل لحظي**. أسرع رجوع (حوّل للحظة القديمة) وأغلى تكلفة (ضعف الموارد لفترة)."
+        },
+        {
+          "term": "Canary",
+          "def": "النسخة الجديدة تاخد **نسبة صغيرة من الحركة** (1–10%)، تراقب المؤشرات، وبعدين تزيد تدريجيًا أو ترجع. أقل خطرًا لكن أبطأ."
+        },
+        {
+          "term": "Shadow / Mirror",
+          "def": "نسخة من الحركة الحقيقية بتتبعت للخدمة الجديدة **بدون رد على المستخدم** — لاختبار الأداء/السلوك بلا خطر. بتضاعف الحمل على التبعيات (قاعدة البيانات!) فاحسبها."
+        },
+        {
+          "term": "Progressive delivery",
+          "def": "أتمتة خطوات الـcanary: وزن → انتظار → تحليل مؤشرات → زيادة أو رجوع تلقائي (Argo Rollouts / Flagger)."
+        },
+        {
+          "term": "Slot (App Service)",
+          "def": "بيئة مطابقة للإنتاج على نفس الخطة. `swap` بين الاتنين = blue-green لحظي. فيه **slot settings** (إعدادات لا تنتقل مع الـswap)."
+        },
+        {
+          "term": "Revision (Container Apps)",
+          "def": "نسخة غير قابلة للتغيير من تعريف التطبيق؛ `activeRevisionsMode: Multiple` بيسمح بوجود أكتر من واحدة وتقسيم الحركة بينها."
+        },
+        {
+          "term": "Bake time",
+          "def": "مدة المراقبة بعد كل زيادة وزن (مثال: 10–15 دقيقة) قبل الخطوة الجاية. قصيرة = مش هتشوف المشكلة؛ طويلة = نشر بطيء."
+        },
+        {
+          "term": "Auto-rollback",
+          "def": "رجوع تلقائي لما مؤشر يتجاوز عتبة (معدل 5xx · p95 · تشبع طابور). محتاج **خط أساس** قبل النشر للمقارنة."
+        },
+        {
+          "term": "فصل النشر عن الإصدار",
+          "def": "**Deploy** = الكود نزل. **Release** = المستخدمين شافوه. الـfeature flags بتخلي الاثنين مستقلين: تنشر كودًا مطفيًا وتشغّله وقت ما تحب وترجعه في ثانية."
+        },
+        {
+          "term": "التوافق الأمامي/الخلفي للمخطط",
+          "def": "أثناء النشر التدريجي إصداران بيقرأوا ويكتبوا نفس الجداول: التغييرات لازم تكون **توسيع/تضييق** (expand/contract) مش تعديل مباشر (3.5)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① الاستراتيجيات الخمسة بأرقامها"
+    },
+    {
+      "type": "table",
+      "caption": "التكلفة هنا = موارد إضافية + تعقيد، وزمن الرجوع = من القرار لعودة الحركة السليمة",
+      "head": [
+        "الاستراتيجية",
+        "التوقف",
+        "زمن الرجوع",
+        "تكلفة إضافية",
+        "الخطر",
+        "إمتى تستخدمها"
+      ],
+      "rows": [
+        [
+          "Recreate",
+          "**نعم** (ثوانٍ–دقائق)",
+          "دقائق (إعادة نشر القديم)",
+          "صفر",
+          "مرتفع (كل المستخدمين يتأثروا)",
+          "dev/staging · تغيير غير متوافق تمامًا · مهام batch"
+        ],
+        [
+          "Rolling",
+          "لا (لو `maxUnavailable: 0`)",
+          "دقائق (إصدار قديم + انتظار)",
+          "قليلة (`maxSurge`)",
+          "متوسط",
+          "**الافتراضي** لـKubernetes/ACA · التغييرات المتوافقة"
+        ],
+        [
+          "Blue-Green",
+          "لا (تحويل لحظي)",
+          "**ثوانٍ** (حوّل للحظة القديمة)",
+          "**~2×** لفترة",
+          "منخفض",
+          "تغييرات كبيرة · إصدارات runtime/إطار · لما الرجوع السريع أهم من التكلفة"
+        ],
+        [
+          "Canary",
+          "لا",
+          "**ثوانٍ–دقيقة** (حوّل 100% للقديمة)",
+          "قليلة",
+          "**الأدنى** (نسبة صغيرة فقط تتأثر)",
+          "الإنتاج الحقيقي · تغييرات في مسارات حساسة · لما عندك مؤشرات ومراقبة جيدة"
+        ],
+        [
+          "Shadow",
+          "لا",
+          "لا يحتاج رجوع (مفيش أثر على المستخدم)",
+          "**~2×** على الخدمة والتبعيات",
+          "شبه صفر للمستخدم، مرتفع لقاعدة البيانات",
+          "اختبار أداء/سلوك إصدار جديد على حمل حقيقي قبل تمكينه"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "ملاحظتان بيغيّروا القرار",
+      "md": "**① Canary وBlue-Green مش بديلين عن الاختبارات** — هما بيقللوا **نصف القطر** (blast radius) بس. لو الاختبارات ضعيفة (1.2) هتكتشف العطل في الإنتاج برضه، بس عند 5% من المستخدمين بدل 100%. **② النشر التدريجي بيضاعف مدة تعايش الإصدارين** — يعني متطلبات توافق قاعدة البيانات والعقود بتبقى **أشد**، مش أخف. canary لمدة يوم كامل = يوم كامل فيه إصدار قديم وجديد بيكتبوا في نفس الجداول."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② التنفيذ على المنصات الثلاثة"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "deploy/strategies.sh — App Service وContainer Apps",
+      "filename": "deploy/strategies.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\nRG=rg-shop-prod\n\n# ══════════ أ) App Service: Blue-Green بـslots ══════════\nAPP=shop-orders\naz webapp deployment slot create --name \"$APP\" --resource-group \"$RG\" --slot staging\n\n# إعدادات لا تنتقل مع الـswap (connection strings/أسماء موارد مختلفة لكل slot):\naz webapp config appsettings set --name \"$APP\" --resource-group \"$RG\" --slot staging \\\n  --slot-settings \"ConnectionStrings__Default=<staging-connection>\" \"WEBSITE_SLOT_NAME=staging\"\n\n# انشر في الـslot واختبر **بإعدادات الإنتاج الحقيقية** (نفس الخطة/الشبكة):\naz webapp deploy --name \"$APP\" --resource-group \"$RG\" --slot staging --type zip --src-path publish.zip\ncurl -fsS \"https://$APP-staging.azurewebsites.net/health\" || { echo \"staging غير صحي\"; exit 1; }\n\n# التحويل اللحظي (blue-green):\naz webapp deployment slot swap --name \"$APP\" --resource-group \"$RG\" \\\n  --slot staging --target-slot production\n# الرجوع = swap عكسي (الإصدار القديم لسه دافئ في staging):\naz webapp deployment slot swap --name \"$APP\" --resource-group \"$RG\" \\\n  --slot production --target-slot staging\n\n# تحويل تلقائي بعد نجاح staging (اختياري — بلا موافقة بشرية):\naz webapp config set --name \"$APP\" --resource-group \"$RG\" --auto-swap-slot-name staging\n\n# ══════════ ب) Container Apps: canary بـrevisions ══════════\nCA=orders\nIMAGE=acrshopprod.azurecr.io/shop/orders@sha256:<DIGEST>   # digest ثابت (6.3.1)\n\n# وضع متعدد النسخ ضروري لتقسيم الحركة:\naz containerapp revision set-mode --name \"$CA\" --resource-group \"$RG\" --mode Multiple\nCURRENT=$(az containerapp show -n \"$CA\" -g \"$RG\" --query properties.latestRevisionName -o tsv)\nNEW=\"orders--r$(date +%Y%m%d%H%M)\"\n\naz containerapp revision copy --name \"$CA\" --resource-group \"$RG\" \\\n  --revision \"$NEW\" --image \"$IMAGE\"\n\n# 5% → راقب 15 دقيقة → 25% → راقب → 100%\naz containerapp ingress set --name \"$CA\" --resource-group \"$RG\" \\\n  --traffic-split \"$CURRENT=95\" --traffic-split \"$NEW=5\"\nsleep 900\naz containerapp ingress set --name \"$CA\" --resource-group \"$RG\" \\\n  --traffic-split \"$CURRENT=75\" --traffic-split \"$NEW=25\"\nsleep 900\naz containerapp ingress set --name \"$CA\" --resource-group \"$RG\" \\\n  --traffic-split \"$NEW=100\"\n\n# الرجوع الفوري (النسخة القديمة لسه نشطة):\n#   az containerapp ingress set --name $CA -g $RG --traffic-split \"$CURRENT=100\"\n# إيقاف نسخة قديمة بعد الاستقرار:\naz containerapp revision deactivate --name \"$CA\" --resource-group \"$RG\" --revision \"$CURRENT\"\naz containerapp revision list --name \"$CA\" --resource-group \"$RG\" -o table\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": "k8s/canary-ingress.yaml — canary على Kubernetes بـingress-nginx",
+      "filename": "k8s/canary-ingress.yaml",
+      "code": "# الفكرة: Ingress ثاني بنفس الـhost/path لكن بتعليقات canary،\n# فالـcontroller بيوزّع الحركة بين الخدمة الأساسية وخدمة الـcanary.\n# ⚠ ingress-nginx: النسب تقريبية (مش دقيقة تمامًا عند الأحجام الصغيرة).\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: orders-canary\n  namespace: shop\nspec:\n  selector: { app: orders, track: canary }     # نفس الـlabels + track\n  ports: [{ name: http, port: 80, targetPort: http }]\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: orders-canary\n  namespace: shop\nspec:\n  replicas: 2                                   # نسخ كافية لقراءة مؤشرات ذات معنى\n  selector:\n    matchLabels: { app: orders, track: canary }\n  template:\n    metadata:\n      labels: { app: orders, track: canary }\n    spec:\n      containers:\n        - name: orders\n          image: acrshopprod.azurecr.io/shop/orders@sha256:<DIGEST>\n          ports: [{ name: http, containerPort: 8080 }]\n          readinessProbe:\n            httpGet: { path: /health, port: 8080 }\n            periodSeconds: 10\n            failureThreshold: 3\n          resources:\n            requests: { cpu: 250m, memory: 512Mi }\n            limits:   { memory: 512Mi }          # CPU limit متعمد تركه مفتوحًا (6.1.5)\n---\napiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: orders-canary\n  namespace: shop\n  annotations:\n    nginx.ingress.kubernetes.io/canary: \"true\"\n    nginx.ingress.kubernetes.io/canary-weight: \"10\"          # 10% من الحركة\n    # توزيع أدق: مستخدمون داخليون أولًا بلا أي نسبة:\n    nginx.ingress.kubernetes.io/canary-by-header: \"X-Canary\"\n    nginx.ingress.kubernetes.io/canary-by-header-value: \"always\"\n    # أو نسبة من ملفات تعريف الارتباط (لجلسات متسقة):\n    nginx.ingress.kubernetes.io/canary-by-cookie: \"canary\"\nspec:\n  ingressClassName: nginx\n  rules:\n    - host: shop.example.com\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service: { name: orders-canary, port: { name: http } }\n---\n# بعد التحقق: احذف الـcanary ingress ورفع النسخة الجديدة كأساسية:\n#   kubectl -n shop delete ingress orders-canary\n#   kubectl -n shop set image deploy/orders orders=...@sha256:<DIGEST>\n#   kubectl -n shop rollout status deploy/orders\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": "k8s/argo-rollout.yaml — تقدمي بمراقبة تلقائية (اختياري)",
+      "filename": "k8s/argo-rollout.yaml",
+      "code": "# Argo Rollouts بيأتمت خطوات الـcanary: وزن → انتظار → تحليل → زيادة أو رجوع.\n# ⚠ ثبّت الإضافة أولًا (kubectl create namespace argo-rollouts + apply للـmanifests)\n#   وتحقق من إصدار API/الحقول في الإصدار المثبت عندك.\napiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata:\n  name: orders\n  namespace: shop\nspec:\n  replicas: 6\n  selector:\n    matchLabels: { app: orders }\n  template:\n    metadata:\n      labels: { app: orders }\n    spec:\n      containers:\n        - name: orders\n          image: acrshopprod.azurecr.io/shop/orders@sha256:<DIGEST>\n          ports: [{ name: http, containerPort: 8080 }]\n          resources:\n            requests: { cpu: 250m, memory: 512Mi }\n            limits: { memory: 512Mi }\n          readinessProbe:\n            httpGet: { path: /health, port: 8080 }\n  strategy:\n    canary:\n      canaryService: orders-canary\n      stableService: orders-stable\n      trafficRouting:\n        nginx:\n          stableIngress: orders            # الـIngress الأساسي\n      steps:\n        - setWeight: 5\n        - pause: { duration: 10m }         # bake time: راقب المؤشرات\n        - setWeight: 25\n        - pause: { duration: 10m }\n        - setWeight: 60\n        - pause: {}                        # انتظار موافقة يدوية: kubectl argo rollouts promote\n        - setWeight: 100\n      analysis:                            # يحتاج مزود مقاييس (Prometheus/App Insights)\n        templates:\n          - templateName: success-rate\n        startingStep: 1                    # ابدأ التحليل بعد أول وزن\n---\napiVersion: argoproj.io/v1alpha1\nkind: AnalysisTemplate\nmetadata:\n  name: success-rate\n  namespace: shop\nspec:\n  metrics:\n    - name: success-rate\n      interval: 2m\n      count: 5\n      successCondition: result[0] >= 0.995   # أقل من 99.5% نجاح → فشل\n      failureLimit: 2\n      provider:\n        prometheus:\n          address: http://prometheus.monitoring:9090\n          query: |\n            sum(rate(http_requests_total{service=\"orders-canary\",code!~\"5..\"}[2m]))\n            /\n            sum(rate(http_requests_total{service=\"orders-canary\"}[2m]))\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ توافق قاعدة البيانات: لأن canary يعني إصدارين شغالين معًا"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "القاعدة الذهبية للنشر التدريجي",
+      "md": "**خلال النشر، الإصدار القديم والجديد بيقرأوا ويكتبوا في نفس قاعدة البيانات في نفس الوقت.** أي تغيير في المخطط لازم يكون متوافق مع **الاتنين** — وده معنى expand/contract من درس 3.5: **وسّع** (أضف عمود/جدول جديد، اكتب في الاثنين) → **انشر** → **هاجر البيانات** → **ضيّق** (احذف القديم) في إصدار لاحق. التغييرات اللي بتكسر (إعادة تسمية عمود · حذف عمود · تغيير نوع · إضافة NOT NULL بلا قيمة افتراضية) = عطل فوري لنسبة من المستخدمين."
+    },
+    {
+      "type": "table",
+      "caption": "كل تغيير وإزاي تعديه بأمان أثناء canary",
+      "head": [
+        "التغيير",
+        "آمن مباشرة؟",
+        "الطريقة الآمنة (expand/contract)",
+        "عدد الإصدارات المطلوبة"
+      ],
+      "rows": [
+        [
+          "إضافة جدول جديد",
+          "✓",
+          "أضفه وأنشر الكود اللي يستخدمه",
+          "1"
+        ],
+        [
+          "إضافة عمود nullable أو بقيمة افتراضية",
+          "✓",
+          "أضفه أولًا، ثم انشر الكود اللي يقرأه",
+          "1–2"
+        ],
+        [
+          "إضافة عمود `NOT NULL`",
+          "✗",
+          "أضفه nullable + قيمة افتراضية + املأه + **بعدين** ضيف القيد في إصدار لاحق",
+          "2–3"
+        ],
+        [
+          "إعادة تسمية عمود",
+          "✗",
+          "أضف العمود الجديد → انسخ/اكتب في الاثنين → انقل القراءات → احذف القديم",
+          "3"
+        ],
+        [
+          "حذف عمود",
+          "✗",
+          "أوقف الكتابة → أوقف القراءة → احذف في إصدار لاحق (بعد التأكد من عدم وجود نسخ قديمة)",
+          "2–3"
+        ],
+        [
+          "تغيير نوع عمود",
+          "✗",
+          "عمود جديد بالنوع المطلوب → هجرة تدريجية → تبديل القراءات → حذف القديم",
+          "3"
+        ],
+        [
+          "إضافة فهرس",
+          "✓ (مع الانتباه)",
+          "`CREATE INDEX CONCURRENTLY` في PostgreSQL (بلا قفل كتابة) — راجع 3.1.1",
+          "1"
+        ],
+        [
+          "حذف فهرس",
+          "△",
+          "تأكد إن الإصدار القديم ما بيستخدمهوش (لو فيه canary قديم شغال → انتظر)",
+          "2"
+        ],
+        [
+          "تغيير دلالة قيمة (مثلًا حالة جديدة في enum)",
+          "△",
+          "الإصدار القديم لازم يتجاهل القيم المجهولة بأمان (2.1.x) — أضف الحالة ثم انشر",
+          "2"
+        ],
+        [
+          "تغيير في مفتاح API (حذف/تغيير نوع)",
+          "✗",
+          "إصدار جديد من الـAPI + توسيع/تضييع (2.1.x و3.5) + إخطار المستهلكين",
+          "2+"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "title": "migrations/2026_10_rename_order_reference.sql — النمط الآمن على 3 إصدارات",
+      "filename": "migrations/2026_10_rename_order_reference.sql",
+      "code": "-- ═══ الإصدار N: توسيع (expand) — بلا أي كسر ═══\n-- العمود الجديد nullable، والفهرس يُبنى بلا قفل كتابة:\nALTER TABLE orders ADD COLUMN IF NOT EXISTS order_reference text;\nCREATE INDEX CONCURRENTLY IF NOT EXISTS ix_orders_order_reference ON orders (order_reference);\n\n-- الكود في الإصدار N يكتب في العمودين معًا ويقرأ من القديم:\n--   INSERT ... (reference_code, order_reference) VALUES (@r, @r)\n--   UPDATE ... SET reference_code = @r, order_reference = @r WHERE id = @id\n\n-- ═══ بين N وN+1: هجرة البيانات على دفعات (بلا قفل طويل) ═══\nUPDATE orders\n   SET order_reference = reference_code\n WHERE order_reference IS NULL\n   AND id IN (SELECT id FROM orders WHERE order_reference IS NULL LIMIT 5000 FOR UPDATE SKIP LOCKED);\n-- كرّر حتى صفر صفوف (job خلفي أو أمر مجدول)، وراقب التأخير (3.1.2).\n\n-- ═══ الإصدار N+1: تبديل القراءات ═══\n-- الكود يقرأ من order_reference ويكتب في الاثنين (للأمان أثناء canary).\n-- تحقق: لا استعلامات قديمة تعتمد على reference_code (من pg_stat_statements):\nSELECT query, calls FROM pg_stat_statements\n WHERE query ILIKE '%reference_code%' ORDER BY calls DESC LIMIT 10;\n\n-- ═══ الإصدار N+2: تضييق (contract) ═══\nALTER TABLE orders ALTER COLUMN order_reference SET NOT NULL;   -- بعد التأكد من امتلاء كل الصفوف\nDROP INDEX CONCURRENTLY IF EXISTS ix_orders_reference_code;\nALTER TABLE orders DROP COLUMN IF EXISTS reference_code;\n\n-- قاعدة: لا تدمج «التوسيع» و«التضييق» في نفس النشر —\n-- وإلا الإصدار القديم (لسه شغال في canary) هيكسر.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ التحقق بعد النشر والرجوع المبني على مؤشرات"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "deploy/verify-and-rollback.sh",
+      "filename": "deploy/verify-and-rollback.sh",
+      "code": "#!/usr/bin/env bash\nset -uo pipefail\nCA=orders; RG=rg-shop-prod\nURL=$(az containerapp show -n \"$CA\" -g \"$RG\" --query properties.configuration.ingress.fqdn -o tsv)\nNEW_REV=\"${1:?اسم النسخة الجديدة مطلوب}\"\n\n# ═══ 1) Smoke tests: مسارات حقيقية مش /health بس ═══\necho \"── فحوصات الدخان ──\"\nfail=0\ncheck() { # check <الاسم> <المسار> <الكود المتوقع>\n  local name=$1 path=$2 want=$3\n  local got\n  got=$(curl -s -o /dev/null -w '%{http_code}' \"https://$URL$path\" || echo 000)\n  if [ \"$got\" = \"$want\" ]; then echo \"  ✓ $name ($got)\"\n  else echo \"  ✗ $name: المتوقع $want والفعلي $got\"; fail=1; fi\n}\ncheck \"alive\"      \"/alive\"            200\ncheck \"health\"     \"/health\"           200\ncheck \"catalog\"    \"/api/v1/catalog\"   200\ncheck \"auth مطلوب\" \"/api/v1/orders\"    401\ncheck \"404 صحيح\"   \"/api/v1/nope\"      404\n\n# ═══ 2) خط الأساس قبل المقارنة (بدونه مفيش حكم) ═══\n# سجّل p95 ومعدل الأخطاء للنسخة القديمة **قبل** رفع الوزن، وخزّنه في متغير/ملف.\nBASELINE_P95=${BASELINE_P95:-250}        # ms — من القياس السابق (2.3.4 / 3.4)\nBASELINE_ERR=${BASELINE_ERR:-0.2}        # %\n\n# ═══ 3) مراقبة لمدة Bake time ═══\necho \"── مراقبة 10 دقائق ──\"\nEND=$((SECONDS+600))\nwhile [ $SECONDS -lt $END ]; do\n  # مثال: من Application Insights / Prometheus (عدّل الاستعلام حسب مزودك)\n  ERR=$(curl -s \"https://$URL/metrics\" | awk '/^http_requests_failed_ratio/ {print $2}')\n  P95=$(curl -s \"https://$URL/metrics\" | awk '/^http_request_duration_p95_ms/ {print $2}')\n  echo \"  err=${ERR:-?}  p95=${P95:-?}  (baseline: ${BASELINE_ERR}% / ${BASELINE_P95}ms)\"\n  # عتبات الرجوع: خطأ > 1% أو p95 > 2× خط الأساس\n  if [ -n \"${ERR:-}\" ] && awk \"BEGIN{exit !($ERR > 1.0)}\"; then\n    echo \"✗ معدل الأخطاء تجاوز العتبة → رجوع\"; ROLLBACK=1; break\n  fi\n  if [ -n \"${P95:-}\" ] && awk \"BEGIN{exit !($P95 > 2 * $BASELINE_P95)}\"; then\n    echo \"✗ p95 تجاوز ضعف خط الأساس → رجوع\"; ROLLBACK=1; break\n  fi\n  sleep 60\ndone\n\n# ═══ 4) الرجوع: أمر واحد، مُختبَر مسبقًا ═══\nif [ \"${fail:-0}\" = 1 ] || [ \"${ROLLBACK:-0}\" = 1 ]; then\n  CURRENT=$(az containerapp revision list -n \"$CA\" -g \"$RG\" \\\n             --query \"[?name!='$NEW_REV' && properties.active].name | [0]\" -o tsv)\n  az containerapp ingress set -n \"$CA\" -g \"$RG\" --traffic-split \"$CURRENT=100\"\n  az containerapp revision deactivate -n \"$CA\" -g \"$RG\" --revision \"$NEW_REV\"\n  echo \"↩ رجعنا إلى $CURRENT — افتح incident وسجّل السبب\"\n  exit 1\nfi\n\n# ═══ 5) النجاح: رقِّ الوزن ═══\naz containerapp ingress set -n \"$CA\" -g \"$RG\" --traffic-split \"$NEW_REV=100\"\necho \"✅ $NEW_REV يستقبل 100% من الحركة\"\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "FeatureFlags.cs — افصل النشر عن الإصدار",
+      "filename": "src/Orders.Api/FeatureFlags.cs",
+      "code": "using Microsoft.FeatureManagement;\nusing Microsoft.FeatureManagement.FeatureFilters;\n\nnamespace Shop.Orders;\n\npublic static class FeatureFlags\n{\n    public const string NewCheckout = \"Checkout:v2\";\n    public const string FastShipping = \"Shipping:FastOption\";\n\n    /// <summary>\n    /// التسجيل: الأعلام من الإعدادات (App Configuration في الإنتاج — 6.2.3)،\n    /// فيمكن إطفاء/تشغيل علم **بدون نشر** — وده معنى الرجوع في ثانية.\n    /// </summary>\n    public static IServiceCollection AddShopFeatureFlags(\n        this IServiceCollection services, IConfiguration cfg)\n    {\n        services.AddFeatureManagement(cfg.GetSection(\"FeatureManagement\"))\n                .AddFeatureFilter<PercentageFilter>()      // نسبة من المستخدمين\n                .AddFeatureFilter<TimeWindowFilter>();     // نافذة زمنية (إطلاق مجدول)\n        return services;\n    }\n}\n\n// الاستخدام في endpoint: المسار الجديد مطفي افتراضيًا، والكود منشور:\npublic static class CheckoutEndpoints\n{\n    public static IEndpointRouteBuilder MapCheckout(this IEndpointRouteBuilder app)\n    {\n        app.MapPost(\"/checkout\", async (\n            CheckoutRequest req,\n            IFeatureManager features,\n            ICheckoutV1 v1,\n            ICheckoutV2 v2,\n            CancellationToken ct) =>\n        {\n            // القرار لكل طلب — يعني الإيقاف فوري لكل المستخدمين\n            if (await features.IsEnabledAsync(FeatureFlags.NewCheckout))\n                return await v2.ExecuteAsync(req, ct);\n\n            return await v1.ExecuteAsync(req, ct);\n        })\n        // أو على مستوى الـendpoint كله:\n        .RequireFeatureGate(FeatureFlags.NewCheckout);     // يرجع 404 لما العلم مطفي\n\n        return app;\n    }\n}\n\n/* الإعدادات (appsettings.json / App Configuration):\n{\n  \"FeatureManagement\": {\n    \"Checkout:v2\": {\n      \"EnabledFor\": [\n        { \"Name\": \"Percentage\", \"Parameters\": { \"Value\": 5 } }   // 5% أولًا\n      ]\n    },\n    \"Shipping:FastOption\": {\n      \"EnabledFor\": [\n        { \"Name\": \"TimeWindow\",\n          \"Parameters\": { \"Start\": \"2026-11-01T00:00:00Z\", \"End\": \"2026-11-30T00:00:00Z\" } }\n      ]\n    }\n  }\n}\n⚠ قواعد مهمة:\n   • كل علم لازم يكون له **تاريخ انتهاء** وحذف من الكود بعد الإطلاق — وإلا الكود يمتلئ بفروع ميتة.\n   • اختبر المسارين (مفعّل/مطفى) في CI — وإلا المسار المطفي بيتكسر في صمت.\n   • الأعلام مش بديلًا عن canary: الـflag بيتحكم في **السلوك**، وcanary بيتحكم في **النسخة**.\n*/\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ اختيار الاستراتيجية: قرار مبني على 4 أسئلة"
+    },
+    {
+      "type": "steps",
+      "title": "اسأل بالترتيب",
+      "items": [
+        {
+          "title": "1) التغيير متوافق مع قاعدة البيانات والعقود؟",
+          "md": "لو **لا** → إما تعمل expand/contract (3 إصدارات) أو تختار **Recreate** في نافذة صيانة. النشر التدريجي مع تغيير كاسر = عطل مؤكد لنسبة من المستخدمين.",
+          "code": ""
+        },
+        {
+          "title": "2) عندك مؤشرات وخط أساس؟",
+          "md": "canary بلا مؤشرات (معدل 5xx · p95 · تشبع طابور) وبلا خط أساس = **وهم أمان**: هتنشر لـ5% ومحدش هياخد باله إلا لما توصل 100%. لو مفيش مؤشرات، ابدأ بـblue-green (رجوعه لحظي ومش محتاج تحليل).",
+          "code": ""
+        },
+        {
+          "title": "3) إيه تكلفة الرجوع مقابل تكلفة الموارد الإضافية؟",
+          "md": "Blue-green بيكلف ~2× موارد لفترة بس بيرجع في ثوانٍ. Canary بيكلف أقل بس بياخد وقت أطول للرجوع. للمشروع الشخصي: **ACA revisions** بيديك الاتنين تقريبًا ببلاش (النسخة القديمة بتفضل موجودة).",
+          "code": ""
+        },
+        {
+          "title": "4) التغيير في كود ولا في منصة؟",
+          "md": "تغيير runtime/إصدار إطار/إعدادات منصة → **blue-green** (سلوك مختلف جذريًا). تغيير ميزة داخل إصدار ثابت → **canary**. تغيير بنية تحتية (6.3.4) → what-if + نافذة تغيير + خطة رجوع مكتوبة.",
+          "code": ""
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "خمس قواعد للنشر المستمر",
+      "md": "**① انشر بـdigest/إصدار ثابت** — مش `latest` (6.3.1). **② الرجوع لازم يكون أمرًا واحدًا مُختبَرًا** (جرّبه في staging كل شهر). **③ لا تنشر يوم الجمعة ولا قبل إجازة** — ليس خرافة: زمن الاكتشاف بيتمد لما مفيش حد يراقب. **④ كل نشر لازم يصاحبه smoke tests آلية** مش فحص يدوي. **⑤ قِس زمن الرجوع (MTTR) مش عدد النشرات** — الهدف مش «100 نشر في اليوم» بل «أي عطل يرجع في أقل من 5 دقائق»."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أعرف الفرق بين الاستراتيجيات الخمسة وأرقامها (توقف · زمن رجوع · تكلفة · خطر).",
+        "أقدر أنفذ blue-green بـApp Service slots (مع slot settings وauto-swap) وأرجع بـswap عكسي.",
+        "أقدر أنفذ canary بـACA revisions (set-mode Multiple + traffic split متدرج) وبـKubernetes ingress annotations.",
+        "فاهم إن canary = إصداران شغالان معًا، فأطبق expand/contract على أي تغيير في المخطط.",
+        "أعرف أكتب smoke tests بعد النشر (مسارات حقيقية + أكواد متوقعة) مش `/health` فقط.",
+        "أقدر أبني رجوعًا تلقائيًا بعتبات على معدل الأخطاء وp95 **مقابل خط أساس** محفوظ قبل النشر.",
+        "أفرق بين النشر (deploy) والإصدار (release) وأستخدم feature flags بنسبة/نافذة زمنية، وعارف قواعد انتهاء الأعلام."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على الاستراتيجيات والتوافق.",
+      "questions": [
+        {
+          "q": "هتعيد تسمية عمود `reference_code` إلى `order_reference` وتستخدم canary. الطريقة الصح؟",
+          "options": [
+            "migration واحد بيعيد التسمية قبل النشر",
+            "**3 إصدارات**: أضف العمود الجديد واكتب في الاثنين → هاجر البيانات وبدّل القراءات → احذف القديم",
+            "أوقف الخدمة ودقائق ونفذ",
+            "استخدم view بديل"
+          ],
+          "answer": 1,
+          "explain": "أثناء الـcanary الإصدار القديم لسه بيكتب/يقرأ العمود القديم، فإعادة التسمية المباشرة تكسره فورًا. expand/contract هو الحل (3.5) — وقاعدة: لا تدمج توسيعًا وتضييقًا في نفس النشر."
+        },
+        {
+          "q": "ليه blue-green أسرع رجوعًا من canary؟",
+          "options": [
+            "لأنه أرخص",
+            "**لأن النسخة القديمة كاملة وجاهزة ودافئة: الرجوع = تحويل لحظي للحركة، بينما canary محتاج قرارًا مبنيًا على مؤشرات وبعدها تحويل**",
+            "لأنه بلا توقف",
+            "لأنه يحتاج موارد أقل"
+          ],
+          "answer": 1,
+          "explain": "الثمن: blue-green بيكلف ~2× موارد لفترة. ACA revisions بيديك تقريبًا نفس الميزة ببلاش لأن النسخ القديمة بتفضل نشطة."
+        },
+        {
+          "q": "عملت canary بـ5% ومفيش عندك مؤشرات ولا خط أساس. ده معناه إيه؟",
+          "options": [
+            "نشر آمن",
+            "**وهم أمان**: لو العطل بيظهر عند 10% من الطلبات أو بعد 30 دقيقة، هتوصل لـ100% قبل ما تلاحظ",
+            "أفضل من rolling",
+            "يحتاج موافقة بشرية"
+          ],
+          "answer": 1,
+          "explain": "canary بيقلل نصف القطر **لو حد بيراقب ويقدر يحكم**. من غير معدل أخطاء وp95 وخط أساس، مفيش معيار للقرار — فارجع لـblue-green حتى تجهّز المراقبة (2.3.4)."
+        },
+        {
+          "q": "feature flag وcanary — إيه الفرق؟",
+          "options": [
+            "الشيء نفسه",
+            "**الـflag بيتحكم في السلوك داخل نفس النسخة (إطفاء فوري بلا نشر)، وcanary بيتحكم في أي نسخة من الكود بتخدم نسبة من الحركة**",
+            "canary أسرع",
+            "الـflag يحتاج نشرًا لتغييره"
+          ],
+          "answer": 1,
+          "explain": "الأقوى: الجمع بينهم — تنشر الكود الجديد مطفيًا بـflag (نشر آمن)، ثم تشغّله تدريجيًا (إصدار آمن) وترجعه في ثانية من غير نشر."
+        },
+        {
+          "q": "smoke test بينجح على `/health` لكن المستخدمين بيشتكوا. السبب الأشهر؟",
+          "options": [
+            "`/health` بطيء",
+            "**الفحص بيغطي مسارًا لا يعتمد على التبعيات الحقيقية** (قاعدة بيانات/طابور/خدمة خارجية) — لازم مسارات عمل حقيقية بأكواد متوقعة (200/401/404)",
+            "الـcanary غلط",
+            "الـDNS"
+          ],
+          "answer": 1,
+          "explain": "صمّم الـsmoke tests كأصغر نسخة من سيناريو مستخدم: قائمة تُقرأ من القاعدة · طلب يحتاج مصادقة يرجع 401 · مسار غير موجود يرجع 404. كده بتكشف مشاكل الاتصال والصلاحيات مش مجرد إقلاع العملية."
+        },
+        {
+          "q": "إمتى تختار Recreate رغم التوقف؟",
+          "options": [
+            "دايمًا في الإنتاج",
+            "**لما التغيير غير متوافق مع الإصدار القديم (مخطط/عقد) ومفيش وقت لعمل expand/contract — في نافذة صيانة معلنة، أو في dev/staging**",
+            "لأنه أسرع",
+            "لأنه أرخص من blue-green"
+          ],
+          "answer": 1,
+          "explain": "التوقف أحيانًا أرخص من التعقيد: dev/staging وbatch jobs وتغييرات غير متوافقة جذريًا. في الإنتاج: نافذة صيانة معلنة + رجوع مُختبَر + إخطار المستخدمين."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "canary حقيقي بمؤشرات + رجوع مُختبَر.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: canary متدرج بمؤشرات ورجوع تلقائي",
+          "md": "**السياق:** عايز تنشر نسخة جديدة من `Orders.Api` على منصة من اختيارك (ACA / App Service / Kubernetes).\n\n**المطلوب:**\n1. اختَر الاستراتيجية وبرر الاختيار في `docs/adr/0016-deployment-strategy.md` (بالأربعة أسئلة من الدرس).\n2. `deploy/canary.sh`: ينشر بـ**digest** · يبدأ بـ5% · ينتظر 10 دقائق · 25% · 10 دقائق · 60% · انتظار موافقة يدوية · 100%. وكل خطوة بتطبع حالة الحركة.\n3. `deploy/verify-and-rollback.sh`: smoke tests (5 مسارات على الأقل بأكواد متوقعة) + مراقبة بمقارنة **خط أساس محفوظ** + عتبات رجوع رقمية (معدل أخطاء · p95) + أمر رجوع واحد.\n4. سجّل خط الأساس **قبل** البدء (من staging أو من قياس سابق) في `docs/baseline.md` — بلا خط أساس مفيش حكم.\n5. **تجربة رجوع متعمدة**: انشر نسخة فيها عطل (مثال: مسار بيرمي exception أو p95 مرتفع عمدًا) ووثّق إن السكريبت رجع تلقائيًا، **وزمن الرجوع بالثواني**.\n6. اكتب `docs/rollback-runbook.md`: أمر الرجوع · مين ينفذه · إيه اللي يتحقق بعده · وإزاي نتأكد إن المستخدمين رجعوا لخدمة سليمة.\n7. غيّر واحدًا في قاعدة البيانات (إضافة عمود nullable) وطبّق expand/contract مع النشر — ووثّق إن الإصدار القديم استمر شغالًا أثناء الـcanary.",
+          "criteria": [
+            "ADR فيه اختيار الاستراتيجية بالأربعة أسئلة (توافق · مؤشرات · تكلفة · نوع التغيير).",
+            "النشر بـdigest ثابت، والسكريبت متدرج بـbake times مكتوبة (مش sleep عشوائي).",
+            "smoke tests بخمس مسارات حقيقية بأكواد متوقعة (منها 401 و404) — مش `/health` فقط.",
+            "خط أساس محفوظ **قبل** النشر + عتبات رجوع رقمية (مقارنة صريحة).",
+            "تجربة رجوع متعمدة **ناجحة** بزمن مقاس بالثواني.",
+            "runbook رجوع فيه الأمر والمسؤول والتحقق اللاحق.",
+            "تغيير قاعدة البيانات تم بـexpand/contract مع دليل إن الإصدار القديم اشتغل أثناء الـcanary.",
+            "ملاحظة عن حد المنصة (مثلًا: النسب في ingress-nginx تقريبية / عدد النسخ في ACA)."
+          ],
+          "hint": "أصعب جزء: الحصول على مقاييس لكل revision منفصلة. على ACA استخدم `az containerapp revision list` + Application Insights مع بعد (dimension) باسم الـrevision؛ على Kubernetes استخدم label `track=canary` في المقاييس. ولو مفيش مقاييس جاهزة، ابدأ بأبسط إشارة: عدد 5xx من سجلات الـingress خلال آخر دقيقتين.",
+          "solution": "التنفيذ النموذجي على ACA: `revision set-mode Multiple` → `revision copy` بصورة بـdigest → `ingress set --traffic-split old=95 new=5` → سكريبت المراقبة بيقرأ معدل الأخطاء من Application Insights (أو `/metrics` لو مكشوف داخليًا) ويقارن بخط الأساس من `docs/baseline.md` → زيادة تدريجية → موافقة يدوية عند 60% → 100% ثم `revision deactivate` للقديم. تجربة الرجوع المتعمدة: نسخة فيها `Thread.Sleep(3000)` في مسار → p95 يتجاوز 2× خط الأساس → السكريبت بيحوّل 100% للنسخة القديمة ويعطّل الجديدة؛ الزمن النموذجي من الاكتشاف لعودة الحركة = **30–90 ثانية**. تغيير قاعدة البيانات: إضافة عمود nullable في إصدار، نشر بـcanary، التأكد إن الإصدار القديم بيكتب/يقرأ عادي (لأن العمود الجديد nullable)، ثم إصدار تالي بيقرأ العمود الجديد، ثم إصدار ثالث بيضيق (NOT NULL/حذف القديم).",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/container-apps/revisions",
+            "https://learn.microsoft.com/en-us/azure/app-service/deploy-staging-slots",
+            "https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#canary",
+            "https://argo-rollouts.readthedocs.io/en/stable/",
+            "https://martinfowler.com/bliki/CanaryRelease.html",
+            "https://martinfowler.com/bliki/BlueGreenDeployment.html"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: افصل النشر عن الإصدار بـfeature flags",
+          "md": "**السياق:** ميزة جديدة (مثلًا «دفع سريع») عايز تنشرها مطفية، وتشغّلها تدريجيًا، وترجعها في ثانية لو فيه مشكلة.\n\n**المطلوب:**\n1. أضف `Microsoft.FeatureManagement` وسجّل الأعلام من الإعدادات (ويفضل من App Configuration في الإنتاج عشان التغيير **بدون نشر**).\n2. عَلَم `Checkout:v2` بـ**Percentage filter** يبدأ 5%، وعَلَم `Shipping:FastOption` بـ**TimeWindow** لإطلاق مجدول.\n3. المسار الجديد خلف العلم، والمسار القديم لسه موجود — **واختبر الاثنين في CI** (اختباران على الأقل: علم مفعّل → المسار الجديد؛ علم مطفي → القديم).\n4. اكتب `docs/feature-flags.md`: جدول الأعلام (الاسم · الوصف · الحالة · المالك · **تاريخ الانتهاء المخطط** · كيفية الإطفاء الفوري) + قاعدة حذف العلم من الكود بعد الإطلاق.\n5. أضف **قياسًا** لكل مسار (عدّاد/مقياس يوضح عدد الطلبات عبر v1 مقابل v2) عشان تقدر تحكم على الإطلاق.\n6. جرّب الإطفاء الفعلي: فعّل العلم، اطلب 20 مرة، وثّق النسبة التقريبية؛ ثم أطفئه من الإعدادات ووثّق إن كل الطلبات رجعت للمسار القديم **بدون نشر**.\n7. أضف فحصًا في CI يفشل لو فيه علم **بدون تاريخ انتهاء** في الجدول (سكربت بسيط يقرأ `docs/feature-flags.md`).",
+          "criteria": [
+            "الأعلام تُقرأ من الإعدادات (مش ثابتة في الكود) ويمكن تغييرها بدون نشر.",
+            "Percentage filter شغال (نسبة تقريبية موثقة بالقياس) وTimeWindow مضبوط بتوقيت UTC.",
+            "اختباران في CI يغطيان المسارين (مفعّل/مطفى) — وبيفشلوا لو مسار اتكسر.",
+            "جدول أعلام فيه المالك وتاريخ الانتهاء وكيفية الإطفاء الفوري.",
+            "قياس لكل مسار (v1 مقابل v2) يمكن الاعتماد عليه في قرار الإطلاق.",
+            "دليل إطفاء فوري من الإعدادات بدون نشر (مخرجات قبل/بعد).",
+            "فحص CI يمنع الأعلام بلا تاريخ انتهاء.",
+            "ملاحظة صريحة عن الفرق بين العلم وcanary (سلوك مقابل نسخة)."
+          ],
+          "hint": "للاختبارات: اضبط الإعدادات في `WebApplicationFactory` بـ`ConfigureAppConfiguration` وأضف `FeatureManagement:Checkout:v2:EnabledFor:0:Name = Percentage` مع `Value = 100` أو `0` — كده تتحكم في المسار من الاختبار مباشرة. وللقياس: `Meter` من `System.Diagnostics.Metrics` بعدّادين (checkout_v1_total / checkout_v2_total) يظهروا في Prometheus/App Insights.",
+          "solution": "البنية: `IFeatureManager` من الإعدادات + `AddFeatureFilter<PercentageFilter>()` و`TimeWindowFilter`. الـendpoint بيفحص `IsEnabledAsync` لكل طلب (أو `RequireFeatureGate` لإرجاع 404). الاختبارات: (1) مع Value=100 → الاستجابة فيها علامة المسار الجديد (2) مع Value=0 → المسار القديم. القياس: عدّادان يفرقوا المسارين في لوحة المراقبة — وده اللي بيخلي قرار الإطلاق مبنيًا على أرقام (مثلًا: v2 p95 أقل 20% ومعدل الأخطاء نفسه). الإطفاء الفوري: تغيير القيمة في App Configuration → الطلبات الجاية كلها على v1 خلال ثوانٍ (بلا نشر وبلا إعادة تشغيل، لو `ReloadInterval` مضبوط — 6.2.3). فحص CI: سكربت Python صغير يقرأ جدول `docs/feature-flags.md` ويفشل لو عمود «تاريخ الانتهاء» فاضي أو تاريخ منتهي — عشان الأعلام الميتة ما تتراكمش في الكود.",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/azure-app-configuration/quickstart-aspnet-core-app",
+            "https://learn.microsoft.com/en-us/dotnet/api/microsoft.featuremanagement",
+            "https://github.com/microsoft/FeatureManagement-Dotnet",
+            "https://learn.microsoft.com/en-us/azure/azure-app-configuration/concept-feature-flags",
+            "https://martinfowler.com/articles/feature-toggles.html"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Container Apps: revisions وتقسيم الحركة",
+          "url": "https://learn.microsoft.com/en-us/azure/container-apps/revisions"
+        },
+        {
+          "label": "App Service: deployment slots وswap",
+          "url": "https://learn.microsoft.com/en-us/azure/app-service/deploy-staging-slots"
+        },
+        {
+          "label": "ingress-nginx: تعليقات canary",
+          "url": "https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/"
+        },
+        {
+          "label": "Argo Rollouts",
+          "url": "https://argo-rollouts.readthedocs.io/en/stable/"
+        },
+        {
+          "label": "Kubernetes Deployment strategy",
+          "url": "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy"
+        },
+        {
+          "label": "Canary Release (Martin Fowler)",
+          "url": "https://martinfowler.com/bliki/CanaryRelease.html"
+        },
+        {
+          "label": "Feature Toggles (Martin Fowler)",
+          "url": "https://martinfowler.com/articles/feature-toggles.html"
+        },
+        {
+          "label": "FeatureManagement-Dotnet",
+          "url": "https://github.com/microsoft/FeatureManagement-Dotnet"
+        },
+        {
+          "label": "Parallel Change (expand/contract)",
+          "url": "https://martinfowler.com/bliki/ParallelChange.html"
+        }
+      ]
+    }
+  ]
+}

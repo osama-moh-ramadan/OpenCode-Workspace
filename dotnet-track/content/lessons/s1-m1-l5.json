@@ -1,0 +1,243 @@
+{
+  "id": "s1-m1-l5",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nإزاي نظامك بيفشل مهم زي إزاي بيشتغل. العميل (واجهة، تطبيق موبايل، خدمة تانية) محتاج **عقد ثابت** للأخطاء:\nكود HTTP صحيح، جسم موثّق، ورسالة آمنة للعرض — ومن غير تسريب تفاصيل داخلية.\n\nفي .NET الحديث، العقد ده اسمه **ProblemDetails** (RFC 9457)، والآلية الموصى بها لتحويل الاستثناءات\nهي **`IExceptionHandler`** (من .NET 8) — بدل middleware مخصص مكتوب بإيدك.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "ProblemDetails",
+          "def": "جسم JSON موحّد للأخطاء: `type`, `title`, `status`, `detail`, `instance` + أي امتدادات."
+        },
+        {
+          "term": "ValidationProblemDetails",
+          "def": "امتداد يضيف `errors` (قائمة رسائل لكل خاصية) لأخطاء التحقق 400."
+        },
+        {
+          "term": "IExceptionHandler",
+          "def": "عقد .NET لتحويل استثناء إلى استجابة. تُسجّل كل المعالجات وتُجرَّب بالترتيب."
+        },
+        {
+          "term": "traceId",
+          "def": "معرّف الطلب — أهم حاجة تديها للمستخدم وقت الخطأ عشان تلاقي اللوج."
+        },
+        {
+          "term": "Fail fast",
+          "def": "ارفض الطلب بدري وبوضوح (400/404) بدل ما تكمل بحالة غلط."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "استثناءات لها معنى في الـDomain"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Domain/Exceptions.cs",
+      "title": "أنواع تعبّر عن نية، مش Exception عامة",
+      "code": "\nnamespace Shop.Domain;\n\n/// <summary>قاعدة عمل اتكسرت — العميل غلطان (400/409).</summary>\npublic abstract class DomainException(string message) : Exception(message);\n\npublic sealed class OrderAlreadyCancelledException(Guid orderId)\n    : DomainException($\"الطلب {orderId:N} ملغي ولا يمكن تعديله\")\n{\n    public Guid OrderId { get; } = orderId;\n}\n\npublic sealed class InsufficientStockException(Guid productId, int requested, int available)\n    : DomainException($\"الكمية المطلوبة ({requested}) أكبر من المتاح ({available}) للمنتج {productId:N}\")\n{\n    public Guid ProductId { get; } = productId;\n    public int Requested { get; } = requested;\n    public int Available { get; } = available;\n}\n\n/// <summary>مورد غير موجود — 404.</summary>\npublic sealed class NotFoundException(string resource, object id)\n    : Exception($\"{resource} بمعرّف {id} غير موجود\")\n{\n    public string Resource { get; } = resource;\n    public object Id { get; } = id;\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "المعالج: من استثناء إلى ProblemDetails"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Api/ErrorHandling/GlobalExceptionHandler.cs",
+      "title": "خريطة واحدة لكل أخطاء التطبيق",
+      "code": "\nusing Microsoft.AspNetCore.Diagnostics;\nusing Microsoft.AspNetCore.Mvc;\n\npublic sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> log) : IExceptionHandler\n{\n    public async ValueTask<bool> TryHandleAsync(\n        HttpContext httpContext, Exception exception, CancellationToken cancellationToken)\n    {\n        var traceId = httpContext.TraceIdentifier;\n\n        var (status, title, detail, extensions) = exception switch\n        {\n            NotFoundException nf => (\n                StatusCodes.Status404NotFound,\n                \"المورد غير موجود\",\n                nf.Message,\n                (IReadOnlyDictionary<string, object?>?)null),\n\n            InsufficientStockException stock => (\n                StatusCodes.Status409Conflict,\n                \"الكمية غير متاحة\",\n                stock.Message,\n                new Dictionary<string, object?>\n                {\n                    [\"productId\"] = stock.ProductId,\n                    [\"requested\"] = stock.Requested,\n                    [\"available\"] = stock.Available,\n                }),\n\n            DomainException domain => (\n                StatusCodes.Status400BadRequest,\n                \"الطلب مرفوض بسبب قاعدة عمل\",\n                domain.Message,\n                null),\n\n            OperationCanceledException when cancellationToken.IsCancellationRequested => (\n                StatusCodes.Status499ClientClosedRequest,   // 499: العميل قفل الاتصال\n                \"أُلغي الطلب\",\n                \"أغلق العميل الاتصال قبل اكتمال العملية.\",\n                null),\n\n            UnauthorizedAccessException or SecurityTokenException => (\n                StatusCodes.Status403Forbidden,\n                \"غير مسموح\",\n                \"ليس لديك صلاحية لهذا الإجراء.\",       // ⚠ بلا تفاصيل داخلية\n                null),\n\n            _ => (\n                StatusCodes.Status500InternalServerError,\n                \"خطأ غير متوقع في الخادم\",\n                \"حدث خطأ أثناء معالجة طلبك. احتفظ بمعرّف التتبع وراسل الدعم.\",  // ⚠ بلا stack trace\n                null),\n        };\n\n        // السجل الداخلي كامل — المستخدم يشوف نسخة آمنة فقط\n        if (status >= 500)\n            log.LogError(exception, \"unhandled error for {Method} {Path} (trace {TraceId})\",\n                httpContext.Request.Method, httpContext.Request.Path, traceId);\n        else\n            log.LogWarning(\"{Type} handled as {Status} for {Path} (trace {TraceId})\",\n                exception.GetType().Name, status, httpContext.Request.Path, traceId);\n\n        var problem = new ProblemDetails\n        {\n            Status = status,\n            Title = title,\n            Detail = detail,\n            Instance = httpContext.Request.Path,\n            Type = $\"https://httpstatuses.com/{status}\",\n        };\n        problem.Extensions[\"traceId\"] = traceId;\n        if (extensions is not null)\n            foreach (var (key, value) in extensions) problem.Extensions[key] = value;\n\n        httpContext.Response.StatusCode = status;\n        httpContext.Response.ContentType = \"application/problem+json\";\n        await httpContext.Response.WriteAsJsonAsync(problem, cancellationToken);\n        return true;   // اتعاملت معه — لا تُمرّره لمعالج آخر\n    }\n}\n\n// نوع مساعد للتوثيق فقط\npublic sealed class SecurityTokenException : Exception;\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Program.cs",
+      "title": "التسجيل — ترتيب المعالجات مهم",
+      "code": "\nvar builder = WebApplication.CreateBuilder(args);\n\nbuilder.Services.AddProblemDetails(options =>\n{\n    // أجسام 4xx/5xx اللي مش من استثناءات (مثل 404 من الراوتر) تبقى problem+json كمان\n    options.CustomizeProblemDetails = ctx =>\n    {\n        ctx.ProblemDetails.Extensions[\"traceId\"] ??= ctx.HttpContext.TraceIdentifier;\n        ctx.ProblemDetails.Extensions[\"instance\"] ??= ctx.HttpContext.Request.Path;\n    };\n});\n\nbuilder.Services.AddExceptionHandler<GlobalExceptionHandler>();\n\nvar app = builder.Build();\n\napp.UseExceptionHandler(_ => { });   // ✓ يفعّل IExceptionHandler pipeline\napp.UseStatusCodePages();              // أجسام problem لـ404/405 بدون استثناء\napp.UseHttpsRedirection();\n\n// ... endpoints\napp.Run();\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أخطاء بتظهر في الإنتاج",
+      "md": "\n- **`app.UseExceptionHandler()` ناقص** → المعالجات المسجّلة مش هتشتغل وهترجع صفحة 500 فاضية.\n- **تسريب التفاصيل**: `detail = ex.ToString()` بيبعت stack trace للعميل (معلومة أمنية مجانية للمهاجم).\n- **كل حاجة 400**: أخطاء التبعية الخارجية (Timeout من خدمة تانية) المفروض 502/504 مش 400.\n- **429 من غير `Retry-After`** → العملاء هيعيدوا المحاولة فورًا ويزوّدوا الحمل.\n- **مفيش traceId** → الدعم مش هيعرف يلاقي اللوج.\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الحالة",
+        "متى",
+        "مثال من نظام طلبات"
+      ],
+      "rows": [
+        [
+          "400",
+          "الطلب نفسه غلط (شكل/قاعدة عمل)",
+          "كمية سالبة، كوبون منتهي"
+        ],
+        [
+          "401",
+          "مش معروف مين إنت",
+          "توكن منتهي/ناقص"
+        ],
+        [
+          "403",
+          "معروف لكن مش مسموح",
+          "مستخدم عادي بيحاول يلغي طلب حد تاني"
+        ],
+        [
+          "404",
+          "المورد مش موجود",
+          "orderId غلط"
+        ],
+        [
+          "409",
+          "تعارض مع الحالة الحالية",
+          "تعديل طلب ملغي، نسخة قديمة (concurrency)"
+        ],
+        [
+          "422",
+          "الشكل سليم لكن الدلالات غلط",
+          "تاريخ تسليم قبل تاريخ الطلب"
+        ],
+        [
+          "429",
+          "تجاوزت الحد",
+          "أكثر من 100 طلب/دقيقة"
+        ],
+        [
+          "500",
+          "خطأ عندنا",
+          "استثناء غير متوقع"
+        ],
+        [
+          "502/504",
+          "تبعية خارجية فشلت/تأخرت",
+          "بوابة الدفع لا تستجيب"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "اختبار مسار الخطأ"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "ErrorHandlingTests.cs",
+      "title": "WebApplicationFactory: تأكد من العقد مش من الرسالة بس",
+      "code": "\npublic sealed class ErrorHandlingTests(WebApplicationFactory<Program> factory)\n    : IClassFixture<WebApplicationFactory<Program>>\n{\n    [Fact]\n    public async Task Cancelled_order_returns_400_problem_json_with_traceId()\n    {\n        var client = factory.CreateClient();\n\n        var response = await client.PostAsJsonAsync(\"/api/orders/cancel\", new { orderId = Fixtures.CancelledOrderId });\n\n        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);\n        response.Content.Headers.ContentType?.MediaType.Should().Be(\"application/problem+json\");\n\n        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();\n        problem!.Title.Should().NotBeNullOrWhiteSpace();\n        problem.Extensions.Should().ContainKey(\"traceId\");\n        problem.Detail.Should().NotContain(\"System.\");   // ما يسرّبش أنواع داخلية\n    }\n\n    [Fact]\n    public async Task Unknown_order_returns_404()\n    {\n        var client = factory.CreateClient();\n        var response = await client.GetAsync($\"/api/orders/{Guid.NewGuid()}\");\n        response.StatusCode.Should().Be(HttpStatusCode.NotFound);\n    }\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أصمم مجموعة استثناءات Domain معبّرة وأربطها بأكواد HTTP صحيحة.",
+        "أسجّل `IExceptionHandler` وأفعّله في الـpipeline وأتأكد إنه شغال.",
+        "أرجع problem+json موحّد فيه traceId وامتدادات مفيدة.",
+        "أمنع تسريب stack trace أو أسماء أنواع داخلية للعميل."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "خدمة الدفع الخارجية عملت Timeout. أنهي كود HTTP أنسب؟",
+          "options": [
+            "400",
+            "408",
+            "504",
+            "500"
+          ],
+          "answer": 2,
+          "explain": "504 Gateway Timeout (أو 502 Bad Gateway لو رجعت استجابة غير صالحة) يوضّح إن المشكلة في التبعية، مش في طلب العميل ولا في كودك الداخلي."
+        },
+        {
+          "q": "سجّلت `AddExceptionHandler<T>()` لكن الأخطاء لسه بترجع صفحة فاضية. السبب الأرجح؟",
+          "options": [
+            "المعالج لازم يرجع false",
+            "نسيت `app.UseExceptionHandler(...)` في الـpipeline",
+            "لازم تسجّل المعالج بعد `app.Run()`",
+            "ProblemDetails مش مفعّل"
+          ],
+          "answer": 1,
+          "explain": "المعالجات تشتغل من خلال middleware الـexception handler. من غيره الاستثناء يطلع للخارج ويتصرف فيه Kestrel بشكل افتراضي."
+        },
+        {
+          "q": "إمتى ترجع 409 بدل 400؟",
+          "options": [
+            "لما المدخل ناقص حقل مطلوب",
+            "لما الطلب سليم الشكل لكنه يتعارض مع حالة المورد الحالية",
+            "لما المستخدم غير مسجّل",
+            "لما الخادم وقع"
+          ],
+          "answer": 1,
+          "explain": "409 Conflict = تعارض مع الحالة (تعديل ملغي، concurrency token قديم، مورد مقفول). الناقص في الشكل = 400."
+        },
+        {
+          "q": "أنهي تفصيلة أهم حاجة تضيفها لجسم الخطأ في الإنتاج؟",
+          "options": [
+            "stack trace",
+            "اسم السيرفر",
+            "traceId",
+            "كلمة السر المشفرة"
+          ],
+          "answer": 2,
+          "explain": "traceId بيوصل شكوى المستخدم بسجلاتك مباشرة — من غيره الدعم هيبحث في الظلام."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "عقد أخطاء كامل",
+          "md": "طبّق `IExceptionHandler` في مشروعك مع 4 أنواع استثناء على الأقل، وفعّل `AddProblemDetails`، واكتب اختبار Integration يتأكد من `application/problem+json` ومن وجود `traceId`.",
+          "criteria": [
+            "كل استثناء Domain بيتحول لكود HTTP مبرر (مش 500)",
+            "الاستجابة media type هي application/problem+json",
+            "مفيش stack trace أو أسماء أنواع داخلية في الجسم",
+            "اختبار Integration ناجح يتحقق من العقد"
+          ],
+          "hint": "ابدأ بالخريطة في `switch expression`، وبعدين اختبر كل فرع بحالة — مش بس الفرع الافتراضي."
+        },
+        {
+          "id": "t2",
+          "title": "جدول حالات لفريقك",
+          "md": "اكتب جدول (في README أو ADR) يربط كل حالة خطأ في نظامك بكود HTTP والعنوان والامتدادات، عشان الواجهة تعتمد عليه.",
+          "criteria": [
+            "8 حالات على الأقل",
+            "كل حالة فيها مثال جسم JSON",
+            "اتفقت مع «العميل» (لوحدك برضه) على معانيها"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Handle errors in ASP.NET Core web APIs",
+          "url": "https://learn.microsoft.com/aspnet/core/web-api/handle-errors"
+        },
+        {
+          "label": "IExceptionHandler (.NET 8+)",
+          "url": "https://learn.microsoft.com/dotnet/api/microsoft.aspnetcore.diagnostics.iexceptionhandler"
+        },
+        {
+          "label": "RFC 9457 — Problem Details",
+          "url": "https://www.rfc-editor.org/rfc/rfc9457"
+        }
+      ]
+    }
+  ]
+}

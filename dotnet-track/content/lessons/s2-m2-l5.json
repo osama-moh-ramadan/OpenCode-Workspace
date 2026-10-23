@@ -1,0 +1,372 @@
+{
+  "id": "s2-m2-l5",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nتأمين الـAPI مش ميزة إضافية — ده مجموعة إعدادات صغيرة، **مقصودة**، ومختبرة. أغلب الاختراقات اللي بتحصل\nلأنظمة حقيقية مش ثغرات غامضة: إعدادات افتراضية، أسرار في الـrepo، CORS مفتوح، رسائل خطأ كاشفة،\nومسارات تطوير منسية في الإنتاج.\n\nالدرس ده: رؤوس الأمان، CORS، HTTPS/HSTS، إدارة الأسرار، وقائمة OWASP API Top 10 بتطبيقاتها العملية في ASP.NET Core.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Security Headers",
+          "def": "رؤوس استجابة توجّه المتصفح: CSP، nosniff، frame-ancestors، referrer-policy، permissions-policy."
+        },
+        {
+          "term": "HSTS",
+          "def": "`Strict-Transport-Security`: يخلي المتصفح يرفض HTTP عادي للنطاق لمدة محددة."
+        },
+        {
+          "term": "CORS",
+          "def": "آلية المتصفح للسماح بطلبات من أصل مختلف. **ليست حماية للخادم** — أي عميل غير متصفح يتجاهلها."
+        },
+        {
+          "term": "Preflight",
+          "def": "طلب `OPTIONS` مسبق للطلبات «غير البسيطة». نتيجته قابلة للكاش."
+        },
+        {
+          "term": "Managed Identity",
+          "def": "هوية مُدارة في Azure — بلا secret ولا connection string في الكود."
+        },
+        {
+          "term": "User Secrets",
+          "def": "تخزين أسرار التطوير خارج الـrepo (`~/.microsoft/usersecrets/`)."
+        },
+        {
+          "term": "BOLA / BFLA",
+          "def": "كسر تفويض مستوى الكائن (مورد مش بتاعك) ومستوى الوظيفة (عملية مش من دورك)."
+        },
+        {
+          "term": "SSRF",
+          "def": "خداع خادمك ليجلب عنوانًا يختاره المهاجم (شبكات داخلية، metadata endpoints)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) رؤوس الأمان + HTTPS"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Security/SecurityHeaders.cs",
+      "title": "Middleware صغير، أثر كبير",
+      "code": "\npublic static class SecurityHeaders\n{\n    /// <summary>\n    /// رؤوس لـJSON API. لو بتقدّم HTML من نفس النطاق، الـCSP يحتاج تضييقًا مختلفًا\n    /// (واستثنِ مسارات الواجهة التفاعلية في التطوير).\n    /// </summary>\n    public static IApplicationBuilder UseSecurityHeaders(this IApplicationBuilder app) =>\n        app.Use(async (ctx, next) =>\n        {\n            var headers = ctx.Response.Headers;\n\n            headers[\"X-Content-Type-Options\"] = \"nosniff\";                  // لا تخمين لنوع المحتوى\n            headers[\"X-Frame-Options\"] = \"DENY\";                            // منع clickjacking\n            headers[\"Referrer-Policy\"] = \"no-referrer\";                     // لا تسريب لمسارات في Referer\n            headers[\"Permissions-Policy\"] = \"geolocation=(), camera=(), microphone=(), payment=()\";\n            headers[\"Cross-Origin-Resource-Policy\"] = \"same-origin\";\n            headers[\"Cross-Origin-Opener-Policy\"] = \"same-origin\";\n            headers[\"Cache-Control\"] = \"no-store\";                          // استجابات API فيها بيانات مستخدم\n            headers[\"Pragma\"] = \"no-cache\";\n\n            // CSP لـAPI: لا مصادر خارجية ولا تنفيذ سكربتات\n            headers[\"Content-Security-Policy\"] =\n                \"default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\";\n\n            await next();\n        });\n\n    /// <summary>إخفاء بصمة الخادم (لا تفيد المهاجم بمعلومة إصدار).</summary>\n    public static IWebHostBuilder HideServerHeader(this IWebHostBuilder host) =>\n        host.ConfigureKestrel(options => options.AddServerHeader = false);\n}\n\n// Program.cs\nbuilder.WebHost.HideServerHeader();\n\nbuilder.Services.AddHsts(options =>\n{\n    options.MaxAge = TimeSpan.FromDays(365);\n    options.IncludeSubDomains = true;\n    options.Preload = true;                    // أضف النطاق لقائمة preload بعد التأكد من HTTPS لكل شيء\n});\nbuilder.Services.AddHttpsRedirection(options => options.HttpsPort = 443);\n\nvar app = builder.Build();\n\nif (!app.Environment.IsDevelopment())\n{\n    app.UseHsts();                              // ✓ إنتاج فقط: في التطوير بيلخبط localhost\n    app.UseHttpsRedirection();\n}\napp.UseSecurityHeaders();\napp.UseExceptionHandler(string.Empty);         // لا stack traces للعميل\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "TLS: الإعدادات الدنيا المقبولة",
+      "md": "\n- اقبل **TLS 1.2 و1.3 فقط** (عطّل 1.0/1.1). على Kestrel: `options.ConfigureHttpsDefaults(h => h.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13)`.\n- الشهادات من Let's Encrypt / Key Vault / خدمة الشهادات المُدارة، مع **تجديد تلقائي**.\n- افحص من الخارج بعد النشر: [SSL Labs](https://www.ssllabs.com/ssltest/) أو `nmap --script ssl-enum-ciphers`.\n- `RequireHttpsMetadata = true` في JwtBearer/OIDC — لا تعطّلها إلا في تطوير محلي موثّق ومؤقت.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) CORS: مقصود وضيّق"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Security/CorsSetup.cs",
+      "title": "أصول صريحة من الإعدادات — لا `AllowAnyOrigin` أبدًا",
+      "code": "\npublic static IServiceCollection AddApiCors(this IServiceCollection services, IConfiguration config)\n{\n    var origins = config.GetSection(\"Cors:Origins\").Get<string[]>() ?? [];\n    if (origins.Length == 0)\n        throw new InvalidOperationException(\"Cors:Origins فاضي — حدّد الأصول المسموحة صراحةً\");\n\n    services.AddCors(options =>\n    {\n        options.AddPolicy(\"spa\", policy => policy\n            .WithOrigins(origins)                              // ✓ قائمة صريحة\n            .WithMethods(\"GET\", \"POST\", \"PUT\", \"PATCH\", \"DELETE\", \"OPTIONS\")\n            .WithHeaders(\"Authorization\", \"Content-Type\", \"X-Correlation-Id\", \"Idempotency-Key\")\n            .WithExposedHeaders(\"X-Correlation-Id\", \"X-RateLimit-Limit\", \"X-RateLimit-Remaining\",\n                                \"X-RateLimit-Reset\", \"Retry-After\", \"Location\", \"Deprecation\", \"Sunset\")\n            .AllowCredentials());                              // ✓ مسموح لأن الأصول صريحة\n\n        // لو محتاج subdomains موثوقة: اكتب الأصل بصيغة wildcard واستخدم\n        // .WithOrigins(\"https://*.example.com\").SetIsOriginAllowedToAllowWildcardSubdomains()\n        // (بلا wildcards السطر ده ما لهوش أثر — خلي القائمة صريحة ما أمكن)\n    });\n\n    return services;\n}\n\n// Program.cs — الترتيب مهم: بعد الـrouting وقبل الـauthorization\napp.UseCors(\"spa\");\n"
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "filename": "appsettings.Production.json",
+      "title": "الأصول من الإعدادات (لا من الكود)",
+      "code": "\n{\n  \"Cors\": {\n    \"Origins\": [\n      \"https://app.example.com\",\n      \"https://admin.example.com\"\n    ]\n  }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "التركيب القاتل: `AllowAnyOrigin` + `AllowCredentials`",
+      "md": "\nأي موقع على الإنترنت يقدر ينادي الـAPI بتاعك **بكوكيز المستخدم**. المتصفح هيقبل لو الـAPI رجّع\n`Access-Control-Allow-Origin: <origin الطالب>` مع `Allow-Credentials: true` — وده بالظبط اللي بيعمله\nالانعكاس الديناميكي للأصول.\n\nالقواعد:\n1. **أصول صريحة من الإعدادات** — لا `AllowAnyOrigin()` مع credentials، ولا انعكاس لرأس `Origin` بدون whitelist.\n2. لو الـAPI عام بلا بيانات مستخدم (مثال: بيانات أسعار) → `AllowAnyOrigin()` **بدون** credentials.\n3. **CORS مش أمان للخادم**: أي أداة (curl، خدمة خلفية) بتتجاهله. التفويض الحقيقي في التوكن والسياسات.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) الأسرار: لا شيء في الـrepo"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الترتيب حسب البيئة",
+      "code": "\n# ── تطوير محلي: user-secrets (خارج الـrepo)\ndotnet user-secrets init --project Shop.Api\ndotnet user-secrets set \"ConnectionStrings:Default\" \"Host=localhost;Database=shop_dev;Username=dev;Password=dev\" --project Shop.Api\ndotnet user-secrets set \"AuthToken:PrivateKeyPem\" \"$(cat ./dev-key.pem)\" --project Shop.Api\n\n# ── CI: GitHub Actions secrets (مش متغيرات مكشوفة)\n#   Repository → Settings → Secrets and variables → Actions\n\n# ── إنتاج Azure: Key Vault + Managed Identity (بلا أي secret في الكود)\naz keyvault secret set --vault-name shop-kv --name ConnectionStrings--Default --value \"$CONN\"\n\n# ── فحص تسريب الأسرار (محليًا وفي CI)\ngrep -rEn \"(password|secret|api[_-]?key)\\s*[:=]\\s*['\\\"][^'\\\"]{6,}\" --include=\"*.json\" --include=\"*.cs\" --include=\"*.yml\" . \\\n  || echo \"clean ✅\"\ndotnet list package --vulnerable --include-transitive\ndotnet list package --deprecated\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "تحميل الأسرار من Key Vault في الإنتاج",
+      "code": "\nusing Azure.Identity;\nusing Azure.Extensions.AspNetCore.Configuration.Secrets;\n\nvar builder = WebApplication.CreateBuilder(args);\n\nif (builder.Environment.IsProduction())\n{\n    var vaultUrl = builder.Configuration[\"KeyVault:Url\"]\n        ?? throw new InvalidOperationException(\"KeyVault:Url مطلوب في الإنتاج\");\n\n    // DefaultAzureCredential → Managed Identity في Azure، وبلا أسرار في الكود أو الإعدادات\n    builder.Configuration.AddAzureKeyVault(new Uri(vaultUrl), new DefaultAzureCredential());\n}\n\n// تحقق مبكر عند الإقلاع: فشل واضح بدل سلوك غريب وقت التشغيل\nbuilder.Services.AddOptions<AuthTokenOptions>()\n    .Bind(builder.Configuration.GetSection(\"AuthToken\"))\n    .Validate(o => !string.IsNullOrWhiteSpace(o.PrivateKeyPem), \"AuthToken:PrivateKeyPem مفقود\")\n    .Validate(o => o.AccessTokenLifetime <= TimeSpan.FromMinutes(30), \"عمر access token طويل جدًا\")\n    .ValidateOnStart();                                    // ← يفشل النشر فورًا لو فيه خطأ إعداد\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) OWASP API Security Top 10 → تنفيذ عملي"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الخطر (2023)",
+        "مظهره",
+        "التنفيذ في ASP.NET Core"
+      ],
+      "rows": [
+        [
+          "API1: BOLA",
+          "`/orders/123` يرجّع طلب مستخدم آخر",
+          "resource-based authorization على المورد المحمّل + `ICurrentUser` بدل معرّف من الطلب"
+        ],
+        [
+          "API2: Broken Authentication",
+          "تخمين كلمات السر، توكنات طويلة العمر، endpoints مصادقة بلا حدود",
+          "lockout + rate limiting على `/login` + access token 5-15 دقيقة + refresh rotation"
+        ],
+        [
+          "API3: Object Property Authorization",
+          "mass assignment: العميل يبعت `role: admin` أو `isVerified: true`",
+          "DTOs صريحة للكتابة منفصلة عن القراءة — لا تربط كيانات EF مباشرة"
+        ],
+        [
+          "API4: Unrestricted Resource Consumption",
+          "طلبات ضخمة/متكررة تستهلك القاعدة",
+          "rate limiting + `size ≤ 100` + `MaxRequestBodySize` + timeout على HttpClient + فهارس"
+        ],
+        [
+          "API5: BFLA",
+          "مستخدم عادي ينادي `/admin/users`",
+          "سياسات تفويض على **كل** endpoint (مش بس الواجهة)، واختبارات 403"
+        ],
+        [
+          "API6: Sensitive Business Flows",
+          "شراء/تسجيل/استرجاع بلا حدود → bots",
+          "حدود تدفق + تحقق من النوايا (captcha/OTP) + مراقبة أنماط"
+        ],
+        [
+          "API7: SSRF",
+          "endpoint بيجيب URL من العميل",
+          "whitelist للنطاقات + منع IP الخاصة/metadata + `IHttpClientFactory` بسياسات"
+        ],
+        [
+          "API8: Security Misconfiguration",
+          "CORS مفتوح، رؤوس افتراضية، رسائل خطأ كاشفة، مسار dev في الإنتاج",
+          "قائمة الفحص أدناه + `UseSecurityHeaders` + `IExceptionHandler` + فحص بيئات"
+        ],
+        [
+          "API9: Improper Inventory Management",
+          "إصدارات قديمة شغالة، endpoints منسية، بيئة staging مكشوفة",
+          "versioning + `Deprecation`/`Sunset` + مراجعة المسارات + عزل البيئات"
+        ],
+        [
+          "API10: Unsafe Consumption of APIs",
+          "ثقة عمياء في رد خدمة خارجية",
+          "تحقق من المخطط + timeouts + circuit breaker (Polly) + عزل الأخطاء"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Security/SsrfGuard.cs",
+      "title": "مثال API7: منع SSRF عند جلب URL من العميل",
+      "code": "\npublic static class UrlGuard\n{\n    private static readonly string[] AllowedHosts = [\"cdn.example.com\", \"images.partner.example\"];\n\n    /// <summary>\n    /// يرفض: نطاقات غير مسجلة، IP مباشرة، عناوين خاصة/محلية، ومسارات الـmetadata السحابية.\n    /// </summary>\n    public static bool IsAllowedFetch(string? url)\n    {\n        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;\n        if (uri.Scheme != Uri.UriSchemeHttps) return false;\n\n        // ✓ whitelist للنطاق — لا فحص \"ليس محليًا\" فقط (الهجمات كتيرة بالـDNS rebind)\n        if (!AllowedHosts.Contains(uri.Host, StringComparer.OrdinalIgnoreCase)) return false;\n\n        return !System.Net.IPAddress.TryParse(uri.Host, out var ip) || !IsBlockedIp(ip);\n    }\n\n    private static bool IsBlockedIp(System.Net.IPAddress ip)\n    {\n        if (System.Net.IPAddress.IsLoopback(ip)) return true;\n        var bytes = ip.GetAddressBytes();\n        return bytes.Length switch\n        {\n            4 => bytes[0] is 10 or 127\n              || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31)\n              || (bytes[0] == 192 && bytes[1] == 168)\n              || (bytes[0] == 169 && bytes[1] == 254),          // ← عنوان metadata السحابي\n            6 => bytes[0] == 0xfc || bytes[0] == 0xfd || bytes[0] == 0xfe,\n            _ => false,\n        };\n    }\n}\n\n// الاستخدام\ngroup.MapPost(\"/webhooks/fetch\", async (FetchRequest request, IHttpClientFactory http, CancellationToken ct) =>\n{\n    if (!UrlGuard.IsAllowedFetch(request.Url))\n        return TypedResults.BadRequest(new ProblemDetails { Status = 400, Title = \"العنوان غير مسموح\" });\n\n    using var client = http.CreateClient(\"external\");           // timeout + Polly من إعداد الـclient\n    var bytes = await client.GetByteArrayAsync(request.Url, ct);\n    return TypedResults.Ok(new FetchResponse(bytes.Length));\n});\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "API3: DTO منفصل للكتابة (منع mass assignment)",
+      "code": "\n// ✗ خطر: ربط كيان EF مباشرة — العميل يقدر يبعت IsAdmin/CreatedAt/Total\ngroup.MapPut(\"/{id:guid}\", async (Guid id, Order entity, AppDbContext db) => { /* ... */ });\n\n// ✓ آمن: حقول مقصودة فقط، والباقي من الهوية والحالة الحالية\npublic sealed record UpdateOrderRequest(string? ShippingNote, DateTimeOffset? PreferredDate);\n\ngroup.MapPut(\"/{id:guid}\", async (Guid id, UpdateOrderRequest request, AppDbContext db,\n                                  ICurrentUser user, CancellationToken ct) =>\n{\n    var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == id, ct)\n                ?? throw new NotFoundException(\"Order\", id);\n\n    if (order.CustomerId != user.UserId && !user.Roles.Contains(Roles.Admin))\n        throw new ForbiddenException(\"Order\", id);\n\n    order.ShippingNote = request.ShippingNote;              // تعديل صريح لحقل مسموح\n    order.PreferredDate = request.PreferredDate;\n    await db.SaveChangesAsync(ct);\n    return TypedResults.NoContent();\n});\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) قائمة فحص ما قبل الإطلاق"
+    },
+    {
+      "type": "steps",
+      "title": "راجعها بندًا بندًا على مشروعك",
+      "items": [
+        {
+          "title": "لا أسرار في الـrepo",
+          "md": "user-secrets/Key Vault/env vars فقط. شغّل فحص تسريب وأضف `.gitignore` للملفات المحلية. لو سر اتسرب: **دوّره فورًا** (مش بس احذفه من git history)."
+        },
+        {
+          "title": "كل endpoint محمي عمدًا",
+          "md": "قائمة بكل المسارات وحالتها (عام/مصادَق/دور). `AllowAnonymous()` لازم يكون قرارًا موثقًا، مش نسيانًا."
+        },
+        {
+          "title": "فحص ملكية الموارد",
+          "md": "لكل مسار بيقرأ/يعدّل موردًا مملوكًا: اختبار يثبت إن مستخدم تاني ياخد 403/404."
+        },
+        {
+          "title": "حدود على الاستهلاك",
+          "md": "rate limiting على المصادقة والكتابة، `size ≤ 100` في الترقيم، `MaxRequestBodySize`، وtimeouts على كل HttpClient."
+        },
+        {
+          "title": "رؤوس وأخطاء آمنة",
+          "md": "لا stack traces، لا تفاصيل داخلية في 500، `problem+json` موحّد مع `traceId`، ورؤوس الأمان مطبقة."
+        },
+        {
+          "title": "CORS ضيق ومقصود",
+          "md": "أصول صريحة من الإعدادات، بلا `AllowAnyOrigin` + credentials، وpreflight متوقع."
+        },
+        {
+          "title": "HTTPS إجباري",
+          "md": "`UseHttpsRedirection` + HSTS في الإنتاج + TLS 1.2/1.3 فقط + شهادة تتجدد تلقائيًا."
+        },
+        {
+          "title": "المسارات الحساسة غير مكشوفة",
+          "md": "`/openapi`، `/scalar`، `/health` التفصيلي، dashboards: خلف مصادقة أو شبكة داخلية. `/health/live` عام، `/health/ready` داخلي."
+        },
+        {
+          "title": "الاعتماديات محدثة ومفحوصة",
+          "md": "`dotnet list package --vulnerable --include-transitive` في الـCI + Dependabot/Renovate + سياسة ترقيات."
+        },
+        {
+          "title": "تسجيل ومراقبة الأحداث الأمنية",
+          "md": "دخول فاشل، lockout، 403 متكررة، reuse لـrefresh token، تغيير صلاحيات — كلها events بمعرّفات قابلة للربط (correlation id)."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "اجعل الأمان قابلًا للاختبار",
+      "md": "\nكل بند في القائمة أعلاه يقدر يبقى **اختبار آلي** — وده اللي بيخليه يفضل مطبّق بعد سنة:\n```csharp\n[Fact]\npublic async Task Responses_include_security_headers()\n{\n    var client = factory.CreateAuthenticatedClient(\"customer\");\n    var response = await client.GetAsync(\"/api/orders\");\n\n    response.Headers.GetValues(\"X-Content-Type-Options\").Should().Contain(\"nosniff\");\n    response.Headers.Should().NotContainKey(\"Server\");\n}\n\n[Fact]\npublic async Task Cors_rejects_unknown_origin()\n{\n    var client = factory.CreateClient();\n    client.DefaultRequestHeaders.Add(\"Origin\", \"https://evil.example\");\n\n    var response = await client.GetAsync(\"/api/orders\");\n\n    response.Headers.TryGetValues(\"Access-Control-Allow-Origin\", out _).Should().BeFalse();\n}\n```\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أطبّق رؤوس الأمان وHSTS وTLS الحديث وأخفي بصمة الخادم.",
+        "أضبط CORS بأصول صريحة من الإعدادات وأفهم إنه مش حماية للخادم.",
+        "أدير الأسرار بـuser-secrets/Key Vault/Managed Identity مع تحقق `ValidateOnStart`.",
+        "أراجع OWASP API Top 10 على مشروعي وأحوّل كل بند لاختبار آلي."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "إيه اللي CORS **ما بيعملوش**؟",
+          "options": [
+            "يسمح للمتصفح بقراءة استجابة من أصل آخر",
+            "يمنع عميلًا غير متصفح (curl/خدمة خلفية) من نداء الـAPI",
+            "يتحكم في الـpreflight",
+            "يكشف الرؤوس المسموحة"
+          ],
+          "answer": 1,
+          "explain": "CORS سياسة **متصفح**. الحماية الحقيقية على الخادم هي المصادقة والتفويض والـrate limiting."
+        },
+        {
+          "q": "مسار `/scalar` منشور في الإنتاج بلا مصادقة. الخطر؟",
+          "options": [
+            "بطء الصفحة",
+            "كشف كامل لسطح الـAPI (مسارات، معاملات، أدوار) يسهّل الاستطلاع والهجوم",
+            "تعارض CORS",
+            "لا خطر"
+          ],
+          "answer": 1,
+          "explain": "الحل: ولّد المستند وقت البناء ووزّعه، أو اعرضه خلف مصادقة/شبكة داخلية، أو عطّله في الإنتاج تمامًا."
+        },
+        {
+          "q": "mass assignment بيحصل إزاي في Minimal APIs؟",
+          "options": [
+            "من ربط كيان Domain/EF مباشرة كمعامل في الـendpoint (العميل يبعت حقولًا ما قصدتهاش)",
+            "من استخدام DTOs",
+            "من JSON كبير",
+            "من CORS"
+          ],
+          "answer": 0,
+          "explain": "الحل: DTO منفصل للكتابة بحقول مقصودة فقط، والتعديل الصريح على الحقول المسموحة."
+        },
+        {
+          "q": "سر اتسرب في commit قديم وحذفته من الكود. كفاية؟",
+          "options": [
+            "أيوه بعد `git filter-repo`",
+            "لأ: السر لسه في التاريخ وممكن يكون اتنسخ — لازم **تدوير السر** فورًا مع الحذف",
+            "أيوه لو الـrepo خاص",
+            "أيوه بعد إعادة النشر"
+          ],
+          "answer": 1,
+          "explain": "افترض إن السر اتسرب واستُخدم. التدوير هو الإجراء الحاسم؛ التنظيف من التاريخ إجراء تكميلي."
+        },
+        {
+          "q": "ليه `ValidateOnStart()` مفيدة أمنيًا؟",
+          "options": [
+            "تسرّع الإقلاع",
+            "تفشل النشر فورًا لو إعداد أمني ناقص (مفتاح، عمر توكن) بدل ما تشتغل بوضع ضعيف صامت",
+            "تمنع الطلبات",
+            "تولد المفاتيح"
+          ],
+          "answer": 1,
+          "explain": "الإعداد الخاطئ اللي يعدي بصمت = ثغرة شغالة لأسابيع. الفشل المبكر في الـdeployment أفضل بكتير."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "تقوية مشروعك",
+          "md": "طبّق `UseSecurityHeaders` + `HideServerHeader` + HSTS/HTTPS (إنتاج) + CORS بأصول من الإعدادات + نقل كل الأسرار لـuser-secrets/Key Vault مع `ValidateOnStart`. وحوّل 4 بنود على الأقل لاختبارات آلية.",
+          "criteria": [
+            "اختبار يؤكد وجود الرؤوس الأمنية وغياب رأس `Server`",
+            "اختبار يرفض أصلًا غير معروف في CORS",
+            "`grep` على الـrepo لا يجد أي سر (والتحقق مسجل في الملاحظات)",
+            "`ValidateOnStart` يفشل الإقلاع لو مفتاح التوقيع ناقص (جرّبه)",
+            "لا توجد stack traces في أي استجابة 500"
+          ],
+          "hint": "لو HSTS بيعطّل localhost عندك: خلي `UseHsts()` داخل `if (!IsDevelopment())` — وده بالظبط ما عملناه في الكود."
+        },
+        {
+          "id": "t2",
+          "title": "تدقيق OWASP API Top 10",
+          "md": "املأ جدول تدقيق للعشرة مخاطر على مشروعك: لكل بند اكتب الحالة (محمي/جزئي/مكشوف)، الدليل (اختبار أو كود)، وخطة الإصلاح. ركّز على API1/API3/API4/API5 لأنها الأكثر حدوثًا.",
+          "criteria": [
+            "10 بنود بحالة ودليل لكل بند",
+            "اختبار آلي واحد على الأقل لكل من BOLA وBFLA",
+            "حد أقصى لحجم الطلب والترقيم مطبق ومختبر",
+            "خطة إصلاح بترتيب أولوية (الأخطر أولًا) مع تواريخ"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "OWASP API Security Top 10",
+          "url": "https://owasp.org/www-project-api-security/"
+        },
+        {
+          "label": "Enforce HTTPS in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/security/enforcing-ssl"
+        },
+        {
+          "label": "Enable CORS in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/security/cors"
+        },
+        {
+          "label": "Safe storage of app secrets in development",
+          "url": "https://learn.microsoft.com/aspnet/core/security/app-secrets"
+        },
+        {
+          "label": "MDN — HTTP security headers",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers#security"
+        },
+        {
+          "label": "OWASP Cheat Sheets",
+          "url": "https://cheatsheetseries.owasp.org/"
+        }
+      ]
+    }
+  ]
+}

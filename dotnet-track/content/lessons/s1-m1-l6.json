@@ -1,0 +1,228 @@
+{
+  "id": "s1-m1-l6",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nاللوجنج النصي (`$\"failed for user {id}\"`) بيخلي البحث مستحيل: كل سطر شكله مختلف، فالأدوات ما تقدرش تجمّع\nأو تفلتر. **اللوجنج المهيكل** بيكتب الحدث كحقول (`OrderId=…`, `Elapsed=…`) وقالب ثابت — فتقدر تسأل أسئلة:\n«كل الأخطاء اللي فيها OrderId=123 في آخر ساعة».\n\nالدرس ده: Serilog من الإعداد لحد CorrelationId، وقواعد تمنع إن اللوج يبقى مصدر تسريب بيانات.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Message template",
+          "def": "قالب فيه أسماء بدل دمج نصوص: `\"order {OrderId} placed\"` — الاسم بيتخزن كحقل."
+        },
+        {
+          "term": "Destructuring ({@obj})",
+          "def": "تخزين الكائن كبنية (JSON) بدل `ToString()`."
+        },
+        {
+          "term": "Sink",
+          "def": "وجهة الكتابة: Console، File، Seq، OpenTelemetry، Application Insights…"
+        },
+        {
+          "term": "Enricher",
+          "def": "يضيف حقول تلقائيًا لكل حدث (MachineName، Environment، CorrelationId، AssemblyVersion)."
+        },
+        {
+          "term": "CorrelationId / TraceId",
+          "def": "معرّف يربط كل سجلات الطلب الواحد (وعبر الخدمات في التتبع الموزع)."
+        },
+        {
+          "term": "Minimum level / Overrides",
+          "def": "الحد الأدنى للتسجيل، ومستويات مخصصة لكل namespace (مثلًا تخفيض ضوضاء EF)."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Program.cs",
+      "title": "إعداد Serilog من appsettings + Console/File",
+      "code": "\nusing Serilog;\nusing Serilog.Events;\n\nvar builder = WebApplication.CreateBuilder(args);\n\nbuilder.Host.UseSerilog((context, services, configuration) => configuration\n    .ReadFrom.Configuration(context.Configuration)          // المستويات والـsinks من appsettings\n    .ReadFrom.Services(services)\n    .Enrich.FromLogContext()\n    .Enrich.WithMachineName()\n    .Enrich.WithEnvironmentName()\n    .Enrich.WithProperty(\"Application\", \"Shop.Api\")\n    .Enrich.WithProperty(\"Version\", typeof(Program).Assembly.GetName().Version?.ToString() ?? \"0.0.0\")\n    .WriteTo.Console(outputTemplate:\n        \"[{Timestamp:HH:mm:ss} {Level:u3}] {CorrelationId} {Message:lj}{NewLine}{Exception}\")\n    .WriteTo.File(\n        path: \"logs/shop-.log\",\n        rollingInterval: RollingInterval.Day,\n        retainedFileCountLimit: 14,\n        shared: true,\n        outputTemplate:\n        \"{Timestamp:o} [{Level:u3}] {CorrelationId} {SourceContext}{NewLine}{Message:lj}{NewLine}{Exception}\")\n    .MinimumLevel.Override(\"Microsoft.EntityFrameworkCore\", LogEventLevel.Warning)\n    .MinimumLevel.Override(\"Microsoft.AspNetCore\", LogEventLevel.Warning));\n\nvar app = builder.Build();\n"
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "filename": "appsettings.json (excerpt)",
+      "title": "مستويات لكل بيئة",
+      "code": "\n{\n  \"Serilog\": {\n    \"MinimumLevel\": {\n      \"Default\": \"Information\",\n      \"Override\": {\n        \"Microsoft\": \"Warning\",\n        \"Microsoft.Hosting.Lifetime\": \"Information\",\n        \"Microsoft.EntityFrameworkCore.Database.Command\": \"Warning\",\n        \"Shop\": \"Debug\"\n      }\n    }\n  }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "CorrelationId: اربط سجلات الطلب الواحد"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Middleware/CorrelationMiddleware.cs",
+      "title": "استقبل X-Correlation-Id أو ولّده، ومرّره للرد",
+      "code": "\nusing Serilog.Context;\n\npublic sealed class CorrelationMiddleware(RequestDelegate next)\n{\n    private const string Header = \"X-Correlation-Id\";\n\n    public async Task Invoke(HttpContext context)\n    {\n        var incoming = context.Request.Headers[Header].FirstOrDefault();\n        var correlationId = Guid.TryParse(incoming, out var parsed)\n            ? parsed.ToString(\"N\")\n            : context.TraceIdentifier;                    // ASP.NET Core بيولّد واحد لكل طلب\n\n        context.Items[\"CorrelationId\"] = correlationId;\n        context.Response.Headers[Header] = correlationId;\n\n        using (LogContext.PushProperty(\"CorrelationId\", correlationId))\n        {\n            await next(context);\n        }\n    }\n}\n\n// التسجيل: قبل أي middleware بيكتب لوج\napp.UseMiddleware<CorrelationMiddleware>();\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الكتابة الصحيحة: حقول مش نصوص"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Orders/OrderPlacementService.cs",
+      "title": "قارن السطرين — نفس المعلومة، قيمة مختلفة تمامًا للبحث",
+      "code": "\npublic sealed class OrderPlacementService(\n    IOrderStore store, IOrderNotifier notifier, ITaxPolicy tax, ILogger<OrderPlacementService> log)\n{\n    public async Task<Guid> PlaceAsync(CreateOrderRequest request, CancellationToken ct)\n    {\n        var started = TimeProvider.System.GetUtcNow();\n\n        // ✗ خطأ: دمج نصي — مفيش حقول، ومفيش فلتره\n        // log.LogInformation(\"Placing order for customer \" + request.CustomerId);\n\n        // ✓ صح: قالب + حقول\n        log.LogInformation(\"placing order for {CustomerId} with {LineCount} lines\",\n            request.CustomerId, request.Lines.Count);\n\n        var order = OrderFactory.From(request);\n        order.ApplyTax(tax);\n\n        try\n        {\n            await store.SaveAsync(order, ct);\n            await notifier.NotifyAsync(order, ct);\n        }\n        catch (Exception ex)\n        {\n            // ✓ الاستثناء هو المعامل الأول (مش جوه القالب) — بيتسجل كاملاً مع stack\n            log.LogError(ex, \"order placement failed for {OrderId} ({CustomerId})\", order.Id, order.Customer.Id);\n            throw;\n        }\n\n        var elapsed = TimeProvider.System.GetUtcNow() - started;\n        log.LogInformation(\"order {OrderId} placed: total {Total:C} in {ElapsedMs}ms\",\n            order.Id, order.Total, elapsed.TotalMilliseconds);\n\n        // ✓ destructuring لكائن صغير ومفيد — بحذر، مش للكائنات الضخمة\n        log.LogDebug(\"order summary {@OrderSummary}\",\n            new { order.Id, order.Total, Lines = order.Lines.Count });\n\n        return order.Id;\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "ما تسجّلهوش أبدًا",
+      "md": "\n- **أسرار**: كلمات سر، توكنات، مفاتيح API، connection strings، ترويسات Authorization/Cookie.\n- **بيانات شخصية حساسة**: رقم بطاقة، رقم قومي، بيانات صحية — سجل معرّف مش قيمة.\n- **أجسام ضخمة**: `@wholeEntity` لقوائم كبيرة هيبطّئ ويملأ التخزين.\n- **Stack traces للمستوى Information**: دي للمعلوماتية مش للتشخيص.\n\nاستخدم **redaction**: حوّل القيمة لمعرّف أو بصمة. مثال آمن:\n`log.LogInformation(\"auth failed for {EmailHash}\", SHA256.HashData(Encoding.UTF8.GetBytes(email)) is { } h ? Convert.ToHexString(h)[..8] : \"?\")`\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المستوى",
+        "الاستخدام",
+        "مثال"
+      ],
+      "rows": [
+        [
+          "Verbose/Debug",
+          "تفاصيل تطوير — مقفول في الإنتاج افتراضيًا",
+          "قيم وسيطة، استعلامات EF"
+        ],
+        [
+          "Information",
+          "أحداث عمل طبيعية",
+          "طلب اتنفذ، مهمة خلفية خلصت"
+        ],
+        [
+          "Warning",
+          "حالة غير مثالية لكن النظام كمل",
+          "إعادة محاولة نجحت، إعداد ناقص بقيمة افتراضية"
+        ],
+        [
+          "Error",
+          "عملية فشلت",
+          "فشل حفظ طلب، فشل اتصال بتبعية"
+        ],
+        [
+          "Fatal/Critical",
+          "النظام كله في خطر",
+          "فشل الإقلاع، استنفاد اتصالات قاعدة البيانات"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "اختبر إن اللوج بيتكتب فعلًا",
+      "md": "\n`Serilog.Sinks.InMemory` أو `TestSink` بيسمحوا لك تؤكد في الاختبارات إن حدثًا مهمًا اتسجّل بالحقول الصح:\n```csharp\nLog.Logger = new LoggerConfiguration().WriteTo.InMemory().CreateLogger();\n// ... نفّذ العملية\nInMemorySink.Instance.LogEvents.Should().Contain(e =>\n    e.MessageTemplate.Text.Contains(\"{OrderId}\") && e.Level == LogEventLevel.Error);\n```\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أضبط Serilog من appsettings مع مستويات مختلفة لكل namespace وبيئة.",
+        "أكتب قوالب بحقول بدل دمج النصوص، وأضع الاستثناء كمعامل أول.",
+        "أربط كل سجلات الطلب بـCorrelationId وأعيده في ترويسة الرد.",
+        "أطبق قواعد منع تسجيل الأسرار والبيانات الشخصية."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "أنهي سطر مكتوب بشكل صحيح هيكليًا؟",
+          "options": [
+            "`log.LogInformation($\"order {order.Id} total {order.Total}\")`",
+            "`log.LogInformation(\"order {OrderId} total {Total}\", order.Id, order.Total)`",
+            "`log.LogInformation(\"order \" + order.Id)`",
+            "`log.LogInformation(\"order {0} total {1}\", order.Id, order.Total)`"
+          ],
+          "answer": 1,
+          "explain": "القوالب المهيكلة تستخدم **أسماء** (مش فهارس)، والقيم تُمرر كمعاملات منفصلة عشان تتخزن كحقول."
+        },
+        {
+          "q": "إيه فايدة `LogContext.PushProperty(\"CorrelationId\", id)`؟",
+          "options": [
+            "يضيف الحقل لكل حدث داخل النطاق بدون تمريره يدويًا",
+            "يمنع كتابة اللوج",
+            "يستبدل مستوى اللوجنج",
+            "يبعت اللوج لسيرفر بعيد"
+          ],
+          "answer": 0,
+          "explain": "الإثراء السياقي (contextual enrichment) بيضيف الحقل تلقائيًا لكل الأحداث داخل الـusing scope."
+        },
+        {
+          "q": "ليه تعمل `MinimumLevel.Override(\"Microsoft.EntityFrameworkCore\", Warning)` في الإنتاج؟",
+          "options": [
+            "عشان EF بيكتب أخطاء وهمية",
+            "عشان لوجنج الأوامر SQL ضخم وممكن يسرّب بيانات ويبطّئ التخزين",
+            "عشان EF مش بيدعم اللوجنج",
+            "عشان نقلل استهلاك الشبكة"
+          ],
+          "answer": 1,
+          "explain": "لوجنج `Database.Command` بيكتب SQL والبارامترات: ضجيج + حجم + احتمال تسريب بيانات شخصية. فعّله مؤقتًا للتشخيص بس."
+        },
+        {
+          "q": "أنهي حاجة مقبول تسجيلها في Information؟",
+          "options": [
+            "كلمة سر المستخدم بعد التحقق منها",
+            "ترويسة Authorization كاملة",
+            "معرّف الطلب وزمن التنفيذ",
+            "رقم بطاقة العميل"
+          ],
+          "answer": 2,
+          "explain": "القيم التشغيلية (ids، توقيتات، أكواد نتائج) مفيدة وآمنة. الأسرار والبيانات الشخصية ممنوعة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "لوجنج مهيكل لمشروعك",
+          "md": "ثبّت Serilog مع Console + File sinks، واضبط المستويات من appsettings، وأضف CorrelationMiddleware، وحوّل كل `LogInformation` بدمج نصوص إلى قوالب بحقول.",
+          "criteria": [
+            "كل حدث في اللوج فيه CorrelationId",
+            "مفيش `$\"...\"` جوه أي نداء لوجنج (تحقق بـ`grep -rn 'Log.*\\$\"'`)",
+            "ملفات اللوج بتتدور يوميًا وتُحذف بعد 14 يوم",
+            "الاستثناءات بتُسجل كمعامل أول"
+          ],
+          "hint": "`dotnet add package Serilog.AspNetCore Serilog.Enrichers.Environment Serilog.Sinks.File` ثم `builder.Host.UseSerilog(...)`."
+        },
+        {
+          "id": "t2",
+          "title": "قائمة منع التسريب",
+          "md": "اكتب سياسة لوجنج لفريقك (أو لنفسك): ممنوعات، قواعد التعتيم (redaction)، ومتى ترفع المستوى لتشخيص مشكلة.",
+          "criteria": [
+            "5 ممنوعات على الأقل",
+            "مثال على redaction بكود",
+            "خطوات «التشخيص المؤقت» مع تحذير من نسيانه"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Serilog",
+          "url": "https://serilog.net/"
+        },
+        {
+          "label": "Logging in .NET",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/logging"
+        },
+        {
+          "label": "Structured logging best practices",
+          "url": "https://github.com/serilog/serilog/wiki/Writing-Log-Events"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,434 @@
+{
+  "id": "s5-m3-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nاختبار نظام موزّع مش «نفس اختبارات الوحدة لكن أكثر». فيه **3 أنواع فشل جديدة** ما كانتش موجودة في المونوليث:\n1. **العقد اتكسر**: خدمة غيّرت شكل الرد/الحدث فخدمة تانية اتكسرت في الإنتاج (وكل اختباراتها الخضرا).\n2. **التفاعل**: كل خدمة صحيحة لوحدها، بس **مع بعض** بيفشلوا (ترتيب، توقيت، timeout، رسالة ضايعة).\n3. **البيئة**: الاختبار بيتكلم مع DB/وسيط حقيقي → بطء وعدم استقرار (flakiness).\n\nالحل: **هرم اختبار خاص بالأنظمة الموزعة**، مش الهرم الكلاسيكي بس. الدرس ده بيغطي المستويين الجديدين:\n**contract tests** (رخيصة، بتكشف كسر العقد في ثواني) و**اختبارات تكامل عبر النظام** بـAspire\n(بتشغّل النظام الحقيقي وتختبر التفاعل). ومعاهم: بيئات ephemeral، وCI، ومحاربة الـflakiness.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Distributed Integration Test",
+          "def": "اختبار يشغّل **النظام الحقيقي** (خدمات + containers) ويتحقق من تفاعلها — في Aspire عبر `DistributedApplicationTestingBuilder`."
+        },
+        {
+          "term": "Ephemeral Environment",
+          "def": "بيئة تُبنى عند الطلب وتُهدم بعد الاختبار (containers/موارد مؤقتة) — لا حالة مشتركة بين الاختبارات."
+        },
+        {
+          "term": "Consumer-Driven Contract",
+          "def": "**المستهلك** يعلن ما يحتاجه فعلًا من المزود، والمزود بيثبت إنه بيلتزم بيه. العقد من تحت لفوق (مش من التوثيق)."
+        },
+        {
+          "term": "Pact File",
+          "def": "ملف JSON يولّده اختبار المستهلك ويصف التفاعلات المتوقعة (طلب/رد) — هو اللي بيتحقق منه المزود."
+        },
+        {
+          "term": "Provider State",
+          "def": "حالة البيانات اللي المزود لازم يجهزها قبل تنفيذ تفاعل معيّن («يوجد منتج بمعرّف 42»)."
+        },
+        {
+          "term": "Pact Broker",
+          "def": "خادم يخزن العقود ويربطها بإصدارات الخدمات — مصدر الحقيقة لـ«مين يعتمد على إيه»."
+        },
+        {
+          "term": "Pending / WIP Pacts",
+          "def": "عقود جديدة ما تكسرش بناء المزود (pending) أو لسه بتتطور (WIP) — بتفصل «العقد اتكسر» عن «البناء احمر من عقد لسه ما اتنفذش»."
+        },
+        {
+          "term": "Flaky Test",
+          "def": "اختبار بينجح ويفشل من غير تغيير في الكود. ★ أخطر حاجة في الاختبارات الموزعة: بيقتل الثقة في الأحمر."
+        },
+        {
+          "term": "Polling Assertion",
+          "def": "بدل `Task.Delay(3000)`: حلقة بتتحقق من الشرط كل 100ms لحد deadline — أسرع وأقل flakiness."
+        },
+        {
+          "term": "Fault Injection",
+          "def": "تعمّد إحداث فشل (إيقاف خدمة، تأخير، رسالة سامة) والتحقق من سلوك النظام — بيثبت إن الـresilience شغال فعلًا."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "المستوى",
+        "بيغطي إيه",
+        "السرعة",
+        "الاعتمادات",
+        "أشهر فشل بيكشفه"
+      ],
+      "rows": [
+        [
+          "**Unit** (xUnit + NSubstitute)",
+          "منطق Domain/خدمات معزولة",
+          "ملّي ثانية",
+          "ولا حاجة",
+          "خطأ في قاعدة/حساب"
+        ],
+        [
+          "**Slice** (`WebApplicationFactory` + Respawn)",
+          "مسار HTTP كامل داخل خدمة واحدة (middleware/DI/validation)",
+          "ثانية",
+          "DB اختبار أو container",
+          "تكوين/تسلسل middleware خاطئ"
+        ],
+        [
+          "**Contract** (Pact)",
+          "توافق عقد بين مستهلك ومزود",
+          "ثواني",
+          "mock server محلي (بلا بيئة)",
+          "★ كسر عقد بعد تغيير في مزود"
+        ],
+        [
+          "**Distributed integration** (Aspire)",
+          "تفاعل خدمتين+ عبر HTTP/وسيط مع بنية حقيقية",
+          "10–60 ثانية للإقلاع، بعدها ثواني",
+          "Docker + AppHost",
+          "ترتيب إقلاع، timeout، رسائل ضايعة/مكررة"
+        ],
+        [
+          "**E2E في staging**",
+          "سيناريو مستخدم كامل بعد النشر",
+          "دقائق",
+          "بيئة منشورة",
+          "تكوين/أسرار/شبكة في البيئة الحقيقية"
+        ],
+        [
+          "**Fault injection / chaos**",
+          "السلوك تحت فشل (إيقاف/تأخير/رسالة سامة)",
+          "دقائق",
+          "بيئة معزولة",
+          "circuit breaker/تعويض/idempotency ما بيشتغلوش"
+        ],
+        [
+          "**Performance** (k6/BenchmarkDotNet)",
+          "زمن الاستجابة والقدرة الاستيعابية",
+          "دقائق",
+          "بيئة مشابهة للإنتاج",
+          "انحدار p95، تسريب موارد"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "goal",
+      "title": "قاعدة التوزيع: 70% contract + slice، 25% distributed integration، 5% E2E",
+      "md": "\n**الهرم الكلاسيكي بينقلب** في الأنظمة الموزعة: اختبارات E2E الكاملة (تشغيل النظام كله لكل حالة) بطيئة وهشّة،\nفلو بنيت عليها هتوصل لـCI بياخد 30 دقيقة واختبارات flaky.\n\n**الترتيب الصحيح للاستثمار:**\n1. **عقودك مضبوطة** (Pact لكل زوج مستهلك/مزود + لكل حدث في `Shop.Contracts`) → أرخص حماية من الكسر.\n2. **شريحة لكل خدمة** (`WebApplicationFactory` + Respawn) → معظم الأخطاء المنطقية/التكوينية.\n3. **عدد قليل من اختبارات التكامل الموزعة** (5–15) بتغطي **التدفقات الحرجة** فقط: إنشاء طلب → دفع → إشعار، وفشل كل خطوة.\n4. **E2E في staging** بعد النشر (smoke tests): 3–5 سيناريوهات.\n\n⚠ مش معناه إن اختبارات Aspire قليلة القيمة — معناه إن كل اختبار فيها لازم **يغطي تفاعلًا** مش منطقًا\n(المنطق مكانه slice/unit).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) اختبار تكامل عبر النظام كله بـAspire"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "تجهيز مشروع الاختبار",
+      "code": "\n# حزمة الاختبار + مرجع للـAppHost نفسه (ده اللي بيولّد نوع Projects.Shop_AppHost)\ncd tests/Shop.SystemTests\ndotnet add package Aspire.Hosting.Testing\ndotnet add package xunit.v3\ndotnet add package NSubstitute\ndotnet add package Shouldly          # (أو Awesome Assertions — راجع درس 1.4.1: FluentAssertions مدفوعة من v8)\ndotnet add reference ../../src/Shop.AppHost/Shop.AppHost.csproj\n\n# ⚠ المتطلبات على جهاز المطور وCI:\n#   • Docker شغال ( containers للبنيـة التحتية)\n#   • مساحة/ذاكرة كافية — النظام كله بيشتغل داخل عملية الاختبار\n#   • ملفّي AppHost (apphost.cs بلا csproj) **لا يمكن** اختباره بالطريقة دي: محتاج ProjectReference\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.SystemTests/ShopAppFixture.cs",
+      "title": "fixture يشغّل النظام مرة ويشاركه بين الاختبارات",
+      "code": "\n// requires: using Aspire.Hosting; using Aspire.Hosting.Testing; using Microsoft.Extensions.DependencyInjection;\n\n/// <summary>\n/// ★ يشغّل النظام الحقيقي (خدمات + containers) **مرة واحدة** لكل مجموعة اختبارات.\n/// xUnit v3: `IAsyncLifetime` بيرجع `ValueTask`.\n/// </summary>\npublic sealed class ShopAppFixture : IAsyncLifetime, IAsyncDisposable\n{\n    private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(5);\n    private DistributedApplication? _app;\n\n    public DistributedApplication App =>\n        _app ?? throw new InvalidOperationException(\"التطبيق لم يبدأ — تحقق من InitializeAsync\");\n\n    public HttpClient Orders      => App.CreateHttpClient(\"orders\");       // ✓ discovery: بالاسم، بلا منافذ ثابتة\n    public HttpClient Catalog     => App.CreateHttpClient(\"catalog\");\n    public HttpClient Gateway     => App.CreateHttpClient(\"gateway\");\n\n    public async ValueTask InitializeAsync()\n    {\n        using var cts = new CancellationTokenSource(StartupTimeout);\n        var ct = cts.Token;\n\n        // ✓ وسيطات اختيارية: تعطيل عشوائية المنافذ لو اختبار محتاج منفذ ثابت (نادر)\n        var appHost = await DistributedApplicationTestingBuilder\n            .CreateAsync<Projects.Shop_AppHost>(ct);\n            // .CreateAsync<Projects.Shop_AppHost>([\"DcpPublisher:RandomizePorts=false\"], ct);\n\n        // الاختبارات بتنادي خدمات حقيقية → خلّي العميل صبورًا ومقاومًا للأخطاء العابرة\n        appHost.Services.ConfigureHttpClientDefaults(http =>\n        {\n            http.AddStandardResilienceHandler();\n        });\n\n        // ★ حدود زمنية صريحة: بلا WaitAsync، أي تعليق هيبقى اختبار معلق للأبد\n        _app = await appHost.BuildAsync(ct).WaitAsync(StartupTimeout, ct);\n        await _app.StartAsync(ct).WaitAsync(StartupTimeout, ct);\n\n        // ✓ انتظر **الصحة** مش مجرد البدء — وإلا أول اختبار هيفشل عشوائيًا\n        var notifications = _app.ResourceNotifications;\n        await notifications.WaitForResourceHealthyAsync(\"postgres\", ct).WaitAsync(StartupTimeout, ct);\n        await notifications.WaitForResourceHealthyAsync(\"shopdb\",   ct).WaitAsync(StartupTimeout, ct);\n        await notifications.WaitForResourceHealthyAsync(\"rabbit\",   ct).WaitAsync(StartupTimeout, ct);\n        await notifications.WaitForResourceHealthyAsync(\"catalog\",  ct).WaitAsync(StartupTimeout, ct);\n        await notifications.WaitForResourceHealthyAsync(\"orders\",   ct).WaitAsync(StartupTimeout, ct);\n        await notifications.WaitForResourceHealthyAsync(\"payments\", ct).WaitAsync(StartupTimeout, ct);\n    }\n\n    public async ValueTask DisposeAsync()\n    {\n        if (_app is not null) await _app.DisposeAsync();     // ✓ يوقف العمليات والـcontainers\n    }\n\n    // ── مساعدات ──\n    /// <summary>connection string لمورد (للتحقق من حالة البيانات مباشرة).</summary>\n    public Task<string?> GetConnectionStringAsync(string resourceName) =>\n        App.GetConnectionStringAsync(resourceName);          // ✓ تحقق من الاسم في إصدارك (GetConnectionString/…Async)\n\n    // ✓ تحقق من التوقيع في إصدارك: GetEndpoint(name, endpointName) / GetEndpoint(name)\n    public Uri Endpoint(string resourceName, string endpointName = \"https\") =>\n        App.GetEndpoint(resourceName, endpointName)\n           ?? throw new InvalidOperationException($\"endpoint غير موجود: {resourceName}/{endpointName}\");\n}\n\n// ✓ مشاركة الـfixture بين كل اختبارات التكامل (إقلاع النظام مرة واحدة بس)\n[CollectionDefinition(\"ShopSystem\")]\npublic sealed class ShopSystemCollection : ICollectionFixture<ShopAppFixture> { }\n\n// وفي كل كلاس اختبار:\n//   [Collection(\"ShopSystem\")]\n//   public class OrderFlowTests(ShopAppFixture app) { … }\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.SystemTests/OrderFlowTests.cs",
+      "title": "3 اختبارات: تدفق HTTP · تدفق أحداث عبر الوسيط · فشل مُفتعل",
+      "code": "\n// requires: using System.Net.Http.Json; using Npgsql; using Dapper; using System.Net;\n\n[Collection(\"ShopSystem\")]\n[Trait(\"Category\", Categories.Integration)]\npublic class OrderFlowTests(ShopAppFixture app, ITestOutputHelper output)\n{\n    private static readonly Guid ProductId = Guid.Parse(\"11111111-1111-1111-1111-111111111111\");\n\n    // ═══ 1) تدفق متزامن عبر gateway → orders → catalog (discovery + صحة) ═══\n    [Fact]\n    public async Task PlaceOrder_through_gateway_succeeds_and_reads_catalog()\n    {\n        var orderId = Guid.NewGuid();\n        var payload = new\n        {\n            order_id = orderId,\n            lines = new[] { new { product_id = ProductId, quantity = 2, unit_price_minor = 1500L } },\n        };\n\n        var response = await app.Gateway.PostAsJsonAsync(\"/api/orders\", payload);\n\n        response.StatusCode.ShouldNotBe(HttpStatusCode.BadGateway, \"الـgateway لقى orders بالاسم\");\n        response.StatusCode.ShouldBe(HttpStatusCode.Created);\n\n        // ✓ التحقق من الأثر في قاعدة البيانات الحقيقية (مش من الرد بس)\n        var cs = await app.GetConnectionStringAsync(\"shopdb\");\n        cs.ShouldNotBeNullOrEmpty();\n        await using var conn = new NpgsqlConnection(cs);\n        await conn.OpenAsync();\n        await using var cmd = conn.CreateCommand();\n        cmd.CommandText = \"SELECT status FROM orders.orders WHERE id = @id\";\n        cmd.Parameters.AddWithValue(\"id\", orderId);\n        var status = (string?)await cmd.ExecuteScalarAsync();\n\n        status.ShouldBe(\"Placed\");\n    }\n\n    // ═══ 2) تدفق أحداث: orders → outbox → RabbitMQ → payments → notifications ═══\n    [Fact]\n    public async Task PlacedOrder_publishes_event_and_is_consumed_by_payments()\n    {\n        var orderId = Guid.NewGuid();\n\n        var placed = await app.Orders.PostAsJsonAsync(\"/api/orders\", new\n        {\n            order_id = orderId,\n            lines = new[] { new { product_id = ProductId, quantity = 1, unit_price_minor = 900L } },\n        });\n        placed.StatusCode.ShouldBe(HttpStatusCode.Created);\n\n        // ★ التدفق غير متزامن → انتظر النتيجة بـpolling بدل Task.Delay ثابت\n        var charge = await WaitUntilAsync(\n            () => GetChargeAsync(orderId),\n            c => c is not null,\n            timeout: TimeSpan.FromSeconds(30),\n            poll: TimeSpan.FromMilliseconds(200));\n\n        charge.ShouldNotBeNull(\"المستهلك عالج الحدث خلال 30 ثانية (outbox → rabbit → payments)\");\n        charge!.Status.ShouldBe(\"Captured\");\n        charge.AmountMinor.ShouldBe(900L);\n    }\n\n    // ═══ 3) فشل مُفتعل: catalog واقع → orders يرد degraded (بلا 5xx) ═══\n    [Fact]\n    public async Task When_catalog_is_down_orders_degrades_instead_of_failing()\n    {\n        // ✓ تفعيل حقن العطل عبر تكوين الخدمة (مفتاح مخصص — بلا إيقاف container يدويًا)\n        await app.Orders.PostAsJsonAsync(\"/api/test/faults/catalog-timeout\", new { enabled = true });\n\n        try\n        {\n            var response = await app.Orders.GetAsync($\"/api/products/{ProductId}/availability\");\n\n            response.StatusCode.ShouldBe(HttpStatusCode.OK);\n            response.Headers.Contains(\"X-Degraded\").ShouldBeTrue(\"الـfallback مُعلَن (درس 5.2.4)\");\n\n            var body = await response.Content.ReadFromJsonAsync<AvailabilityResponse>();\n            body!.Source.ShouldBe(\"cache-or-default\");\n        }\n        finally\n        {\n            await app.Orders.PostAsJsonAsync(\"/api/test/faults/catalog-timeout\", new { enabled = false });\n        }\n    }\n\n    // ── مساعدات ──\n    /// <summary>★ بديل `Task.Delay` الثابت: يحاول لحد deadline — أسرع وأقل flakiness.</summary>\n    private static async Task<T> WaitUntilAsync<T>(Func<Task<T>> probe, Func<T, bool> predicate,\n                                                   TimeSpan timeout, TimeSpan poll)\n    {\n        var deadline = DateTime.UtcNow + timeout;\n        T last = default!;\n        while (DateTime.UtcNow < deadline)\n        {\n            last = await probe();\n            if (predicate(last)) return last;\n            await Task.Delay(poll);\n        }\n        throw new TimeoutException($\"الشرط لم يتحقق خلال {timeout}. آخر قيمة: {last}\");\n    }\n\n    private async Task<ChargeRow?> GetChargeAsync(Guid orderId)\n    {\n        var cs = await app.GetConnectionStringAsync(\"shopdb\");\n        await using var conn = new NpgsqlConnection(cs);\n        await conn.OpenAsync();\n        return await conn.QueryFirstOrDefaultAsync<ChargeRow>(\n            \"SELECT status, amount_minor FROM payments.charges WHERE order_id = @orderId\", new { orderId });\n    }\n\n    private sealed record ChargeRow(string Status, long AmountMinor);\n    private sealed record AvailabilityResponse(string Source, int Stock);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "10 قواعد تمنع flakiness في اختبارات Aspire",
+      "md": "\n1. **`WaitForResourceHealthyAsync` لكل اعتماد** قبل أول assertion — الإقلاع مش فوري.\n2. **بلا `Task.Delay` ثابت**: استخدم polling مع deadline (زي `WaitUntilAsync` فوق).\n3. **حدود زمنية على `BuildAsync`/`StartAsync`** بـ`WaitAsync` — الاختبار المعلق أسوأ من الفاشل.\n4. **fixture واحد مشترك** (`ICollectionFixture`) — إقلاع النظام لكل اختبار = CI بياخد ساعة.\n5. **بلا منافذ ثابتة**: استخدم `app.CreateHttpClient(\"name\")` — Aspire بيوزع المنافذ عشوائيًا.\n6. **عزل حالة البيانات**: كل اختبار يستخدم معرّفات جديدة (GUID) أو `Respawn` بين الاختبارات (درس 1.4.2).\n7. **لا تعتمد على ترتيب الاختبارات** — xUnit بيشغّل الكلاسات بالتوازي.\n8. **بلا assertions على الزمن المطلق** (`elapsed.ShouldBeLessThan(200)`) → استخدم `FakeTimeProvider` أو حدود واسعة.\n9. **الأحداث غير المتزامنة**: انتظر **الأثر في قاعدة البيانات**، مش اللوج (اللوغات ترتيبها مش مضمون).\n10. **احجر (quarantine) الاختبار flaky فورًا** بـ`[Trait(\"Category\", \"Quarantine\")]` + issue — وأصلحه أو احذفه خلال أيام.\n    اختبار أحمر بيتجاهله الفريق = صفر قيمة.\n\n⚠ **CI**: اختبارات Aspire محتاجة Docker + ذاكرة. شغّلها في job منفصل (مش مع كل PR سريع)،\nوحطّ `timeout-minutes` — وإلا runner هيفضل معلق لحد ما يخلص الـquota.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) Contract tests بـPact (consumer-driven)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.Orders.ContractTests/CatalogContractTests.cs",
+      "title": "المستهلك: يعلن ما يحتاجه فعلًا ويولّد الـpact",
+      "code": "\n// packages: PactNet (4.x/5.x) · xunit.v3 · Shouldly\n// requires: using PactNet; using PactNet.Infrastructure;\n// ★ الـmatchers (`Match.String/Integer/Regex`) من حزمة PactNet — تحقق من الاسم/المكان في إصدارك\n\n/// <summary>\n/// ★ المستهلك هو اللي بيكتب العقد: «أنا (Orders) محتاج من Catalog رد فيه الحقول دي بالتحديد».\n/// الاختبار بيشغّل mock server، بينفّذ كود العميل الحقيقي ضده، وبيولّد ملف pact.\n/// </summary>\npublic sealed class CatalogContractTests : IDisposable\n{\n    private readonly IPactBuilderV3 _pact;\n    private readonly string _pactDir;\n\n    public CatalogContractTests()\n    {\n        _pactDir = Path.Combine(Path.GetTempPath(), \"shop-pacts\");   // في CI: مسار artifact\n        Directory.CreateDirectory(_pactDir);\n\n        IPactV3 pact = Pact.V3(\"Orders API\", \"Catalog API\", new PactConfig { PactDir = _pactDir });\n        _pact = pact.WithHttpInteractions();\n    }\n\n    [Fact]\n    public async Task GetProduct_returns_snapshot_orders_depends_on()\n    {\n        var productId = Guid.Parse(\"42424242-4242-4242-4242-424242424242\");\n        var expected = new\n        {\n            id = productId,\n            name = \"Widget\",\n            price_minor = 1500,\n            currency = \"EGP\",\n            stock = 7,\n        };\n\n        // ✓ ترتيب الـDSL كما في توثيق PactNet — تحقق من إصدارك (Given/UponReceiving)\n        _pact\n            .Given($\"A product with id '{productId}' exists\")\n            .UponReceiving(\"a request for that product\")\n                .WithRequest(HttpMethod.Get, $\"/api/products/{productId}\")\n                .WithHeader(\"Accept\", \"application/json\")\n            .WillRespond()\n                .WithStatus(HttpStatusCode.OK)\n                .WithHeader(\"Content-Type\", \"application/json; charset=utf-8\")\n                .WithJsonBody(new\n                {\n                    id = productId,\n                    // ★ matchers: «مهم إن الحقل موجود بالنوع ده» مش «القيمة دي بالظبط»\n                    name = Match.String(\"Widget\"),\n                    price_minor = Match.Integer(1500),\n                    currency = Match.Regex(\"^[A-Z]{3}$\"),\n                    stock = Match.Integer(7),\n                });\n\n        await _pact.VerifyAsync(async ctx =>\n        {\n            // ✓ كل النداءات **لازم** تحصل جوه الـlambda باستخدام عنوان الـmock server\n            var client = new CatalogClient(new HttpClient { BaseAddress = ctx.MockServerUri });\n            var snapshot = await client.GetAsync(productId, CancellationToken.None);\n\n            snapshot.ShouldNotBeNull();\n            snapshot!.Id.ShouldBe(productId);\n            snapshot.PriceMinor.ShouldBe(1500);\n            snapshot.Currency.ShouldBe(\"EGP\");\n        });\n    }\n\n    [Fact]\n    public async Task GetProduct_returns_404_when_missing()\n    {\n        var missing = Guid.NewGuid();\n\n        _pact\n            .Given(\"No product with that id exists\")\n            .UponReceiving(\"a request for a missing product\")\n                .WithRequest(HttpMethod.Get, $\"/api/products/{missing}\")\n                .WithHeader(\"Accept\", \"application/json\")\n            .WillRespond()\n                .WithStatus(HttpStatusCode.NotFound)\n                .WithHeader(\"Content-Type\", \"application/problem+json\")\n                .WithJsonBody(new { title = \"NotFound\", status = 404 });\n\n        await _pact.VerifyAsync(async ctx =>\n        {\n            var client = new CatalogClient(new HttpClient { BaseAddress = ctx.MockServerUri });\n            var snapshot = await client.GetAsync(missing, CancellationToken.None);\n            snapshot.ShouldBeNull(\"404 يتحول إلى null في عميل الـACL (درس 5.1.2)\");\n        });\n    }\n\n    public void Dispose()\n    {\n        // ملفات الـpact اتكتبت في _pactDir → تُرفع كـartifact وتُنشر للـbroker\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.Catalog.ContractTests/CatalogProviderVerification.cs",
+      "title": "المزود: يثبت إنه بيلتزم بالعقد + endpoint لحالات المزود",
+      "code": "\n// requires: using PactNet; using PactNet.Infrastructure; using PactNet.Infrastructure.Outputters;\n//           using Microsoft.AspNetCore.Mvc.Testing;\n\n/// <summary>\n/// ★ المزود بيشغّل نفسه (WebApplicationFactory) وبيلفّ على كل تفاعل في ملفات الـpact\n/// ويتحقق إن رده الفعلي بيطابق المتوقع. كسر العقد = اختبار أحمر **عند المزود**.\n/// </summary>\npublic sealed class CatalogProviderVerification : IAsyncLifetime\n{\n    // ✓ نفس الاصطلاح المستخدم في باقي الدروس: WebApplicationFactory<Program>\n    //   (الخدمة بتعلن `public partial class Program { }` في آخر Program.cs)\n    private readonly WebApplicationFactory<Program> _factory = new();\n    private Uri _serverUri = null!;\n\n    public async ValueTask InitializeAsync()\n    {\n        var server = _factory.Server;                       // ✓ Kestrel in-memory\n        _serverUri = server.BaseAddress;\n        await Task.CompletedTask;\n    }\n\n    public ValueTask DisposeAsync()\n    {\n        _factory.Dispose();\n        return ValueTask.CompletedTask;\n    }\n\n    [Fact]\n    public void Catalog_honours_the_orders_pact()\n    {\n        var config = new PactVerifierConfig\n        {\n            Outputters = [new ConsoleOutput()],             // ✓ من PactNet.Infrastructure.Outputters\n            LogLevel = PactLogLevel.Information,\n        };\n\n        var pactPath = new FileInfo(Path.Combine(\"..\", \"..\", \"..\", \"..\", \"..\",\n                                                 \"pacts\", \"Orders API-Catalog API.json\"));\n        pactPath.Exists.ShouldBeTrue($\"ملف العقد لازم يتشارك بين المشروعين (أو يجي من الـbroker): {pactPath.FullName}\");\n\n        using var verifier = new PactVerifier(\"Catalog API\", config);\n\n        verifier\n            .WithHttpEndpoint(_serverUri)\n            .WithFileSource(pactPath)\n            .WithProviderStateUrl(new Uri(_serverUri, \"/provider-states\"))   // ✓ المزود يجهّز البيانات\n            // .WithPactBrokerSource(brokerUri, options)   // ← من broker بدل ملف (pending/WIP pacts)\n            .Verify();\n    }\n\n}\n\n// ═══ endpoint لحالات المزود — ★ للاختبارات فقط، ممنوع في الإنتاج ═══\n// في Program.cs (Development فقط):\n//   if (app.Environment.IsDevelopment()) app.MapProviderStates();\npublic static class ProviderStatesEndpoints\n{\n    public static IEndpointRouteBuilder MapProviderStates(this IEndpointRouteBuilder app)\n    {\n        app.MapPost(\"/provider-states\", async (ProviderStateRequest req, CatalogDbContext db, CancellationToken ct) =>\n        {\n            switch (req.State)\n            {\n                case var s when s is not null && s.StartsWith(\"A product with id '\"):\n                    var id = Guid.Parse(s[(s.IndexOf('\\'') + 1)..s.LastIndexOf('\\'')]);\n                    await db.SeedProductAsync(id, \"Widget\", 1500, \"EGP\", 7, ct);      // ✓ idempotent\n                    break;\n\n                case \"No product with that id exists\":\n                    await db.ResetAsync(ct);                                            // ✓ حالة نظيفة\n                    break;\n\n                default:\n                    // ⚠ حالة غير معروفة = فشل صريح، مش تجاهل (وإلا العقد بيتحقق على بيانات غلط)\n                    throw new InvalidOperationException($\"Unknown provider state: {req.State}\");\n            }\n\n            return Results.Ok();\n        });\n\n        return app;\n    }\n}\n\npublic sealed record ProviderStateRequest(string? State, IDictionary<string, object?>? Params);\n"
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "filename": "pacts/Orders API-Catalog API.json",
+      "title": "شكل ملف العقد (مختصر) — ده اللي بيتبادل",
+      "code": "\n{\n  \"consumer\": { \"name\": \"Orders API\" },\n  \"provider\": { \"name\": \"Catalog API\" },\n  \"interactions\": [\n    {\n      \"description\": \"a request for that product\",\n      \"providerStates\": [ { \"name\": \"A product with id '42424242-4242-4242-4242-424242424242' exists\" } ],\n      \"request\": {\n        \"method\": \"GET\",\n        \"path\": \"/api/products/42424242-4242-4242-4242-424242424242\",\n        \"headers\": { \"Accept\": \"application/json\" }\n      },\n      \"response\": {\n        \"status\": 200,\n        \"headers\": { \"Content-Type\": \"application/json; charset=utf-8\" },\n        \"body\": {\n          \"id\": \"42424242-4242-4242-4242-424242424242\",\n          \"name\": \"Widget\",\n          \"price_minor\": 1500,\n          \"currency\": \"EGP\",\n          \"stock\": 7\n        },\n        \"matchingRules\": {\n          \"body\": {\n            \"$.name\":        { \"match\": \"type\" },\n            \"$.price_minor\": { \"match\": \"integer\" },\n            \"$.currency\":    { \"match\": \"regex\", \"regex\": \"^[A-Z]{3}$\" },\n            \"$.stock\":       { \"match\": \"integer\" }\n          }\n        }\n      }\n    }\n  ],\n  \"metadata\": {\n    \"pactSpecification\": { \"version\": \"3.0.0\" },\n    \"consumerVersion\": \"1.4.0+sha.9f2c1a7\"\n  }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "",
+        "Contract tests (Pact)",
+        "Distributed integration (Aspire)"
+      ],
+      "rows": [
+        [
+          "السؤال اللي بيجاوبه",
+          "هل العقد **لسه متوافق**؟",
+          "هل النظام **شغال مع بعضه**؟"
+        ],
+        [
+          "البيئة",
+          "mock server محلي — بلا Docker",
+          "النظام الحقيقي كله (containers)"
+        ],
+        [
+          "الزمن",
+          "ثواني (يشغّل مع كل PR)",
+          "دقيقة+ للإقلاع (job منفصل)"
+        ],
+        [
+          "بيكشف",
+          "حقل اتشال/اتغيّر نوعه/حالة جديدة",
+          "ترتيب إقلاع، timeout، رسالة ضايعة، إعدادات شبكة"
+        ],
+        [
+          "مش بيكشف",
+          "مشاكل التفاعل/التوقيت/الأداء",
+          "— (بيكشف أكتر بس أبطأ وأثقل)"
+        ],
+        [
+          "مين بيكتبه",
+          "**المستهلك** (ويشارك العقد)",
+          "فريق المنصة/صاحب التدفق"
+        ],
+        [
+          "عدد الاختبارات",
+          "لكل تفاعل مهم (عشرات)",
+          "للتدفقات الحرجة (5–15)"
+        ],
+        [
+          "في CI",
+          "كل PR — gate على المزود والمستهلك",
+          "كل PR (job منفصل) أو كل merge"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "عقود الأحداث (Events) — النصف المنسي",
+      "md": "\nPact بين خدمات HTTP واضح، بس في نظامنا **أغلب العقود أحداث** في `Shop.Contracts` (درس 5.1.2). طبّق نفس المبدأ:\n\n1. **عقد مكتوب ككود**: الـrecords في مشروع مشترك + `SchemaVersion` + اختبارات snapshot للـJSON\n   (`Verify` — درس 1.4.4) عشان أي تغيير في الشكل يكسر اختبارًا.\n2. **اختبار توافق من الطرفين**:\n   - **الناشر**: يختبر إن الحدث اللي بينشره بيتسلسل بالشكل المتفق عليه (snapshot).\n   - **المستهلك**: يختبر إنه يقدر يفك **نسخ قديمة** من الحدث (upcasting — درس 4.2.4).\n3. **قاعدة التوافق**: إضافة حقل **اختياري** = آمن · حذف/إعادة تسمية/تغيير نوع = **كسر** → يحتاج إصدار جديد\n   وتشغيل النسختين بالتوازي (جدول الـ9 قواعد في درس 5.1.2).\n4. **Pact message contracts**: Pact بيدعم عقود الرسائل (message interactions) برضه —\n   لو عندك broker، استخدمه بدل ما تبني حل خاص (راجع توثيق PactNet للـmessage DSL في إصدارك).\n\n⚠ أشهر فشل حقيقي: خدمة أضافت حقل `required` لحدث → المستهلكين القدام كسروا في الإنتاج،\nوكل الاختبارات كانت خضرا لأن **مفيش اختبار بيغطي العقد بين الخدمتين**. ده بالظبط اللي contract tests بيمنعه.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) CI: تشغيل الكل بثبات"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "filename": ".github/workflows/tests.yml",
+      "title": "3 jobs: سريعة · عقود · تكامل موزّع",
+      "code": "\nname: tests\n\non:\n  pull_request:\n  push: { branches: [main] }\n\nenv:\n  DOTNET_VERSION: \"10.0.x\"\n  DOTNET_NOLOGO: true\n  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true\n\njobs:\n  # ═══ 1) سريعة: وحدة + شرائح (كل PR، دقيقتين) ═══\n  fast:\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-dotnet@v4\n        with: { dotnet-version: \"${{ env.DOTNET_VERSION }}\" }\n      - run: dotnet restore\n      - run: dotnet build --no-restore -c Release /warnaserror\n      - run: >\n          dotnet test --no-build -c Release\n          --filter \"Category=Unit|Category=Slice\"\n          --logger \"trx;LogFileName=fast.trx\"\n          --collect:\"XPlat Code Coverage\"\n      - uses: actions/upload-artifact@v4\n        if: always()\n        with: { name: fast-results, path: \"**/*.trx\" }\n\n  # ═══ 2) العقود: المستهلك يولّد، المزود يتحقق، والنشر للـbroker ═══\n  contracts:\n    runs-on: ubuntu-latest\n    timeout-minutes: 20\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-dotnet@v4\n        with: { dotnet-version: \"${{ env.DOTNET_VERSION }}\" }\n      - run: dotnet restore\n\n      # 2.1 اختبارات المستهلك → توليد ملفات pact\n      - name: Consumer contract tests\n        run: dotnet test tests/Shop.Orders.ContractTests -c Release --filter \"Category=Contract\"\n\n      # 2.2 رفع العقود كـartifacts (للمراجعة عند الفشل)\n      - uses: actions/upload-artifact@v4\n        if: always()\n        with: { name: pacts, path: pacts/ }\n\n      # 2.3 النشر للـbroker (can-i-deploy يعتمد عليه)\n      - name: Publish pacts\n        if: github.ref == 'refs/heads/main'\n        run: |\n          npx --yes pact-broker publish ./pacts \\\n            --consumer-app-version=\"${GITHUB_SHA}\" \\\n            --branch=\"${GITHUB_HEAD_REF:-main}\" \\\n            --broker-base-url=\"${{ secrets.PACT_BROKER_URL }}\" \\\n            --broker-token=\"${{ secrets.PACT_BROKER_TOKEN }}\"\n\n      # 2.4 اختبارات المزود (بتستهلك نفس الملفات محليًا، أو من الـbroker)\n      - name: Provider verification\n        run: dotnet test tests/Shop.Catalog.ContractTests -c Release --filter \"Category=Contract\"\n\n      # 2.5 ★ البوابة: هل النسخة دي آمنة للنشر بالنسبة لمستهلكيها؟\n      - name: can-i-deploy\n        if: github.ref == 'refs/heads/main'\n        run: |\n          npx --yes pact-broker can-i-deploy \\\n            --pacticipant \"Catalog API\" \\\n            --version \"${GITHUB_SHA}\" \\\n            --to-environment production \\\n            --retry-while-unknown 6 \\\n            --broker-base-url=\"${{ secrets.PACT_BROKER_URL }}\" \\\n            --broker-token=\"${{ secrets.PACT_BROKER_TOKEN }}\"\n\n  # ═══ 3) تكامل موزّع: Aspire (Docker + ذاكرة) — job منفصل ═══\n  integration:\n    runs-on: ubuntu-latest        # Docker متاح مسبقًا\n    timeout-minutes: 30           # ★ إلزامي: الاختبارات الموزعة ممكن تعلق\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-dotnet@v4\n        with: { dotnet-version: \"${{ env.DOTNET_VERSION }}\" }\n      - run: dotnet restore\n      - name: Pre-pull infrastructure images\n        run: |\n          docker pull postgres:18-alpine\n          docker pull redis:8-alpine\n          docker pull rabbitmq:4-management-alpine\n      - name: Distributed integration tests\n        run: >\n          dotnet test tests/Shop.SystemTests -c Release\n          --filter \"Category=Integration\"\n          --logger \"trx;LogFileName=integration.trx\"\n      # ✓ عند الفشل: ارفع كل حاجة تساعدك تشخّص من غير ما تعيد التشغيل\n      - uses: actions/upload-artifact@v4\n        if: failure()\n        with:\n          name: integration-diagnostics\n          path: |\n            **/*.trx\n            **/TestResults/**\n            logs/**\n      - name: Dump container state on failure\n        if: failure()\n        run: |\n          docker ps -a\n          docker logs shop-rabbit 2>&1 | tail -n 200 || true\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "أخطاء بتخلي الاختبارات الموزعة عديمة القيمة",
+      "md": "\n1. **اختبار التكامل بيكرر اختبار الوحدة** (بيختبر حساب خصم) — بطيء وهش وبلا قيمة إضافية.\n   اختبارات Aspire بتغطي **التفاعل** فقط.\n2. **مفيش حدود زمنية**: `StartAsync` بلا `WaitAsync` + `Task.Delay(60_000)` = CI معلق لحد الـtimeout.\n3. **assertion على اللوجات**: اللوجات مش عقد. تحقق من **الأثر** (صف في DB، رد HTTP، رسالة في طابور).\n4. **مشاركة حالة بين الاختبارات** (كل الاختبارات بتستخدم نفس `orderId`) → فشل متسلسل غير مفهوم.\n5. **`provider-states` endpoint منشور للإنتاج** = ثغرة (أي حد يقدر يزرع/يمسح بيانات). Development فقط + شبكة داخلية.\n6. **عقود بلا gate**: توليد pact بدون تحقق المزود (أو العكس) = مفيش حماية. لازم **الاتنين** في CI.\n7. **عقد over-specified**: كل الحقول بقيم ثابتة → كل تغيير شكلي يكسر العقد. استخدم matchers\n   وحدد **بس** الحقول اللي المستهلك بيعتمد عليها فعلًا.\n8. **تجاهل الأحمر flaky** بدل إصلاحه: بعد أسبوعين محدش بيثق في CI.\n9. **بيئة اختبار ≠ بيئة إنتاج في الإعدادات الأساسية** (إصدار DB مختلف، وسيط مختلف) → «نجح عندنا».\n10. **E2E لكل حاجة**: 200 اختبار بيشغّلوا النظام كله = CI ساعة + فشل عشوائي يومي.\n\n✅ **المقياس**: لو CI بتاعك > 15 دقيقة أو الاختبارات الحمراء بتتجاهل، الهرم مقلوب — استثمر في العقود والشرائح.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أبني هرم اختبار للأنظمة الموزعة: unit · slice · contract · distributed integration · E2E · fault injection · performance.",
+        "أكتب fixture يشغّل نظام Aspire مرة واحدة، بانتظار الصحة وحدود زمنية و`CreateHttpClient` بالاسم.",
+        "أختبر تدفقًا غير متزامن بـpolling حتى الأثر في قاعدة البيانات (بلا `Task.Delay` ثابت).",
+        "أطبّق consumer-driven contracts بـPact: مستهلك يولّد العقد بمatchers، مزود يتحقق مع provider states، وبوابة `can-i-deploy`.",
+        "أغطي عقود **الأحداث** (snapshot للنشر + upcasting للاستهلاك) وأضع 3 jobs في CI بلا flakiness."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "خدمة غيّرت اسم حقل في الرد من `priceMinor` لـ`price_minor`. كل الاختبارات خضرا. مين اللي كان لازم يكشف ده؟",
+          "options": [
+            "اختبارات الوحدة للمزود",
+            "**Contract test عند المستهلك** (Pact) + تحقق المزود من العقد — دي الحالة اللي العقد بيتكسر فيها والاختبارات الداخلية ما تشوفهاش",
+            "اختبار E2E في staging",
+            "مراجعة الكود فقط"
+          ],
+          "answer": 1,
+          "explain": "اختبارات المزود بتختبر سلوكه الجديد (صحيح بالنسبة له)، واختبارات المستهلك بتشتغل ضد mock — فالعقد وحده هو اللي بيربط الطرفين. E2E هيكشفه لكن متأخر وببطء."
+        },
+        {
+          "q": "ليه ننتظر `WaitForResourceHealthyAsync` بدل ما نبدأ الاختبار فورًا بعد `StartAsync`؟",
+          "options": [
+            "أداء أفضل",
+            "`StartAsync` بينتهي لما العمليات تبدأ، مش لما الاعتمادات تبقى جاهزة — أول اختبار هيفشل عشوائيًا (flaky)",
+            "مطلوب من xUnit",
+            "عشان اللوحة تظهر"
+          ],
+          "answer": 1,
+          "explain": "الصحة (health check عدى) هي الضمان إن DB/الوسيط/الخدمة جاهزة تستقبل. بلاها الاختبارات بتنجح «أحيانًا»."
+        },
+        {
+          "q": "التدفق غير متزامن (حدث → مستهلك → صف في DB). إزاي تختبره؟",
+          "options": [
+            "`await Task.Delay(5000)` ثم تحقق",
+            "Polling مع deadline: تحقق من **الأثر في DB** كل 200ms لحد 30 ثانية — أسرع وأقل هشاشة",
+            "تحقق من اللوجات",
+            "ما تختبروش (غير متزامن = غير قابل للاختبار)"
+          ],
+          "answer": 1,
+          "explain": "الـdelay الثابت بطيء (5 ثواني حتى لو النتيجة جاهزت في 300ms) وهش (لو الجهاز أبطأ يفشل). الـpolling على الأثر هو النمط الصحيح."
+        },
+        {
+          "q": "مين بيكتب الـpact file؟",
+          "options": [
+            "المزود",
+            "**المستهلك** — لأنه الوحيد اللي يعرف الحقول اللي بيعتمد عليها فعلًا؛ والمزود بيتحقق منه",
+            "فريق المنصة",
+            "يتولد تلقائيًا من OpenAPI"
+          ],
+          "answer": 1,
+          "explain": "ده معنى «consumer-driven»: العقود من تحت لفوق (من الاحتياج الفعلي)، مش من فوق (من التوثيق). OpenAPI ممكن يساعد لكنه مش بديل."
+        },
+        {
+          "q": "provider state «يوجد منتج بمعرّف 42» — ليه المزود محتاجها؟",
+          "options": [
+            "عشان الأداء",
+            "لأن تحقق العقد لازم يشتغل على **حالة بيانات معروفة وقابلة للتكرار** — وإلا الرد هيتغير حسب محتوى DB وقت التشغيل",
+            "مطلوب من Pact broker",
+            "عشان الـmatchers"
+          ],
+          "answer": 1,
+          "explain": "المزود بيفتح endpoint (`/provider-states`) يجهّز الحالة قبل كل تفاعل — **في الاختبارات فقط**، ممنوع في الإنتاج."
+        },
+        {
+          "q": "إمتى تشغّل اختبارات Aspire الموزعة في CI؟",
+          "options": [
+            "مع كل اختبار وحدة",
+            "job منفصل بـ`timeout-minutes`، مع العقود والشرائح في jobs أسرع — عشان Docker/الذاكرة والزمن",
+            "يدويًا فقط",
+            "بعد النشر"
+          ],
+          "answer": 1,
+          "explain": "الفصل بيخلي الـfeedback السريع (دقايق) منفصل عن الثقيل (دقايق طويلة)، وبلا `timeout-minutes` الـrunner ممكن يعلق."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "عقد Pact بين خدمتين + gate في CI",
+          "md": "اختار زوج مستهلك/مزود حقيقي في مشروعك (أو حدثًا بين ناشر ومستهلك)، واكتب contract tests بالمستهلك (matchers لا قيم ثابتة) وتحقق المزود (provider states)، واربطهم في CI ببوابة تمنع الدمج عند كسر العقد.",
+          "criteria": [
+            "اختبار مستهلك بيولّد pact file بـ**matchers** (مش كل القيم ثابتة) ويغطي الحالة الناجحة + حالة خطأ واحدة",
+            "اختبار مزود بيتحقق من نفس الملف مع `WithProviderStateUrl` وحالات مزود معرّفة (وحالة غير معروفة → فشل صريح)",
+            "`provider-states` endpoint مقصور على Development (كود + تعليق يوضح الخطورة)",
+            "كسر مقصود (حذف حقل من رد المزود) بيخلي اختبار المزود يفشل — **أثبت ده بلقطة/مخرجات** ثم ارجعه",
+            "CI job للعقود (consumer → artifacts → provider verification) + `timeout-minutes`",
+            "لكل عقد أحداث: snapshot test للنشر + اختبار upcasting لنسخة قديمة (لو applicable)",
+            "جدول في `docs/contracts.md`: المستهلك × المزود × التفاعل × حالة التوافق"
+          ],
+          "hint": "ابدأ بـ**تفاعل واحد فقط** (الأهم) وخليه أخضر في CI، بعدين زوّد. محاولة تغطية كل العقود مرة واحدة بتفشل.",
+          "solution": "",
+          "resources": [
+            {
+              "label": "PactNet README (consumer + provider)",
+              "url": "https://github.com/pact-foundation/pact-net"
+            },
+            {
+              "label": "Pact .NET implementation guide",
+              "url": "https://docs.pact.io/implementation_guides/net/readme"
+            },
+            {
+              "label": "Consumer-driven contracts",
+              "url": "https://docs.pact.io/"
+            }
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "اختبار تكامل موزّع بـAspire لتدفق حرج + فشل مُفتعل",
+          "md": "اكتب 3–5 اختبارات تكامل بـAspire تغطي تدفق أعمال حرج واحد عبر خدمتين+ (متزامن وغير متزامن)، واختبارَي فشل مُفتعل (خدمة تابعة واقعة، رسالة مكررة/سامة)، وخليهم يشتغلوا في CI بثبات (3 تشغيلات متتالية خضرا).",
+          "criteria": [
+            "`ShopAppFixture` بـ`IAsyncLifetime` + `ICollectionFixture`: إقلاع واحد لكل الاختبارات",
+            "`WaitForResourceHealthyAsync` لكل اعتماد + `WaitAsync` بحدود زمنية على `BuildAsync`/`StartAsync`",
+            "اختبار تدفق متزامن (HTTP عبر ≥2 خدمة) بيتحقق من الرد **ومن الأثر في DB**",
+            "اختبار تدفق غير متزامن بـpolling (بلا `Task.Delay` ثابت) بيتحقق من أثر المعالجة",
+            "اختبارَا فشل مُفتعل: fallback مُعلَن عند وقوع تابع، وidempotency عند رسالة مكررة (درس 5.2.5)",
+            "كل الاختبارات بـ`[Trait(\"Category\", Categories.Integration)]` + job CI منفصل بـ`timeout-minutes` + artifacts عند الفشل",
+            "إثبات استقرار: 3 تشغيلات متتالية خضرا محليًا + تشغيل واحد في CI (مخرجات مرفقة)",
+            "مفيش حالة مشتركة بين الاختبارات (معرّفات جديدة/Respawn) — اذكر إزاي حققت العزل"
+          ],
+          "solution": "",
+          "resources": [
+            {
+              "label": "Aspire testing — overview",
+              "url": "https://aspire.dev/testing/overview/"
+            },
+            {
+              "label": "Aspire testing — manage the AppHost lifecycle",
+              "url": "https://aspire.dev/testing/manage-app-host/"
+            },
+            {
+              "label": "Aspire testing in CI/CD",
+              "url": "https://aspire.dev/testing/testing-in-ci/"
+            },
+            {
+              "label": "Aspire testing — advanced scenarios",
+              "url": "https://aspire.dev/testing/advanced-scenarios/"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Aspire integration testing overview",
+          "url": "https://aspire.dev/testing/overview/"
+        },
+        {
+          "label": "Write your first Aspire integration test",
+          "url": "https://aspire.dev/testing/write-your-first-test/"
+        },
+        {
+          "label": "PactNet",
+          "url": "https://github.com/pact-foundation/pact-net"
+        },
+        {
+          "label": "Pact docs — .NET guide",
+          "url": "https://docs.pact.io/implementation_guides/net/readme"
+        },
+        {
+          "label": "GitHub Actions workflows",
+          "url": "https://docs.github.com/en/actions"
+        },
+        {
+          "label": "Testcontainers for .NET",
+          "url": "https://testcontainers.com/"
+        }
+      ]
+    }
+  ]
+}

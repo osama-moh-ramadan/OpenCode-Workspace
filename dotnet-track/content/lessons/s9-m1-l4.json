@@ -1,0 +1,334 @@
+{
+  "id": "s9-m1-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "الـ**Feed** (الخط الزمني) هو السؤال اللي بيميز السينيور: **تكتب وقت النشر أم وقت القراءة؟**\n\nسؤال بسيط، وجوابه بيحدد تكلفة النظام كله. الدرس بيقارن استراتيجيتي fan-out بأرقام حقيقية، وينتهي بتصميم هجين هو اللي بتستخدمه تويتر/إنستجرام فعليًا."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات",
+      "items": [
+        {
+          "term": "Fan-out on write",
+          "def": "عند النشر: اكتب المحتوى في **صندوق** (inbox/fanout table) كل متابع. القراءة رخيصة جدًا، والكتابة مكلفة."
+        },
+        {
+          "term": "Fan-out on read",
+          "def": "عند القراءة: اجمع منشورات كل من تتابعه ودمجها وترتيبها. الكتابة رخيصة، والقراءة مكلفة."
+        },
+        {
+          "term": "Celebrity problem",
+          "def": "حساب بملايين المتابعين يجعل fan-out on write انفجارًا كتابيًا. يُعالَج بهجين: لا تُفرّغ حسابات المشاهير، ادمجها وقت القراءة."
+        },
+        {
+          "term": "Timeline store",
+          "def": "جدول `user_id, item_id, created_at, rank` — مفتاح أساسي مركّب (user, time desc) لقراءة صفحة واحدة."
+        },
+        {
+          "term": "Cursor pagination",
+          "def": "ترقيم بـ(cursor = time+id) بدل OFFSET — ثابت مع الإضافات الجديدة ولا يكرر عناصر (3.3)."
+        },
+        {
+          "term": "Fanout queue",
+          "def": "طابور ينفّذ توزيع المنشور على المتابعين على دفعات؛ التقدّم قابل للاستئناف عند الفشل."
+        },
+        {
+          "term": "Ranking",
+          "def": "ترتيب غير زمني (تفاعل/حداثة/جودة) — يغيّر المتطلبات: يحتاج حساب مسبق أو حساب وقت القراءة."
+        },
+        {
+          "term": "Backfill",
+          "def": "بناء خط زمني لمستخدم جديد من بيانات موجودة، أو إعادة بناء بعد تغيير المنطق."
+        },
+        {
+          "term": "Tombstone",
+          "def": "علامة حذف تحفظ بها الاتساق في النسخ الموزعة بدل حذف فوري."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① المقارنة الحاسمة"
+    },
+    {
+      "type": "table",
+      "caption": "Fan-out: أين تدفع الثمن؟",
+      "head": [
+        "الاستراتيجية",
+        "عند النشر",
+        "عند القراءة",
+        "متى تناسب",
+        "العيب القاتل"
+      ],
+      "rows": [
+        [
+          "**Write**",
+          "N كتابة (N = المتابعون)",
+          "قراءة واحدة من جدولك",
+          "مستخدمون بمتابعين قليلين (متوسط < 1000)",
+          "مشهور بـ5M متابع = 5M كتابة"
+        ],
+        [
+          "**Read**",
+          "كتابة واحدة",
+          "دمج K مصدر (K = من تتابع) + ترتيب",
+          "نشر ثقيل، متابعون بمتابعين كثيرين",
+          "بطء عند متابعة 1000 حساب"
+        ],
+        [
+          "**Hybrid**",
+          "كتب للمتابعين العاديين، تخطَّ المشاهير",
+          "دمج قصير: جدولك + منشورات المشاهير",
+          "**كل منصة حقيقية**",
+          "تعقيد أعلى قليلًا"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "الأرقام التي تحسم القرار",
+      "filename": "docs/feed-numbers.txt",
+      "code": "\nالافتراض: 10M مستخدم · 1M منشور/يوم · متوسط 200 متابع · 5% حسابات ثقيلة (متابعوها > 10k)\n\nWrite fan-out الكامل:\n  1M منشور × 200 = 200M صف/يوم  ← 2,300 صف/ثانية متوسط، 8,000 في الذروة\n  حجم: 200M × 40B ≈ 8GB/يوم (فقط فهارس)  → 3TB/سنة. غير مقبول.\n\nRead fan-out الكامل:\n  قراءة = 200 مصدر × دمج ≈ 20–60ms لكل صفحة، مع 20 قراءة/مستخدم/يوم\n  → 10M × 20 = 200M استعلام/يوم على جداول مختلفة + ضغط كبير على القاعدة.\n\nHybrid:\n  الثقيلون (5% من المستخدمين) لا يُفرّغون. متوسط المتابعين الفعلي 200 - 50 = 150\n  1M × 150 = 150M صف/يوم… لا يزال كبيرًا ⇒ **قلّل الدقة**:\n   • لا تُفرّغ لكل متابع فورًا إنما على دفعات (batched, الترتيب لا يهم داخل ثانية)\n   • قيّد الحجم:احتفظ بآخر 800 عنصر في خط الزمن لكل مستخدم (TTL/تقليم)\n   • المستخدمون الخاملون (> 30 يومًا) لا يُفرّغ لهم — يُبنى خطهم عند عودتهم (lazy)\n  النتيجة: 150M × 0.35 ≈ 50M صف/يوم ≈ 600/ثانية — قابل للإدارة.\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "الجواب اللي يُقنع في المقابلة",
+      "md": "«أبدأ بـ**fan-out on write** لأن المتوسط 200 متابع؛ وأضيف **Hybrid** بمجرد أن يتجاوز 1% من الحسابات 10k متابع؛ وأُبقي **قراءة الزمن الحقيقي** للمشاهير مدموجة في نفس المسار. وأكتب حد إعادة النظر بالأرقام: إذا تجاوزت الكتابة 2,000/ث أو الشعرية 40% → أعيد التصميم».\nمش «أستخدم Redis» — بل **قرار + ثمن + شرط تغيير**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② الكود: جدول خط الزمن + قراءة هجينة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Feed/FeedService.cs — كتابة بالتوزيع + قراءة مدموجة",
+      "filename": "src/Feed/FeedService.cs",
+      "code": "using Microsoft.EntityFrameworkCore;\n\n/// <summary>\n/// Hybrid feed:\n///   • نشر → توزيع على المتابعين (على دفعات، بمفتاح (userId, itemId) فريد).\n///   • قراءة → من جدول خط الزمن + دمج منشورات المشاهير (بلا توزيع لهم).\n/// </summary>\npublic sealed class FeedService(FeedDb db, IFanoutQueue queue, ILogger<FeedService> log)\n{\n    private const int TimelineCap = 800;     // سقف العناصر المحفوظة لكل مستخدم\n    private const int FanoutPage = 500;      // حجم الدفعة\n    private const int PageSize = 20;\n\n    // ── النشر ──────────────────────────────────────────────────\n    public async Task PublishAsync(Post post, CancellationToken ct)\n    {\n        db.Posts.Add(post);\n        await db.SaveChangesAsync(ct);\n\n        // ندخل الحدث للطابور؛ التوزيع ينفّذه عامل مستقل (5.2.5 outbox)\n        await queue.EnqueueAsync(new FanoutJob(post.Id, post.AuthorId, post.CreatedAt), ct);\n    }\n\n    // ── العامل: التوزيع على المتابعين ─────────────────────────\n    public async Task RunFanoutAsync(CancellationToken ct)\n    {\n        await foreach (var job in queue.DequeueAsync(ct))\n        {\n            var cursor = job.CursorUserId;\n            var fans = await db.Follows\n                .Where(f => f.FolloweeId == job.AuthorId && f.IsCelebrity == false)\n                .Where(f => cursor == null || string.Compare(f.FollowerId, cursor) > 0)\n                .OrderBy(f => f.FollowerId)\n                .Take(FanoutPage)\n                .Select(f => f.FollowerId)\n                .ToListAsync(ct);\n\n            if (fans.Count == 0)\n            {\n                await queue.CompleteAsync(job, ct);\n                continue;\n            }\n\n            var rows = fans.Select(userId => new TimelineEntry\n            {\n                UserId = userId,\n                PostId = job.PostId,\n                AuthorId = job.AuthorId,\n                CreatedAt = job.CreatedAt,\n                Rank = job.CreatedAt.ToUnixTimeMilliseconds(),\n            }).ToList();\n\n            // insert متساهل: تكرار المفتاح (userId, postId) يُتجاهل بلا فشل الدفعة\n            await db.Database.ExecuteSqlRawAsync(\"\"\"\n                INSERT INTO timeline_entries (user_id, post_id, author_id, created_at, rank)\n                SELECT * FROM UNNEST(@p0::text[], @p1::text[], @p2::text[], @p3::timestamptz[], @p4::bigint[])\n                ON CONFLICT (user_id, post_id) DO NOTHING\n                \"\"\", [fans.ToArray(), Enumerable.Repeat(job.PostId, fans.Count).ToArray(),\n                      Enumerable.Repeat(job.AuthorId, fans.Count).ToArray(),\n                      Enumerable.Repeat(job.CreatedAt, fans.Count).ToArray(),\n                      Enumerable.Repeat(job.CreatedAt.ToUnixTimeMilliseconds(), fans.Count).ToArray()],\n                ct);\n\n            // استئناف من آخر مستخدم — الوظيفة قابلة للتكرار بلا ضرر (idempotent)\n            await queue.CheckpointAsync(job, fans[^1], ct);\n        }\n    }\n\n    // ── القراءة ───────────────────────────────────────────────\n    public async Task<IReadOnlyList<FeedItem>> GetTimelineAsync(\n        string userId, long? cursorRank, CancellationToken ct)\n    {\n        // ① خط الزمن المُعدّ مسبقًا (الكتاب العاديون)\n        var mine = await db.Timeline\n            .Where(t => t.UserId == userId && (cursorRank == null || t.Rank < cursorRank))\n            .OrderByDescending(t => t.Rank)\n            .Take(PageSize)\n            .Join(db.Posts, t => t.PostId, p => p.Id,\n                  (t, p) => new FeedItem(p.Id, p.AuthorId, p.Text, p.CreatedAt, t.Rank))\n            .ToListAsync(ct);\n\n        // ② منشورات المشاهير (غير موزّعة) — دمج ديناميكي\n        var celebs = await db.Follows\n            .Where(f => f.FollowerId == userId && f.IsCelebrity)\n            .Select(f => f.FolloweeId)\n            .ToListAsync(ct);\n\n        if (celebs.Count > 0)\n        {\n            var fromCelebs = await db.Posts\n                .Where(p => celebs.Contains(p.AuthorId)\n                         && (cursorRank == null || p.Rank < cursorRank))\n                .OrderByDescending(p => p.Rank)\n                .Take(PageSize)\n                .Select(p => new FeedItem(p.Id, p.AuthorId, p.Text, p.CreatedAt, p.Rank))\n                .ToListAsync(ct);\n\n            mine = mine.Concat(fromCelebs)\n                .DistinctBy(i => i.PostId)\n                .OrderByDescending(i => i.Rank)\n                .Take(PageSize)\n                .ToList();\n        }\n\n        return mine;\n    }\n\n    /// <summary>تقليم: يمنع نمو جدول الخط الزمني بلا حد.</summary>\n    public Task TrimAsync(string userId, CancellationToken ct) =>\n        db.Database.ExecuteSqlRawAsync(\"\"\"\n            DELETE FROM timeline_entries\n            WHERE user_id = {0}\n              AND post_id NOT IN (\n                SELECT post_id FROM timeline_entries\n                WHERE user_id = {0} ORDER BY rank DESC LIMIT {1})\n            \"\"\", [userId, TimelineCap], ct);\n}\n"
+    },
+    {
+      "type": "table",
+      "caption": "قرارات التخزين والفهارس",
+      "head": [
+        "الجدول",
+        "المفتاح",
+        "الفهرس",
+        "لماذا"
+      ],
+      "rows": [
+        [
+          "`timeline_entries`",
+          "`(user_id, post_id)` فريد",
+          "`(user_id, rank DESC)`",
+          "قراءة صفحة واحدة بأقل I/O + منع التكرار"
+        ],
+        [
+          "`posts`",
+          "`post_id`",
+          "`(author_id, rank DESC)`",
+          "جلب منشورات المشاهير ومنشورات الحساب"
+        ],
+        [
+          "`follows`",
+          "`(follower_id, followee_id)`",
+          "`(followee_id)` جزئي `is_celebrity=false`",
+          "التوزيع يقرأ المتابعين العاديين فقط"
+        ],
+        [
+          "تقليم",
+          "—",
+          "مهمة دورية",
+          "سقف 800 عنصر/مستخدم"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "ثلاث مصائد في الـFeed",
+      "md": "**① `OFFSET 10000`** — يقرأ ويرمي؛ استخدم cursor (3.3).\n**② حساب جديد لا يتابع أحدًا** — يجب أن يرى محتوى استكشاف (fallback) وإلا يخرج فورًا. هذا قرار منتج وله أثر تقني.\n**③ الخاملون يستهلكون كتابة** — لا تُفرّغ لمستخدم لم يفتح التطبيق شهرًا؛ ابنِ خطه عند عودته (lazy backfill) وأضف TTL/تقليم."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ الحسابات الضخمة: الحل الكامل"
+    },
+    {
+      "type": "table",
+      "caption": "3 خطوات",
+      "head": [
+        "الخطوة",
+        "التنفيذ",
+        "الأثر"
+      ],
+      "rows": [
+        [
+          "التصنيف",
+          "عدّاد متابعين → `is_celebrity` عند تجاوز 50k",
+          "لا توزيع لمشاهير"
+        ],
+        [
+          "القراءة",
+          "دمج منشورات المشاهير بـ`(author_id, rank)` خلال نافذة زمنية قصيرة",
+          "زمن إضافي ~10ms"
+        ],
+        [
+          "التخزين المؤقت",
+          "كاش منشورات المشاهير لكل مستخدم 30–60 ثانية",
+          "تقلّل الحمل على `posts`"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Feed/CelebrityPolicy.cs — قرار التصنيف + القراءة من الكاش",
+      "filename": "src/Feed/CelebrityPolicy.cs",
+      "code": "/// <summary>\n/// متى يعتبر الحساب «مشهورًا»؟ القرار يُبنى على التكلفة لا على الشهرة:\n///   التكلفة = عدد المتابعين × معدل النشر اليومي\n///   الحد: 100,000 عملية توزيع/يوم ≈ 1.2 في الثانية (مقبول).\n/// </summary>\npublic static class CelebrityPolicy\n{\n    private const long FanoutPerDayBudget = 100_000;\n\n    public static bool IsCelebrity(int followers, double postsPerDay) =>\n        followers * postsPerDay > FanoutPerDayBudget;\n\n    // أمثلة:\n    //   20,000 متابع × 2 منشور = 40,000  → عادي\n    //   60,000 متابع × 2 منشور = 120,000 → مشهور (يُستثنى من التوزيع)\n    //    5,000 متابع × 30 منشورًا = 150,000 → مشهور (نشر كثيف!)\n}\n\npublic sealed record FeedItem(string PostId, string AuthorId, string Text, DateTimeOffset CreatedAt, long Rank);\npublic sealed record FanoutJob(string PostId, string AuthorId, DateTimeOffset CreatedAt, string? CursorUserId = null);\n"
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "تقارن fan-out on write/read بالتكلفة (كتابات/قراءات) لا بالإحساس.",
+        "تحسب عدد صفوف خط الزمن يوميًا من (منشورات × متابعين) وتقرر إن كان مقبولًا.",
+        "تعرف `celebrity problem` وتشرح الهجين بدقة.",
+        "تصمّم جدول `timeline_entries` بمفتاح مركّب فريد وفهرس `(user, rank desc)`.",
+        "تستخدم cursor لا OFFSET، وتشرح لماذا.",
+        "تجعل التوزيع على دفعات مع checkpoint قابل للاستئناف.",
+        "تقلّم خط الزمن بسقف، وتتعامل مع الخاملين بـlazy backfill.",
+        "تضيف fallback للمستخدم الجديد.",
+        "تعرف أثر الترتيب (Ranking) على التصميم ومتى تنتقل لحساب مسبق."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة.",
+      "questions": [
+        {
+          "q": "منصة بها متوسط 200 متابع ونشر 1M منشور/يوم — أي استراتيجية تبدأ بها؟",
+          "options": [
+            "Read fan-out",
+            "Write fan-out (مع hybrid للمشاهير)",
+            "بلا خط زمني",
+            "مزامنة كاملة"
+          ],
+          "answer": 1,
+          "explain": "200 متابع × 1M = 200M صف/يوم وهو كبير — لذا تبدأ بـwrite fan-out **مع تقييد** (تقليم، دفعات، استثناء الخاملين والمشاهير). البدء بـread fan-out يجعل كل قراءة تدمج 200 مصدرًا."
+        },
+        {
+          "q": "ما التكلفة الأساسية في fan-out on write؟",
+          "options": [
+            "مساحة القرص فقط",
+            "الكتابات المضاعفة (متابعون × منشور) وضغط الإدراج",
+            "زمن القراءة",
+            "الفهارس"
+          ],
+          "answer": 1,
+          "explain": "القراءة رخيصة جدًا (صف واحد لكل صفحة)، لكن الكتابة تتضاعف بعدد المتابعين، وتحتاج طابورًا ودفعات وقابلية استئناف."
+        },
+        {
+          "q": "لماذا نستثني المشاهير من التوزيع؟",
+          "options": [
+            "لأنهم لا يريدون",
+            "لأن منشورًا واحدًا قد يعني ملايين الكتابات — فتُدمج منشوراتهم وقت القراءة",
+            "لتوفير مساحة القرص",
+            "لأسباب قانونية"
+          ],
+          "answer": 1,
+          "explain": "التكلفة = متابعون × منشورات. حساب بـ5M متابع × 3 منشورات = 15M كتابة يوميًا لحساب واحد. الحل: دمجهم في القراءة من فهرس `(author_id, rank)`."
+        },
+        {
+          "q": "لماذا `ON CONFLICT DO NOTHING` مهم في التوزيع؟",
+          "options": [
+            "لتحسين الأداء فقط",
+            "لجعل العملية idempotent: إعادة معالجة دفعة بعد فشل لا تُنشئ صفوفًا مكررة",
+            "لتصغير الفهارس",
+            "لتجنب المفاتيح الأجنبية"
+          ],
+          "answer": 1,
+          "explain": "العامل قد يُعاد تشغيله من checkpoint سابق. بدون `ON CONFLICT`، ستفشل الدفعة كلها أو تنشئ تكرارًا. معه، الإعادة آمنة — وهي شرط أي معالجة قابلة للاستئناف."
+        },
+        {
+          "q": "مستخدم جديد لا يتابع أحدًا — ما الإجراء؟",
+          "options": [
+            "feed فارغ",
+            "محتوى استكشاف (fallback) + اقتراحات متابعة",
+            "خطأ",
+            "إيقاف الحساب"
+          ],
+          "answer": 1,
+          "explain": "feed فارغ = أول تجربة سيئة = مغادرة. القرار منتج + تقني: fallback لمحتوى رائج/موصى من فهرس منفصل، يعمل حتى لو خط الزمن الشخصي فارغ."
+        },
+        {
+          "q": "ما التغيير إذا انتقلنا لترتيب (Ranking) بدل الزمن؟",
+          "options": [
+            "لا شيء",
+            " يحتاج حساب الدرجة مسبقًا عند التوزيع أو حسابها عند القراءة؛ وتصبح قابلية الترقيم بالمؤشر أصعب",
+            "يكفي تغيير ORDER BY",
+            "نلغي الكاش"
+          ],
+          "answer": 1,
+          "explain": "مع الترتيب، `rank` ليس زمنيًا فقط: تحتاج درجة محسوبة (تفاعل/حداثة/جودة) وقد تتغير بعد النشر. أثر ذلك: إعادة حساب دورية، أو حساب لحظي عند القراءة، وصعوبة ترقيم ثابت (تحتاج snapshot/مؤشر مركّب)."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمة واحدة",
+      "intro": "خط زمني هجين قابل للقياس.",
+      "items": [
+        {
+          "id": "s9-m1-l4-t1",
+          "title": "مهمة: نفّذ خط زمني هجين",
+          "md": "نفّذ `timeline_entries` + توزيع على دفعات + قراءة مدموجة مع منشورات المشاهير + تقليم، واختبره بسيناريو مستخدم عادي ومشهور.",
+          "criteria": [
+            "جدول `timeline_entries` بمفتاح فريد `(user_id, post_id)` وفهرس `(user_id, rank DESC)`.",
+            "التوزيع على دفعات 500 مع checkpoint قابل للاستئناف و`ON CONFLICT DO NOTHING`.",
+            "استثناء المشاهير بقاعدة مكتوبة (متابعون × منشورات/يوم) لا برقم عشوائي.",
+            "القراءة تدمج المصدرين بلا تكرار وترتيب صحيح + cursor للصفحة التالية.",
+            "تقليم بسقف 800 عنصر مُختبر (أدخل 1000 وتحقّق).",
+            "اختبار: منشور من حساب عادي يظهر؛ منشور من مشهور يظهر عبر الدمج؛ حساب جديد يرى fallback.",
+            "قياس: زمن قراءة صفحة أولى وثانية بالأرقام قبل/بعد الدمج."
+          ],
+          "hint": "لو نفّذت `ON CONFLICT` بشكل صحيح، فإعادة تشغيل الوظيفة من checkpoint قديم لن تُنشئ تكرارًا — اختبر ذلك عمدًا. وللقياس: استخدم 10,000 متابع تجريبيين (`generate_series`) وقس الإدراج كدفعة واحدة مقابل دفعات 500.",
+          "solution": "النتيجة: خط زمني يقرأ صفحة في < 20ms بحجم 10 آلاف متابع، وتوزيع ~5,000 صف/ثانية على دفعات. أهم درس: **التحكم في حجم التوزيع** (تقليم + استثناء خاملين + المشاهير) هو ما يجعل التصميم قابلًا للتشغيل، لا اختيار أداة الكاش.",
+          "resources": [
+            "https://learn.microsoft.com/azure/architecture/patterns/materialized-view",
+            "https://learn.microsoft.com/ef/core/modeling/indexes",
+            "https://www.postgresql.org/docs/current/sql-insert.html"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Materialized View pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/materialized-view"
+        },
+        {
+          "label": "Indexed views / الفهارس المركّبة في EF Core",
+          "url": "https://learn.microsoft.com/ef/core/modeling/indexes"
+        },
+        {
+          "label": "ترقيم بالمفاتيح",
+          "url": "https://learn.microsoft.com/azure/architecture/best-practices/api-design"
+        },
+        {
+          "label": "PostgreSQL INSERT ON CONFLICT",
+          "url": "https://www.postgresql.org/docs/current/sql-insert.html"
+        }
+      ]
+    }
+  ]
+}

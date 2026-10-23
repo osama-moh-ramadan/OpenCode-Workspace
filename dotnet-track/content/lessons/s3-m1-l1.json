@@ -1,0 +1,333 @@
+{
+  "id": "s3-m1-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nالـORM بيكتب SQL — وأنت لازم تقدر **تقرأ** اللي كتبه وتحكم عليه. في المقابلات والسؤال الأشهر:\n«استعلام بيستغرق 3 ثواني، بتعمل إيه؟» الإجابة الصح مش «أضيف فهرس» — الإجابة: **اقرأ خطة التنفيذ**،\nاعرف الفرق بين التقدير والواقع، وبعدين قرّر.\n\nالدرس ده (PostgreSQL أساسًا مع المقابل في SQL Server): أنواع الفهارس وترتيب الأعمدة، قراءة `EXPLAIN ANALYZE`،\nواكتشاف الفهارس غير المستخدمة والزائدة والناقصة.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "B-tree",
+          "def": "البنية الافتراضية للفهارس: بحث/نطاق/ترتيب بـ`O(log n)`. لا يفيد في `LIKE '%abc%'` ولا في دوال على العمود."
+        },
+        {
+          "term": "Clustered index",
+          "def": "ترتيب الصفوف الفعلي في الجدول (واحد فقط لكل جدول). في Postgres: `CLUSTER` (لمرة واحدة) — مش زي SQL Server."
+        },
+        {
+          "term": "Nonclustered / Secondary",
+          "def": "فهرس منفصل عن ترتيب الصفوف؛ في Postgres كل الفهارس `CREATE INDEX` من النوع ده."
+        },
+        {
+          "term": "Composite index",
+          "def": "فهرس على أكثر من عمود — الترتيب حاسم: أعمدة المساواة أولًا ثم عمود النطاق/الترتيب."
+        },
+        {
+          "term": "Covering index (`INCLUDE`)",
+          "def": "فهرس يحتوي الأعمدة المطلوبة في الاستعلام → بلا رجوع للجدول (Index Only Scan)."
+        },
+        {
+          "term": "Partial / Filtered index",
+          "def": "فهرس على جزء من الصفوف (`WHERE deleted_at IS NULL`) — أصغر وأسرع وأدق."
+        },
+        {
+          "term": "Seq Scan",
+          "def": "مسح كامل للجدول. مش دائمًا خطأ: لو هتقرأ أغلب الصفوف، المسح أسرع من الفهرس."
+        },
+        {
+          "term": "Index Scan مقابل Bitmap Heap Scan",
+          "def": "الأول يجلب صفوفًا مرتبة واحدًا واحدًا؛ التاني يجمع مواقع أولًا (أفضل للانتقائية المنخفضة/الترتيب العشوائي)."
+        },
+        {
+          "term": "Selectivity / Cardinality",
+          "def": "قدرة العمود على تضييق النتيجة. فهرس على عمود `boolean` = انتقائية شبه معدومة = غالبًا بلا فائدة."
+        },
+        {
+          "term": "Key Lookup",
+          "def": "(SQL Server) رجوع للجدول لجلب أعمدة غير موجودة في الفهرس — مكلف جدًا؛ حله `INCLUDE`."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) قراءة خطة التنفيذ: المهارة الأساسية"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "diagnostics/explain.sql",
+      "title": "EXPLAIN ANALYZE مع BUFFERS — والمصادر التانية للتشخيص",
+      "code": "\n-- ★ ANALYZE = تنفيذ فعلي (احذر على UPDATE/DELETE: لفّها في transaction واعمل ROLLBACK)\nEXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT TEXT)\nSELECT o.id, o.created_at, o.total, c.country\nFROM orders o\nJOIN customers c ON c.id = o.customer_id\nWHERE o.status = 'paid'\n  AND o.created_at >= now() - interval '30 days'\nORDER BY o.created_at DESC, o.id DESC\nLIMIT 21;\n\n-- للأمان مع الكتابات:\nBEGIN;\nEXPLAIN (ANALYZE, BUFFERS) UPDATE orders SET status = 'shipped' WHERE status = 'paid';\nROLLBACK;\n\n-- أبطأ الاستعلامات إجمالًا (يتطلب pg_stat_statements)\nSELECT round(total_exec_time::numeric, 1) AS total_ms,\n       calls,\n       round(mean_exec_time::numeric, 2)   AS mean_ms,\n       rows,\n       left(query, 120)                    AS query\nFROM pg_stat_statements\nORDER BY total_exec_time DESC\nLIMIT 20;\n\n-- جداول بتتمسح بالكامل (علامة فهرس ناقص)\nSELECT relname, seq_scan, seq_tup_read, idx_scan,\n       round(100.0 * seq_scan / nullif(seq_scan + idx_scan, 0), 1) AS seq_scan_pct\nFROM pg_stat_user_tables\nWHERE seq_scan + idx_scan > 0\nORDER BY seq_tup_read DESC\nLIMIT 20;\n"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "filename": "خطة تنفيذ حقيقية (معلّقة سطر بسطر)",
+      "title": "إزاي تقرأ المخرَج",
+      "code": "\n Limit  (cost=1.42..236.11 rows=21 width=76) (actual time=0.061..2.874 rows=21 loops=1)\n   Buffers: shared hit=318\n   ->  Index Scan using ix_orders_createdat_id on orders o\n         (cost=0.42..5123.90 rows=458 width=48) (actual time=0.041..2.402 rows=210 loops=1)\n         Index Cond: (created_at >= (now() - '30 days'))\n         Filter: (status = 'paid')\n         Rows Removed by Filter: 3912          ← ★ 95% من الصفوف اتقريت واتبعتت!\n         Buffers: shared hit=290\n   ->  Index Scan using customers_pkey on customers c\n         (cost=0.28..0.31 rows=1 width=36) (actual time=0.008..0.009 rows=1 loops=210)\n         Buffers: shared hit=28\n\nالقراءة:\n1) (cost=.. rows=..)  = تقدير المخطط   |   (actual time=.. rows=.. loops=..) = الواقع\n   → لو التقدير بعيد عن الواقع (458 مقابل 4122) فالإحصائيات قديمة: ANALYZE orders;\n2) \"Rows Removed by Filter: 3912\"  = الفهرس ما غطّاش status → الحل: فهرس مركّب (status, created_at DESC, id DESC)\n3) \"Buffers: shared hit=290\" مقابل \"read=...\" = من الكاش مقابل من القرص (read عالي = I/O فعلي)\n4) Nested Loop مع loops=210 = استعلام فرعي لكل صف → انتبه لـN+1 على مستوى SQL\n5) Sort Method: external merge  Disk: 12MB = تجاوز work_mem → فرز على القرص (بطيء جدًا)\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "علامات الخطر في أي خطة تنفيذ",
+      "md": "\n- **`Rows Removed by Filter` كبيرة** → الفهرس بيغطي شرط واحد بس؛ محتاج فهرس مركّب.\n- **تقدير `rows` بعيد عن `actual rows` بعشرات المرات** → إحصائيات قديمة (`ANALYZE`) أو correlation معقد.\n- **`Sort Method: external merge Disk`** → فرز على القرص: زوّد `work_mem` للجلسة أو قلّل البيانات أو أضف فهرس يغطي الترتيب.\n- **`Seq Scan` على جدول ملايين الصفوف مع انتقائية عالية** → فهرس ناقص.\n- **`Nested Loop` مع `loops` بالآلاف** → نمط N+1؛ حوّله لـ`Hash Join` بجلب المفاتيح مرة واحدة.\n- **`Key Lookup` (SQL Server) كتير** → الفهرس مش covering؛ أضف `INCLUDE`.\n- **`Buffers: shared read` عالي باستمرار** → الكاش (shared_buffers) صغير أو الجدول/الفهرس منتفخ (`VACUUM`/`REINDEX`).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) اختيار الفهرس الصح"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "migrations/2026_10_orders_indexes.sql",
+      "title": "أمثلة عملية — كل فهرس له سبب مكتوب",
+      "code": "\n-- ① فهرس مركّب للترقيم (cursor pagination من المرحلة 2)\n--    الترتيب: مساواة (status) ← نطاق/ترتيب (created_at DESC) ← مكسّر تعادل (id DESC)\n--    INCLUDE: يخلي الاستعلام covered (بلا رجوع للجدول)\nCREATE INDEX CONCURRENTLY ix_orders_status_created_id\n    ON orders (status, created_at DESC, id DESC)\n    INCLUDE (customer_id, total, currency);\n\n-- ② فهرس جزئي للصفوف الحية فقط (soft delete): أصغر وأسرع\nCREATE INDEX CONCURRENTLY ix_orders_active\n    ON orders (customer_id, created_at DESC)\n    WHERE deleted_at IS NULL;\n\n-- ③ فهرس على مفتاح أجنبي (Postgres ما بيعملهوش تلقائيًا!)\nCREATE INDEX CONCURRENTLY ix_orders_customer_id ON orders (customer_id);\n\n-- ④ فهرس فريد يمنع التكرار على مستوى البيانات (مش على مستوى التطبيق)\nCREATE UNIQUE INDEX CONCURRENTLY ux_customers_email ON customers (lower(email));\n\n-- ⑤ JSONB: فهرس GIN لاستعلامات على أعمدة JSON\nCREATE INDEX CONCURRENTLY ix_orders_metadata_gin ON orders USING gin (metadata jsonb_path_ops);\n\n-- ⑥ بحث نصي: GIN مع tsvector (أو pg_trgm للـLIKE '%…%')\nCREATE INDEX CONCURRENTLY ix_products_name_trgm ON products USING gin (name gin_trgm_ops);\n\n-- ★ CONCURRENTLY: لا يقفل الجدول للكتابة — لكن:\n--   • لا يمكن داخل transaction\n--   • أبطأ، ولو فشل يسيب فهرس INVALID لازم يتحذف\n-- تحقق بعد الإنشاء:\nSELECT indexrelid::regclass AS index, indisvalid, indisready\nFROM pg_index\nWHERE NOT indisvalid;\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الموقف",
+        "الفهرس المناسب",
+        "ملاحظة"
+      ],
+      "rows": [
+        [
+          "ترقيم cursor على `(created_at, id)`",
+          "مركّب بترتيب مطابق للـ`ORDER BY`",
+          "بدون `id` كمكسّر تعادل: صفوف مكررة/مفقودة"
+        ],
+        [
+          "`WHERE status='paid' ORDER BY created_at`",
+          "مركّب: `(status, created_at DESC)`",
+          "المساواة أولًا ثم النطاق/الترتيب — العكس ما يفيدش"
+        ],
+        [
+          "قراءة أعمدة قليلة ثابتة",
+          "covering بـ`INCLUDE`",
+          "يمنع الرجوع للجدول (Index Only Scan)"
+        ],
+        [
+          "soft delete / صفوف حية فقط",
+          "partial index بشرط `WHERE`",
+          "أصغر وأدق، لكن الاستعلام لازم يطابق الشرط"
+        ],
+        [
+          "`LIKE '%كلمة%'`",
+          "GIN + `pg_trgm`",
+          "B-tree العادي لا يعمل مع بادئة غير ثابتة"
+        ],
+        [
+          "استعلامات على JSON",
+          "GIN على `jsonb` (`jsonb_path_ops`)",
+          "أصغر وأسرع من GIN الافتراضي لمعظم الحالات"
+        ],
+        [
+          "عمود `boolean` أو حالة بثلاث قيم",
+          "✗ غالبًا لا",
+          "انتقائية منخفضة جدًا؛ الأفضل فهرس مركّب أو partial"
+        ],
+        [
+          "جدول كتابة كثيفة (logs/events)",
+          "قليل من الفهارس + فهارس partial زمنية",
+          "كل فهرس = تكلفة على كل INSERT/UPDATE"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "ترتيب الأعمدة في الفهرس المركّب: القاعدة اللي بتضيّع ساعات",
+      "md": "\nالفهرس المركّب `(a, b, c)` **بيشتغل كـprefix**: يفيد استعلامات على `(a)`، `(a,b)`، `(a,b,c)` —\nلكن **لا يفيد** `(b)` أو `(c)` لوحدها.\n\nوالقاعدة الثانية: **أعمدة المساواة أولًا، عمود النطاق/الترتيب آخرًا**.\n`(created_at, status)` لاستعلام `WHERE status='paid' AND created_at >= X` بيوقف عند أول نطاق،\nبينما `(status, created_at)` بيستخدم الاتنين.\n\nقبل ما تضيف فهرس جديد: اسأل هل فهرس موجود يغطيه كـprefix؟ وهل الجدول بيتكتب فيه كتير؟\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) التنظيف: فهارس ميتة وزائدة وناقصة"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "diagnostics/index_hygiene.sql",
+      "title": "3 استعلامات تحافظ بيها على قاعدة بياناتك",
+      "code": "\n-- ① فهارس غير مستخدمة (احذف بعد مراقبة دورة عمل كاملة: شهر/ربع)\nSELECT s.relname            AS table,\n       s.indexrelname       AS index,\n       s.idx_scan,\n       pg_size_pretty(pg_relation_size(s.indexrelid)) AS size,\n       i.indisunique        AS is_unique,          -- ★ لا تحذف فهرسًا يدعم قيدًا\n       i.indisprimary       AS is_primary\nFROM pg_stat_user_indexes s\nJOIN pg_index i ON i.indexrelid = s.indexrelid\nWHERE s.idx_scan = 0\n  AND NOT i.indisunique\n  AND NOT i.indisprimary\n  AND s.schemaname = 'public'\nORDER BY pg_relation_size(s.indexrelid) DESC;\n\n-- ② فهارس زائدة (نفس الجدول والأعمدة بالترتيب) — الأكبر غالبًا هو الزائد\nWITH defs AS (\n  SELECT tablename, indexname, indexdef,\n         row_number() OVER (PARTITION BY tablename, indexdef ORDER BY indexname) AS rn\n  FROM pg_indexes\n  WHERE schemaname = 'public'\n)\nSELECT tablename, indexname, indexdef FROM defs WHERE rn > 1;\n\n-- ③ فهارس prefix-zائدة: (a) موجود و(a,b) موجود → (a) غالبًا بلا داعٍ\nSELECT a.indexrelid::regclass AS maybe_redundant,\n       b.indexrelid::regclass AS covered_by\nFROM pg_index a\nJOIN pg_index b\n  ON a.indrelid = b.indrelid\n AND a.indrelid <> 0\n AND a.indkey::text <> b.indkey::text\n AND b.indkey::text LIKE a.indkey::text || ' %'      -- b يبدأ بأعمدة a\n AND a.indrelid::regclass::text NOT LIKE 'pg_%';\n\n-- تكلفة الفهارس على الكتابة (قبل ما تضيف واحد جديد)\nSELECT relname, n_tup_ins, n_tup_upd, n_tup_del, n_live_tup,\n       pg_size_pretty(pg_total_relation_size(relid)) AS total_size\nFROM pg_stat_user_tables\nORDER BY n_tup_ins + n_tup_upd DESC\nLIMIT 15;\n\n-- تضخم الفهرس (bloat) وإعادة البناء بلا قفل\nSELECT schemaname, tablename, indexname,\n       pg_size_pretty(pg_relation_size(indexrelid)) AS size\nFROM pg_stat_user_indexes ORDER BY pg_relation_size(indexrelid) DESC LIMIT 15;\n-- REINDEX INDEX CONCURRENTLY ix_orders_status_created_id;\n"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "المقابل في SQL Server",
+      "title": "لو مشروعك SQL Server",
+      "code": "\nSET STATISTICS IO, TIME ON;\nSELECT ... ;                     -- راجع رسائل tab \"Messages\": logical reads لكل جدول\nSET STATISTICS IO, TIME OFF;\n\n-- الفهارس غير المستخدمة\nSELECT OBJECT_NAME(s.object_id) AS table_name, i.name AS index_name,\n       s.user_seeks, s.user_scans, s.user_lookups, s.user_updates,\n       p.rows\nFROM sys.dm_db_index_usage_stats s\nJOIN sys.indexes i ON i.object_id = s.object_id AND i.index_id = s.index_id\nJOIN sys.partitions p ON p.object_id = s.object_id AND p.index_id = s.index_id\nWHERE s.database_id = DB_ID() AND i.index_id > 0\nORDER BY s.user_seeks + s.user_scans + s.user_lookups ASC;\n\n-- الفهارس المقترحة (استرشادية — لا تطبقها أعمى: فيها تكرار وتكلفة كتابة)\nSELECT OBJECT_NAME(d.object_id) AS table_name, d.equality_columns, d.inequality_columns,\n       d.included_columns, s.user_seeks, s.avg_total_user_cost\nFROM sys.dm_db_missing_index_details d\nJOIN sys.dm_db_missing_index_groups g ON g.index_handle = d.index_handle\nJOIN sys.dm_db_missing_index_group_stats s ON s.group_handle = g.index_group_handle\nORDER BY s.user_seeks * s.avg_total_user_cost DESC;\n\n-- فهرس covering\nCREATE NONCLUSTERED INDEX ix_orders_status_created\n    ON orders (status, created_at DESC) INCLUDE (customer_id, total, currency);\n\n-- فهرس مفلتر\nCREATE NONCLUSTERED INDEX ix_orders_active ON orders (customer_id, created_at DESC)\n    WHERE deleted_at IS NULL;\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "منهجية العمل: 5 خطوات مش «جرّب فهرس»"
+    },
+    {
+      "type": "steps",
+      "title": "استعلام بطيء؟ امشي بالترتيب",
+      "items": [
+        {
+          "title": "التقط الاستعلام الحقيقي",
+          "md": "من `pg_stat_statements` أو من لوجات EF Core (`EnableSensitiveDataLogging` في التطوير فقط) — مش من تخمينك. انتبه: استعلام الـORM ممكن يختلف عمّا تتوقع (فرز/أعمدة زائدة)."
+        },
+        {
+          "title": "اقرأ الخطة بالأرقام",
+          "md": "`EXPLAIN (ANALYZE, BUFFERS)`. حدد: أنهي عقدة بتاخد أكبر وقت فعلي؟ هل التقدير قريب من الواقع؟ هل فيه `Rows Removed by Filter` أو فرز على القرص؟"
+        },
+        {
+          "title": "شكّك في الاستعلام قبل الفهرس",
+          "md": "هل بتجلب أعمدة ما تحتاجهاش؟ هل فيه `ORDER BY` بلا `LIMIT`؟ هل الـ`JOIN` لازم؟ هل ممكن projection بدل كيانات كاملة؟ كثير من البطء سببه الاستعلام مش الفهرس."
+        },
+        {
+          "title": "أضف/عدّل فهرس واحد وقِس",
+          "md": "تغيير واحد في المرة، و`ANALYZE` بعد التغيير. قِس p95 تحت حمل (مش مرة واحدة) — التحسن العشوائي بيخدع."
+        },
+        {
+          "title": "راجع التكلفة على الكتابة والحجم",
+          "md": "الفهرس الجديد بيكلف في كل INSERT/UPDATE وبيأكل مساحة. سجل القرار: المشكلة، الخطة قبل، الحل، الخطة بعد، الأرقام."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "خلّي الفهارس كود (Migrations) مش تعديلات يدوية",
+      "md": "\nأي فهرس تضيفه يدويًا على قاعدة الإنتاج = فرق بين البيئات وباج «بيشتغل عندي».\nالحل: الفهرس يتكتب في **EF Core Migration** (أو ملف SQL مُدار)، ويُطبَّق عبر الـpipeline:\n```csharp\nmigrationBuilder.CreateIndex(\n    name: \"ix_orders_status_created_id\",\n    table: \"orders\",\n    columns: new[] { \"status\", \"created_at\", \"id\" },\n    descending: new[] { false, true, true });\n```\nوللجداول الضخمة استخدم `CONCURRENTLY` عبر SQL خام في الـmigration مع `migrationBuilder.Sql(...)`\nوتذكّر إن `CONCURRENTLY` **لا يعمل داخل transaction** → `migrationBuilder.Sql(..., suppressTransaction: true)`.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أقرأ `EXPLAIN (ANALYZE, BUFFERS)` وأميّز التقدير من الواقع وأحدد العقدة الأبطأ.",
+        "أختار نوع الفهرس وترتيب أعمدة مركّب صحيح (مساواة ← نطاق/ترتيب) وأعرف دور `INCLUDE`.",
+        "أستخدم فهارس جزئية/فريدة/GIN للحالات المناسبة ولا أفهرس أعمدة منخفضة الانتقائية.",
+        "أكتشف الفهارس غير المستخدمة والزائدة والناقصة وأضيف الفهارس عبر migrations لا يدويًا."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "`Rows Removed by Filter: 3912` في الخطة معناه إيه؟",
+          "options": [
+            "الاستعلام رجّع 3912 صف",
+            "الفهرس اختار صفوفًا كثيرة ثم طُبّق الشرط بعدها → فهرسك لا يغطي كل الشروط (مركّب أنسب)",
+            "فيه صفوف محذوفة",
+            "الإحصائيات قديمة"
+          ],
+          "answer": 1,
+          "explain": "ده مؤشر مباشر إن الفهرس مش مثالي: غطّى `created_at` لكن `status` اتفحص بعد القراءة. الحل: فهرس `(status, created_at …)`."
+        },
+        {
+          "q": "فهرس `(created_at, status)` لاستعلام `WHERE status='paid' AND created_at >= X ORDER BY created_at` — المشكلة؟",
+          "options": [
+            "لا مشكلة",
+            "عمود النطاق أولًا بيوقف استخدام العمود التاني بكفاءة؛ الترتيب الصحيح `(status, created_at)`",
+            "محتاج INCLUDE",
+            "محتاج فهرس جزئي"
+          ],
+          "answer": 1,
+          "explain": "المساواة أولًا ثم النطاق. لو النطاق الأول، باقي الأعمدة ما بتتستخدمش لتضييق البحث (بتتفلتر بعد القراءة)."
+        },
+        {
+          "q": "ليه `CREATE INDEX CONCURRENTLY` مهم على جدول كبير؟",
+          "options": [
+            "أسرع",
+            "لا يقفل الكتابة على الجدول — لكن لا يعمل داخل transaction ولو فشل يترك فهرسًا INVALID",
+            "يستهلك مساحة أقل",
+            "يعمل فهرس covering تلقائيًا"
+          ],
+          "answer": 1,
+          "explain": "لصفر downtime. ثمنه: أبطأ، وممنوع داخل transaction، ولازم تتحقق من `pg_index.indisvalid` بعده."
+        },
+        {
+          "q": "فهرس على عمود `is_active boolean` في جدول 10 ملايين صف — تقييمك؟",
+          "options": [
+            "ممتاز دائمًا",
+            "غالبًا بلا فائدة: انتقائية منخفضة (نتيجتين فقط) → الأفضل فهرس جزئي `WHERE is_active` أو مركّب مع أعمدة تانية",
+            "يحتاج INCLUDE",
+            "يحتاج GIN"
+          ],
+          "answer": 1,
+          "explain": "لو 90% من الصفوف `true`، المخطط هيختار Seq Scan لأنه أرخص. الفهرس الجزئي على الجزء النادر هو الحل."
+        },
+        {
+          "q": "أول خطوة قبل إضافة أي فهرس؟",
+          "options": [
+            "تحديث الإحصائيات",
+            "التقاط الاستعلام الحقيقي وقراءة خطة تنفيذه بالأرقام (وقد يكون الحل في الاستعلام نفسه)",
+            "إضافة فهرس مركّب",
+            "زيادة الذاكرة"
+          ],
+          "answer": 1,
+          "explain": "كتير من «البطء» سببه جلب أعمدة/صفوف غير ضرورية، أو فرز بلا LIMIT، أو N+1 على مستوى الـORM — والفهرس ما يحلش ده."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "تشخيص وتحسين استعلام حقيقي",
+          "md": "اختار أبطأ استعلام في مشروعك (من `pg_stat_statements` أو لوجات EF). التقط خطته، حدّد المشكلة بدقة، أضف فهرسًا واحدًا عبر migration، وقِس قبل/بعد تحت حمل.",
+          "criteria": [
+            "الخطة قبل وبعد محفوظة في ملف (نص كامل مش لقطة شاشة)",
+            "تشخيص مكتوب: العقدة الأبطأ + سببها (Filter rows / Sort on disk / Seq scan / Key lookup)",
+            "الفهرس مُضاف في migration (لا تعديل يدوي) وله اسم يوضح غرضه",
+            "قياس: زمن الاستعلام وp95 للمسار قبل/بعد بأرقام",
+            "قرار موثق لو أضفت فهرسًا: أثره على الكتابة وحجمه"
+          ],
+          "hint": "لو التحسّن أقل من المتوقع: تأكد إن الاستعلام **مطابق** للـprefix بتاع الفهرس (نفس الأعمدة بنفس الترتيب ونفس اتجاه DESC)، وشغّل `ANALYZE orders;` بعد التغيير."
+        },
+        {
+          "id": "t2",
+          "title": "نظافة الفهارس",
+          "md": "شغّل استعلامات القسم 3 على قاعدة بياناتك: الفهارس غير المستخدمة، الزائدة، والـprefix-زائدة. احذف ما تثبت عدم حاجته (في migration) ووثّق قرارك.",
+          "criteria": [
+            "تقرير بالنتائج (جدول: الفهرس، الحجم، الاستخدام، القرار)",
+            "لا حذف لفهرس يدعم قيدًا فريدًا أو primary key",
+            "الحذف عبر migration + تحقق إن الاستعلامات الرئيسية ما تأثرتش (اختبارات)",
+            "ملاحظة بحجم المساحة المستردة"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "PostgreSQL — Using EXPLAIN",
+          "url": "https://www.postgresql.org/docs/current/using-explain.html"
+        },
+        {
+          "label": "PostgreSQL — Indexes",
+          "url": "https://www.postgresql.org/docs/current/indexes.html"
+        },
+        {
+          "label": "pg_stat_statements",
+          "url": "https://www.postgresql.org/docs/current/pgstatstatements.html"
+        },
+        {
+          "label": "EF Core — Indexes and query performance",
+          "url": "https://learn.microsoft.com/ef/core/performance/"
+        },
+        {
+          "label": "SQL Server — Query Performance and Tuning",
+          "url": "https://learn.microsoft.com/sql/relational-databases/performance/monitoring-performance-by-using-the-query-store"
+        },
+        {
+          "label": "Use The Index, Luke (مرجع بصري ممتاز)",
+          "url": "https://use-the-index-luke.com/"
+        }
+      ]
+    }
+  ]
+}

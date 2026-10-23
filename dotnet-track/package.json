@@ -1,0 +1,21 @@
+{
+  "name": "dotnet-track",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "مسار تعلّم .NET محلي بالكامل (من بعد EF Core لحد الوظيفة) — دروس، مهام كود، اختبارات ذاتية، وتتبّع تقدّم على جهازك.",
+  "scripts": {
+    "start": "node server.mjs",
+    "serve:py": "python3 server.py",
+    "build": "python3 tools/build_lessons.py && python3 tools/build.py",
+    "build:lessons": "python3 tools/build_lessons.py",
+    "build:curriculum": "python3 tools/build.py",
+    "test": "node tools/smoke-test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

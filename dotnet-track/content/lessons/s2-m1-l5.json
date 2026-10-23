@@ -1,0 +1,295 @@
+{
+  "id": "s2-m1-l5",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nمن غير حدود، الـAPI بتاعك مفتوح لـ: تخمين كلمات السر، سحب بيانات بالجملة، هجمات استنزاف،\nو«عميل واحد بوظ الخدمة للكل». الـRate Limiting المدمج في ASP.NET Core بيديك أربع استراتيجيات\nوتقسيم (partitioning) بحسب المستخدم/المفتاح/IP — بس أغلب المشاكل العملية بتيجي من **مكان التطبيق**\nومن **مصدر الـIP ورا proxy**.\n\nالدرس ده: استراتيجيات محددة، تقسيم عادل، 429 مع `Retry-After` صحيح، وحدود خاصة بالمصادقة.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Fixed Window",
+          "def": "نافذة ثابتة (مثال: 100 طلب/دقيقة) مع عدّاد يُصفّر. بسيط لكن فيه «حدّ مزدوج» عند التقاء نافذتين."
+        },
+        {
+          "term": "Sliding Window",
+          "def": "نافذة منزلقة مجزّأة — أنعم من الثابتة، بتكلفة ذاكرة أعلى قليلًا."
+        },
+        {
+          "term": "Token Bucket",
+          "def": "دلو رموز: يسمح بانفجار (burst) ثم معدل ثابت — الأنسب لسلوك مستخدم حقيقي."
+        },
+        {
+          "term": "Concurrency Limiter",
+          "def": "يحدّ عدد الطلبات **المتزامنة** (مش المعدل) — حماية من استنزاف الموارد في عمليات بطيئة."
+        },
+        {
+          "term": "Partitioning",
+          "def": "تقسيم الحدود بمفتاح (user id، API key، IP) — عشان مستخدم ما يعاقبش الكل."
+        },
+        {
+          "term": "Global limiter",
+          "def": "حد افتراضي على كل الطلبات، مع استثناءات لمسارات محددة."
+        },
+        {
+          "term": "429 + `Retry-After`",
+          "def": "الاستجابة الصحيحة: حالة 429 ورأس يقول للعميل إمتى يرجع (ثوانٍ أو تاريخ HTTP)."
+        },
+        {
+          "term": "`X-Forwarded-For`",
+          "def": "الرأس اللي بيحمله الـproxy عن IP العميل الحقيقي — لازم تُفعّل `ForwardedHeaders` وإلا كل العملاء عنوانهم واحد."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "الاستراتيجية",
+        "السلوك",
+        "أنسب حالة"
+      ],
+      "rows": [
+        [
+          "Fixed Window",
+          "100 طلب في كل دقيقة تقويمية، يُصفّر",
+          "حدود عامة بسيطة على API key"
+        ],
+        [
+          "Sliding Window",
+          "100 طلب في آخر 60 ثانية (متزحلقة)",
+          "عدالة أفضل، بلا «قفزة» عند حدود النافذة"
+        ],
+        [
+          "Token Bucket",
+          "سعة 50 + تعبئة 10/ثانية",
+          "تصفح مستخدم حقيقي: انفجار قصير ثم معدل ثابت"
+        ],
+        [
+          "Concurrency",
+          "≤ 20 طلبًا متزامنًا",
+          "تقارير/تصدير/استعلامات ثقيلة — حماية الموارد"
+        ],
+        [
+          "مزيج",
+          "token bucket للمستخدم + concurrency للمسار",
+          "الوضع الواقعي للإنتاج"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/RateLimiting/RateLimitSetup.cs",
+      "title": "سياسات + تقسيم عالمي بحسب المستخدم ثم IP",
+      "code": "\nusing System.Threading.RateLimiting;\n\npublic static class RateLimitSetup\n{\n    public static IServiceCollection AddApiRateLimiting(this IServiceCollection services, IConfiguration config)\n    {\n        var limits = config.GetSection(\"RateLimits\").Get<RateLimitOptions>() ?? new RateLimitOptions();\n\n        services.AddRateLimiter(options =>\n        {\n            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;\n\n            // ── استجابة الرفض: 429 + Retry-After + problem+json (مش جسم فاضي)\n            options.OnRejected = async (context, ct) =>\n            {\n                var response = context.HttpContext.Response;\n                response.StatusCode = StatusCodes.Status429TooManyRequests;\n                response.ContentType = \"application/problem+json\";\n\n                // ✓ Retry-After من بيانات النافذة الحقيقية لما تتوفر\n                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))\n                    response.Headers.RetryAfter =\n                        ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();\n                else\n                    response.Headers.RetryAfter = \"30\";\n\n                // ✓ وسم بالـendpoint (مش بمسار خام) عشان القياس ما ينفجرش cardinality\n                Metrics.RateLimitRejections.Add(1, new(\n                    \"endpoint\", context.HttpContext.GetEndpoint()?.DisplayName ?? \"unknown\"));\n\n                await response.WriteAsJsonAsync(new ProblemDetails\n                {\n                    Status = 429,\n                    Title = \"عدد الطلبات تجاوز الحد المسموح\",\n                    Detail = \"قلّل معدل الطلبات أو استخدم الترقيم بالصفحات لتقليل عدد النداءات.\",\n                    Extensions =\n                    {\n                        [\"traceId\"] = context.HttpContext.TraceIdentifier,\n                        [\"retryAfterSeconds\"] = response.Headers.RetryAfter.ToString(),\n                    },\n                }, ct);\n            };\n\n            // ── حد عام مقسّم: المستخدم المصادق أولًا، وإلا IP (مع مراعاة الـproxy)\n            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(http =>\n            {\n                // المسارات المستثناة: health العام والـstatic\n                if (http.Request.Path.StartsWithSegments(\"/health/live\"))\n                    return RateLimitPartition.GetNoLimiter(\"health\");\n\n                var partitionKey = PartitionKeyFor(http);\n\n                return RateLimitPartition.GetTokenBucketLimiter(partitionKey, _ => new TokenBucketRateLimiterOptions\n                {\n                    TokenLimit = limits.General.TokenLimit,          // 50\n                    TokensPerPeriod = limits.General.ReplenishmentPeriod == default\n                        ? 10 : limits.General.TokensPerPeriod,        // 10\n                    ReplenishmentPeriod = limits.General.ReplenishmentPeriod, // 1 ثانية\n                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,\n                    QueueLimit = 0,                                     // لا طابور: ارفض فورًا\n                    AutoReplenishment = true,\n                });\n            });\n\n            // ── سياسات مسماة للـendpoints الحساسة\n            options.AddPolicy(\"auth\", http => RateLimitPartition.GetFixedWindowLimiter(\n                PartitionKeyFor(http), _ => new FixedWindowRateLimiterOptions\n                {\n                    PermitLimit = limits.Auth.PermitLimit,            // 5\n                    Window = TimeSpan.FromMinutes(5),\n                    QueueLimit = 0,\n                }));\n\n            options.AddPolicy(\"orders-write\", http => RateLimitPartition.GetSlidingWindowLimiter(\n                PartitionKeyFor(http), _ => new SlidingWindowRateLimiterOptions\n                {\n                    PermitLimit = limits.Write.PermitLimit,           // 30\n                    Window = TimeSpan.FromMinutes(1),\n                    SegmentsPerWindow = 6,                            // دقة أعلى = أنعم\n                    QueueLimit = 0,\n                }));\n\n            // ── حد تزامن للتقارير/التصدير (حماية موارد، مش معدل)\n            options.AddPolicy(\"heavy\", _ => RateLimitPartition.GetConcurrencyLimiter(\n                \"heavy-reports\", _ => new ConcurrencyLimiterOptions\n                {\n                    PermitLimit = limits.Heavy.Concurrency,           // 20\n                    QueueLimit = 5,\n                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,\n                }));\n        });\n\n        return services;\n    }\n\n    /// <summary>\n    /// أولوية مفتاح التقسيم: مستخدم مصادق > API key > IP.\n    /// ★ IP وحده ورا proxy = كل عملائك في حد واحد → ظلم أو ثغرة تجاوز.\n    /// </summary>\n    private static string PartitionKeyFor(HttpContext http)\n    {\n        var userId = http.User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value\n                  ?? http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;\n        if (!string.IsNullOrEmpty(userId)) return $\"user:{userId}\";\n\n        var apiKey = http.Request.Headers[\"X-Api-Key\"].FirstOrDefault();\n        if (!string.IsNullOrEmpty(apiKey) && apiKey.Length <= 128) return $\"key:{apiKey}\";\n\n        var ip = http.Connection.RemoteIpAddress?.ToString() ?? \"unknown\";\n        return $\"ip:{ip}\";\n    }\n}\n\npublic sealed class RateLimitOptions\n{\n    public Bucket General { get; init; } = new() { TokenLimit = 50, TokensPerPeriod = 10, ReplenishmentPeriod = TimeSpan.FromSeconds(1) };\n    public Window Auth { get; init; } = new() { PermitLimit = 5 };\n    public Window Write { get; init; } = new() { PermitLimit = 30 };\n    public Heavy Heavy { get; init; } = new() { Concurrency = 20 };\n\n    public sealed class Bucket { public int TokenLimit { get; init; } public int TokensPerPeriod { get; init; } public TimeSpan ReplenishmentPeriod { get; init; } }\n    public sealed class Window { public int PermitLimit { get; init; } }\n    public sealed class Heavy { public int Concurrency { get; init; } }\n}\n\npublic static class Metrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Api\", \"1.0.0\");\n    public static readonly Counter<long> RateLimitRejections =\n        Meter.CreateCounter<long>(\"ratelimit.rejections\", description: \"عدد الـ429\");\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Program.cs",
+      "title": "رؤوس التحويل: بلا ضبطها، الـIP غلط ورا الـproxy",
+      "code": "\n// ✓ قبل UseRateLimiter (وقبل تسجيل الطلبات) — عشان RemoteIpAddress يبقى العميل الحقيقي\nbuilder.Services.Configure<ForwardedHeadersOptions>(options =>\n{\n    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;\n\n    // ★ أمان: ثق فقط في الـproxies بتاعتك — وإلا أي عميل يزوّر X-Forwarded-For\n    //   ويتجاوز الحدود (أو يخفي عنوانه)\n    options.KnownProxies.Add(IPAddress.Parse(config[\"Infrastructure:ProxyIp\"]!));\n    // أو للشبكات الداخلية: options.KnownNetworks.Add(new IPNetwork(...));\n\n    options.ForwardLimit = 2;                       // حد لعدد القفزات الموثوقة\n});\n\nvar app = builder.Build();\napp.UseForwardedHeaders();\n// ... المصادقة والتفويض\napp.UseRateLimiter();                               // ← بعد المصادقة عشان التقسيم بالمستخدم\napp.UseOutputCache();\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "ثغرتان في الـrate limiting بيعملهم الناس بالغلط",
+      "md": "\n**① الثقة في `X-Forwarded-For` من أي مصدر**: لو `KnownProxies` فاضية/مفتوحة، العميل يبعت\n`X-Forwarded-For: 1.2.3.4` عشوائي في كل طلب → مفتاح تقسيم جديد كل مرة → **بلا حدود فعلية**.\nالحل: حدد الـproxies الموثوقة صراحة، أو استخدم العنوان من الاتصال مباشرة لو مفيش proxy.\n\n**② الاعتماد على الـrate limiting وحده ضد تخمين كلمات السر**: الحد بـIP ما يوقفش مهاجم بشبكة\nبوتات. لازم معاه: **lockout على الحساب** (درس Identity)، وCAPTCHA/OTP بعد N فشل،\nومراقبة أنماط (نفس الحساب من IPs كتير)، وحد على **الحساب** كمان مش على المصدر فقط.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "تطبيق الحدود على الـendpoints"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "سياسات على مجموعات وendpoints محددة",
+      "code": "\n// مجموعة كلها تحت سياسة الكتابة\nvar orders = app.MapGroup(\"/api/orders\")\n    .RequireAuthorization(Policies.CustomerOrAdmin)\n    .RequireRateLimiting(\"orders-write\");\n\n// endpoint واحد أثقل → سياسة مختلفة (بتتجاوز سياسة المجموعة)\norders.MapGet(\"/export\", ExportOrders)\n    .RequireRateLimiting(\"heavy\")\n    .RequireAuthorization(Policies.AdminOnly);\n\n// مسار عام بلا حد (أو بحد مختلف)\napp.MapGet(\"/api/catalog/products\", ListProducts)\n    .DisableRateLimiting();          // ← قرار صريح وموثق، مش نسيان\n\n// المصادقة: أشد الحدود + تفاعل مع lockout\nvar auth = app.MapGroup(\"/api/auth\").RequireRateLimiting(\"auth\");\nauth.MapPost(\"/login\", Login).AllowAnonymous();\nauth.MapPost(\"/password/forgot\", Forgot).AllowAnonymous();\n\n// Controllers: بنفس الأسماء\n[EnableRateLimiting(\"orders-write\")]\npublic sealed class OrdersController : ControllerBase { }\n\n[DisableRateLimiting]\npublic IActionResult Health() => Ok();\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "حدود المصادقة: الطبقات مع بعض"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الطبقة",
+        "الحد",
+        "الهدف"
+      ],
+      "rows": [
+        [
+          "Rate limit على المصدر (IP/API key)",
+          "5 محاولات/5 دقائق",
+          "إبطاء الهجوم الآلي"
+        ],
+        [
+          "Lockout على الحساب (Identity)",
+          "5 فشل → 15 دقيقة قفل",
+          "حماية حساب محدد من التخمين"
+        ],
+        [
+          "حد على (الحساب + المصدر) معًا",
+          "3 فشل → CAPTCHA/OTP",
+          "كشف credential stuffing"
+        ],
+        [
+          "حد عالمي على `/api/auth/*`",
+          "مثال: 100/دقيقة لكل النسخ",
+          "حماية من هجمات كثيفة"
+        ],
+        [
+          "تأخير متدرج (tarpit)",
+          "200ms → 1s بعد فشل",
+          "رفع تكلفة الهجوم بلا أثر على المستخدم الشرعي"
+        ],
+        [
+          "مراقبة وتنبيه",
+          "تنبيه عند 401 متكررة لنفس الحساب",
+          "كشف قبل الضرر"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "حدود الموزّع: المحدد في الذاكرة لكل نسخة",
+      "md": "\n`AddRateLimiter` الافتراضي **في ذاكرة العملية**: مع 4 نسخ، الحد الفعلي = 4× المحدد (والتوزيع غير متساوٍ).\n\nالخيارات:\n1. **اقبلها واعكسها في الأرقام**: اضبط الحد للنسخة (مثال: 25 بدل 100) — بسيط لكن غير دقيق مع توزيع غير متساوٍ.\n2. **حد مركزي في Redis**: `PartitionedRateLimiter` مخصص بيعدّ في Redis (Lua script للذرية) — أدق، بتكلفة شبكة لكل طلب.\n3. **الحد عند الحافة**: API Gateway (YARP/Kong/Envoy) أو خدمة إدارة API — الأفضل تشغيليًا للأنظمة الكبيرة.\n\nوفي كل الحالات: **الـ429 لازم يكون متسقًا** — لا خلي العميل يشوف حدود مختلفة بحسب النسخة اللي وصلها.\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "جانب العميل: احترم 429 بدل ما تكسر الخدمة",
+      "code": "\n// Polly: انتظار مع backoff أسي + jitter، واحترام Retry-After\nbuilder.Services.AddHttpClient(\"partner\", client =>\n{\n    client.Timeout = TimeSpan.FromSeconds(10);\n})\n.AddTransientHttpErrorPolicy(p => p\n    .WaitAndRetryAsync(\n        retryCount: 3,\n        sleepDurationProvider: (attempt, response, ctx) =>\n        {\n            // ✓ لو الخادم قال إمتى نرجع — اسمعه (بدل تخمين عشوائي)\n            if (response?.Headers.RetryAfter?.Delta is { } delta) return delta;\n            if (response?.Headers.RetryAfter?.Date is { } date) return date - DateTimeOffset.UtcNow;\n\n            var baseDelay = TimeSpan.FromSeconds(Math.Pow(2, attempt));\n            var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 500));\n            return baseDelay + jitter;\n        },\n        onRetryAsync: (outcome, delay, attempt, ctx) =>\n        {\n            Log.Warning(\"retry {Attempt} after {Delay} (status={Status})\",\n                attempt, delay, outcome.Result?.StatusCode);\n            return Task.CompletedTask;\n        }));\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أختار الاستراتيجية (fixed/sliding/token bucket/concurrency) بحسب السلوك المطلوب.",
+        "أقسّم الحدود بالمستخدم ثم المفتاح ثم IP، وأضبط `ForwardedHeaders` بـproxies موثوقة فقط.",
+        "أرجّع 429 مع `Retry-After` وproblem+json وقياس للرفض.",
+        "أطبق حدودًا متعددة الطبقات على المصادقة، وأفهم حدود المحدد في الذاكرة مع تعدد النسخ."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه `UseRateLimiter()` بعد `UseAuthentication()`؟",
+          "options": [
+            "متطلب الإطار",
+            "عشان مفتاح التقسيم يبقى المستخدم الحقيقي (أعدل وأصعب تجاوزًا من IP)",
+            "لتقليل الـ429",
+            "لا علاقة"
+          ],
+          "answer": 1,
+          "explain": "قبل المصادقة ما تعرفش مين المستخدم، فالتقسيم كله بـIP — وورا proxy/NAT ده معناه ظلم جماعي."
+        },
+        {
+          "q": "الفرق بين Token Bucket وFixed Window؟",
+          "options": [
+            "لا فرق",
+            "Bucket يسمح بانفجار قصير ثم معدل ثابت؛ Fixed Window بيصفّر العدّاد فيسمح بضعف الحد عند التقاء نافذتين",
+            "Bucket أبطأ",
+            "Fixed Window أدق دائمًا"
+          ],
+          "answer": 1,
+          "explain": "مشكلة «الحد المزدوج» في النوافذ الثابتة معروفة: 100 في آخر ثانية من نافذة + 100 في أول ثانية من التالية."
+        },
+        {
+          "q": "`X-Forwarded-For` من عميل غير موثوق — الخطر؟",
+          "options": [
+            "بطء",
+            "تزوير مفتاح التقسيم كل طلب → تجاوز كامل للحدود (أو إخفاء المصدر)",
+            "401",
+            "تسريب بيانات"
+          ],
+          "answer": 1,
+          "explain": "`KnownProxies`/`KnownNetworks` صريحة + `ForwardLimit` هي الحماية. غير كده أي حد يبدّل IP."
+        },
+        {
+          "q": "Concurrency limiter بيحمي من إيه بالتحديد؟",
+          "options": [
+            "عدد الطلبات في الدقيقة",
+            "عدد الطلبات **المتزامنة** — استنزاف الموارد بعمليات بطيئة (تقارير/تصدير)",
+            "حجم الجسم",
+            "التخمين"
+          ],
+          "answer": 1,
+          "explain": "20 طلب تصدير بطيء في نفس اللحظة ممكن ياكل كل الـconnections والذاكرة، رغم إن المعدل في الدقيقة منخفض."
+        },
+        {
+          "q": "4 نسخ والحد 100/دقيقة في الذاكرة لكل نسخة. الحد الفعلي؟",
+          "options": [
+            "100",
+            "حتى 400 (وغير متساوٍ) — اضبط الحد لكل نسخة أو استخدم مخزنًا مركزيًا/بوابة",
+            "25",
+            "لا يتغير"
+          ],
+          "answer": 1,
+          "explain": "قرار معماري: دقة الحد مقابل تكلفة/تعقيد. الأنظمة الكبيرة بتحط الحدود عند الحافة (gateway)."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "حدود مطبقة ومختبرة",
+          "md": "أضف 3 سياسات على مشروعك: `auth` (ثابت صارم)، `orders-write` (منزلق)، `heavy` (تزامن للتصدير). اضبط `OnRejected` بـproblem+json و`Retry-After`، وطبّق `ForwardedHeaders` بـproxy موثوق. اكتب اختبارات تتجاوز كل حد.",
+          "criteria": [
+            "اختبار يتجاوز حد `auth` ويؤكد 429 + `Retry-After` + `application/problem+json`",
+            "اختبار يثبت إن مستخدمين مختلفين لهم حدود مستقلة (واحد وصل الحد والتاني لسه 200)",
+            "مسار `/health/live` مستثنى ولا يتأثر",
+            "قياس `ratelimit.rejections` يظهر في الـmetrics",
+            "رأس `X-Forwarded-For` من مصدر غير موثوق **لا** يغيّر مفتاح التقسيم (اختبار)"
+          ],
+          "hint": "في اختبارات الـintegration، استخدم `factory.CreateAuthenticatedClient(...)` بحسابين مختلفين، و`WithWebHostBuilder` لضبط حدود صغيرة (مثال: 2 طلبات/دقيقة) عشان الاختبار يبقى سريعًا."
+        },
+        {
+          "id": "t2",
+          "title": "دفاع متعدد الطبقات على تسجيل الدخول",
+          "md": "ارسم وطبّق الدفاع على `/api/auth/login`: rate limit على المصدر + lockout على الحساب + تأخير متدرج بعد الفشل + تنبيه عند تكرار 401. وثّق القرار في `CAPSTONE.md`/ADR.",
+          "criteria": [
+            "5 محاولات فاشلة → 429 أو 423 (محدد ومختبر)",
+            "الحساب بيتقفل 15 دقيقة بعد 5 فشل (من درس Identity) ومختبر",
+            "لا رسالة تكشف هل الحساب موجود",
+            "حدث سجل/تنبيه عند نمط تخمين (نفس الحساب من مصادر متعددة)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Rate limiting in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/performance/rate-limit"
+        },
+        {
+          "label": "Forwarded Headers middleware",
+          "url": "https://learn.microsoft.com/aspnet/core/host-and-deploy/proxy-load-balancer"
+        },
+        {
+          "label": "System.Threading.RateLimiting",
+          "url": "https://learn.microsoft.com/dotnet/api/system.threading.ratelimiting"
+        },
+        {
+          "label": "RFC 6585 — 429 Too Many Requests",
+          "url": "https://www.rfc-editor.org/rfc/rfc6585"
+        },
+        {
+          "label": "Polly",
+          "url": "https://www.pollydocs.org/"
+        }
+      ]
+    }
+  ]
+}

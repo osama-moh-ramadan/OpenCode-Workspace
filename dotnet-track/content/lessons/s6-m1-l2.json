@@ -1,0 +1,388 @@
+{
+  "id": "s6-m1-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nصورة واحدة بتحل «تطبيقك بيتشغل في أي مكان». بس نظامك **مش حاوية واحدة**:\nفيه Postgres وRedis وRabbitMQ و4 خدمات وgateway. **Docker Compose** بيوصف النظام ده كله في ملف YAML واحد\nوبيشغّله بأمر واحد — مع شبكة داخلية، وvolumes للبيانات، وhealthchecks، وترتيب إقلاع.\n\n**العلاقة بـAspire (درس 5.3.1):** Aspire أفضل للتطوير اليومي (لوحة، discovery، أوامر).\nCompose هو **اللغة المشتركة**: بيشتغل في CI، وعلى جهاز أي مطور بلا .NET SDK، وفي البيئات المشتركة،\nوبيوصف بنية قابلة للنشر. كتير من الفرق بتستخدم الاتنين: Aspire للتطوير + Compose للتكامل/CI.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Service",
+          "def": "تعريف حاوية (image أو build) مع إعداداتها: environment، ports، volumes، depends_on، healthcheck."
+        },
+        {
+          "term": "Network",
+          "def": "شبكة داخلية بين الخدمات. الأسماء = hostnames (`shop-postgres`). الخدمات اللي مش على نفس الشبكة ما تتشوفش."
+        },
+        {
+          "term": "Volume (named/bind)",
+          "def": "named = تديره Docker (بيانات DB) · bind = مسار من جهازك (كود/ملفات إعداد). الاتنين بيختلفوا في الأداء والقابلية للنقل."
+        },
+        {
+          "term": "`depends_on` + condition",
+          "def": "ترتيب الإقلاع: `service_started` (الافتراضي) · `service_healthy` (ينتظر الصحة) · `service_completed_successfully` (ينتظر انتهاء مهمة)."
+        },
+        {
+          "term": "Healthcheck",
+          "def": "فحص دوري جوه الحاوية يحدد حالتها (healthy/unhealthy) — هو اللي يخلي `service_healthy` ذا معنى."
+        },
+        {
+          "term": "Profiles",
+          "def": "تجميع خدمات اختيارية (`--profile monitoring`) عشان ما تشغّلش كل حاجة دائمًا."
+        },
+        {
+          "term": "`env_file`",
+          "def": "ملف `.env` بمتغيرات بيئة — **لازم يكون في `.gitignore`** وفيه `.env.example` موثق."
+        },
+        {
+          "term": "Ports: published مقابل target",
+          "def": "`\"8080:8080\"` = منفذ المضيف:منفذ الحاوية. الخدمات الداخلية **ما تحتاجش** published ports."
+        },
+        {
+          "term": "Restart policy",
+          "def": "`no` · `always` · `on-failure` · `unless-stopped`. للتطوير: `unless-stopped` — للإنتاج على K8s: المنسّق بيتعامل معاها."
+        },
+        {
+          "term": "Override file",
+          "def": "`docker-compose.override.yml` بيتحمّل تلقائيًا مع `docker-compose.yml` — للتطوير فقط (منافذ، بيئة، bind mounts)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) ملف compose كامل لنظام المرحلة 5"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "filename": "docker-compose.yml",
+      "title": "بنية + 5 خدمات + healthchecks + ترتيب إقلاع",
+      "code": "\n# ★ الصيغة الحديثة: مفيش `version:` (اتشالت؛ بتتحذر لو موجودة)\nname: shop\n\n# ═══ قيم مشتركة (anchors) — تقليل التكرار بلا سحر ═══\nx-dotnet-service: &dotnet-service\n  restart: unless-stopped\n  init: true                     # ✓ PID 1 سليم: يلمّ العمليات اليتيمة ويستقبل الإشارات\n  networks: [shop-net]\n  security_opt:\n    - no-new-privileges:true     # ✓ تصعيد صلاحيات ممنوع (درس 6.1.3)\n  logging:\n    driver: json-file\n    options: { max-size: \"10m\", max-file: \"3\" }   # ✓ بلا لوجات تملأ القرص\n\nx-app-env: &app-env\n  ASPNETCORE_ENVIRONMENT: Production\n  ASPNETCORE_HTTP_PORTS: \"8080\"\n  DOTNET_gcServer: \"1\"\n  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-shop}\n\nservices:\n  # ══════════ البنية التحتية ══════════\n  postgres:\n    image: postgres:18-alpine\n    container_name: shop-postgres       # ⚠ اسم ثابت = ما ينفعش replicas (شوف الـdanger تحت)\n    environment:\n      POSTGRES_USER: shop\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required — حطها في .env}   # ✓ فشل صريح لو ناقصة\n      POSTGRES_DB: shopdb\n    volumes:\n      - pg-data:/var/lib/postgresql/data\n      - ./db/init:/docker-entrypoint-initdb.d:ro   # ✓ سكربتات التهيئة عند أول تشغيل فقط\n    ports:\n      - \"127.0.0.1:5432:5432\"          # ★ ربط على loopback فقط — بلا كشف عام\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U shop -d shopdb\"]\n      interval: 5s\n      timeout: 5s\n      retries: 12\n      start_period: 20s\n    networks: [shop-net]\n\n  redis:\n    image: redis:8-alpine\n    command: [\"redis-server\", \"--appendonly\", \"yes\", \"--maxmemory\", \"256mb\",\n              \"--maxmemory-policy\", \"allkeys-lru\"]\n    volumes: [redis-data:/data]\n    healthcheck:\n      test: [\"CMD\", \"redis-cli\", \"ping\"]\n      interval: 5s\n      timeout: 3s\n      retries: 10\n    networks: [shop-net]\n\n  rabbitmq:\n    image: rabbitmq:4-management-alpine\n    hostname: shop-rabbit                # ✓ اسم العقدة ثابت (بيأثر على بيانات الوسيط)\n    environment:\n      RABBITMQ_DEFAULT_USER: shop\n      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD:?required — حطها في .env}\n      RABBITMQ_DEFAULT_VHOST: shop\n    volumes:\n      - rabbit-data:/var/lib/rabbitmq\n      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro\n      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro  # ★ البنية ككود (درس 5.2.1)\n    ports:\n      - \"127.0.0.1:5672:5672\"\n      - \"127.0.0.1:15672:15672\"          # لوحة الإدارة — loopback فقط\n    healthcheck:\n      test: [\"CMD\", \"rabbitmq-diagnostics\", \"-q\", \"ping\"]\n      interval: 10s\n      timeout: 10s\n      retries: 12\n      start_period: 40s\n    networks: [shop-net]\n\n  # ══════════ مهمة لمرة واحدة: الترحيلات والبذر ══════════\n  migrations:\n    build:\n      context: .\n      dockerfile: src/Shop.Orders/Dockerfile\n    command: [\"dotnet\", \"Shop.Orders.dll\", \"--migrate\"]   # ✓ وضع خاص في التطبيق (expand/contract — درس 3.3.4)\n    environment:\n      <<: *app-env\n      ConnectionStrings__shopdb: ${ORDERS_DB_CONNECTION}\n    depends_on:\n      postgres: { condition: service_healthy }\n    restart: \"no\"                        # ★ مهمة: ما تعيدش للأبد\n    networks: [shop-net]\n\n  # ══════════ الخدمات ══════════\n  catalog:\n    build: { context: ., dockerfile: src/Shop.Catalog/Dockerfile }\n    image: shop/catalog:${IMAGE_TAG:-dev}\n    <<: *dotnet-service\n    environment:\n      <<: *app-env\n      OTEL_SERVICE_NAME: catalog\n      ConnectionStrings__shopdb: ${CATALOG_DB_CONNECTION}\n      ConnectionStrings__cache: redis:6379\n    depends_on:\n      postgres: { condition: service_healthy }\n      redis:    { condition: service_healthy }\n      migrations: { condition: service_completed_successfully }   # ✓ الترحيلات خلصت الأول\n\n  orders:\n    build: { context: ., dockerfile: src/Shop.Orders/Dockerfile }\n    image: shop/orders:${IMAGE_TAG:-dev}\n    <<: *dotnet-service\n    environment:\n      <<: *app-env\n      OTEL_SERVICE_NAME: orders\n      ConnectionStrings__shopdb: ${ORDERS_DB_CONNECTION}\n      ConnectionStrings__cache: redis:6379\n      ConnectionStrings__rabbit: amqp://shop:${RABBIT_PASSWORD}@rabbitmq:5672/shop\n      Services__catalog: http://catalog:8080          # ✓ discovery يدوي في compose (درس 6.1.1)\n    ports:\n      - \"127.0.0.1:8081:8080\"\n    depends_on:\n      postgres:  { condition: service_healthy }\n      rabbitmq:  { condition: service_healthy }\n      migrations: { condition: service_completed_successfully }\n\n  payments:\n    build: { context: ., dockerfile: src/Shop.Payments/Dockerfile }\n    image: shop/payments:${IMAGE_TAG:-dev}\n    <<: *dotnet-service\n    environment:\n      <<: *app-env\n      OTEL_SERVICE_NAME: payments\n      ConnectionStrings__shopdb: ${PAYMENTS_DB_CONNECTION}\n      ConnectionStrings__rabbit: amqp://shop:${RABBIT_PASSWORD}@rabbitmq:5672/shop\n    depends_on:\n      rabbitmq:  { condition: service_healthy }\n      migrations: { condition: service_completed_successfully }\n    deploy:\n      resources:\n        limits: { cpus: \"1.0\", memory: 512M }        # ✓ حدود (bulkhead على مستوى الحاوية)\n\n  notifications:\n    build: { context: ., dockerfile: src/Shop.Notifications/Dockerfile }\n    image: shop/notifications:${IMAGE_TAG:-dev}\n    <<: *dotnet-service\n    environment:\n      <<: *app-env\n      OTEL_SERVICE_NAME: notifications\n      ConnectionStrings__rabbit: amqp://shop:${RABBIT_PASSWORD}@rabbitmq:5672/shop\n    depends_on:\n      rabbitmq: { condition: service_healthy }\n\n  gateway:\n    build: { context: ., dockerfile: src/Shop.Gateway/Dockerfile }\n    image: shop/gateway:${IMAGE_TAG:-dev}\n    <<: *dotnet-service\n    environment:\n      <<: *app-env\n      OTEL_SERVICE_NAME: gateway\n      Services__orders:  http://orders:8080\n      Services__catalog: http://catalog:8080\n    ports:\n      - \"8080:8080\"                                   # ← الوحيد المكشوف للخارج\n    depends_on:\n      orders:  { condition: service_started }\n      catalog: { condition: service_started }\n\n  # ══════════ اختيارية: مراقبة ══════════\n  aspire-dashboard:\n    image: mcr.microsoft.com/aspire/dashboard:latest\n    profiles: [monitoring]                            # ← ما تشتغلش إلا بـ --profile monitoring\n    ports:\n      - \"127.0.0.1:18888:18888\"\n      - \"127.0.0.1:4317:18889\"\n    environment:\n      ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: \"true\"   # ✓ محلي فقط + loopback\n    networks: [shop-net]\n\nvolumes:\n  pg-data:\n  redis-data:\n  rabbit-data:\n\nnetworks:\n  shop-net:\n    driver: bridge\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "filename": "docker-compose.override.yml",
+      "title": "للتطوير فقط (بيتحمّل تلقائيًا — ومتضافش للـCI)",
+      "code": "\n# ★ يُحمّل تلقائيًا مع docker-compose.yml في `docker compose up`\n# في CI استخدم: docker compose -f docker-compose.yml up   (بلا override)\nservices:\n  orders:\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n      OTEL_EXPORTER_OTLP_ENDPOINT: http://aspire-dashboard:18889   # ← لوحة محلية (درس 5.3.2)\n    ports:\n      - \"8081:8080\"\n\n  catalog:\n    environment:\n      ASPNETCORE_ENVIRONMENT: Development\n    ports:\n      - \"8082:8080\"\n\n  postgres:\n    ports:\n      - \"127.0.0.1:5432:5432\"     # وصول مباشر من IDE/أدوات\n\n  # ✓ تسريع دورة التطوير: Compose Watch بيعيد البناء/التشغيل عند تعديل الكود\n  #   (يحتاج Compose 2.22+ — تحقق من `docker compose version`)\n  # develop:\n  #   watch:\n  #     - action: rebuild\n  #       path: ./src/Shop.Orders\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": ".env.example",
+      "title": "متغيرات البيئة (انسخه لـ`.env` — و`.env` في `.gitignore`)",
+      "code": "\n# ── نسخة موثقة تُرفع للـgit؛ `.env` الحقيقي لا يُرفع أبدًا ──\nPOSTGRES_PASSWORD=change-me-local-only\nRABBIT_PASSWORD=change-me-local-only\n\n# connection strings كاملة (بلا أسرار في ملف compose)\nORDERS_DB_CONNECTION=Host=postgres;Port=5432;Database=shopdb;Username=shop;Password=change-me-local-only\nCATALOG_DB_CONNECTION=Host=postgres;Port=5432;Database=shopdb;Username=shop;Password=change-me-local-only\nPAYMENTS_DB_CONNECTION=Host=postgres;Port=5432;Database=shopdb;Username=shop;Password=change-me-local-only\n\nIMAGE_TAG=dev\nOTEL_SERVICE_NAME=shop-local\n\n# ✓ تأكد:\n#   grep -n \"\\.env\" .gitignore     → لازم يكون موجود\n#   git check-ignore -v .env       → لازم يتجاهل\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) أوامر compose اللي هتستخدمها كل يوم"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "تشغيل · فحص · تشخيص · إيقاف",
+      "code": "\n# ═══ تحقق من الملف قبل ما تشغّل (بيهرّ الأخطاء بدري) ═══\ndocker compose config --quiet && echo \"compose file OK\"\ndocker compose config | less          # ← يعرض الملف **بعد** دمج override وحل المتغيرات\n\n# ═══ التشغيل ═══\ndocker compose up -d --build          # بناء + تشغيل في الخلفية\ndocker compose --profile monitoring up -d   # ← مع خدمات المراقبة الاختيارية\ndocker compose up -d orders payments  # ← خدمات محددة (وتبعياتها تلقائيًا)\ndocker compose -f docker-compose.yml up -d  # ★ في CI: بلا override\n\n# ═══ الحالة ═══\ndocker compose ps                     # الحالة + المنافذ\ndocker compose ps --format 'table {{.Service}}\\t{{.State}}\\t{{.Status}}'\ndocker compose top                    # العمليات جوه كل حاوية\n\n# ═══ اللوجات ═══\ndocker compose logs -f --tail 100 orders\ndocker compose logs --since 10m --no-log-prefix payments | grep -i error\n\n# ═══ التشخيص ═══\ndocker compose exec orders sh -c 'id; printenv | grep -E \"ASPNETCORE|ConnectionStrings\" | sed \"s/Password=.*/Password=***/\"'\ndocker compose exec postgres psql -U shop -d shopdb -c '\\dt' -c 'SELECT COUNT(*) FROM orders.orders;'\ndocker compose exec rabbitmq rabbitmqctl list_queues name messages_ready consumers\ndocker compose exec redis redis-cli info memory | head -5\n\n# ═══ فحص الصحة يدويًا ═══\ncurl -s -o /dev/null -w 'orders  %{http_code}\\n' http://localhost:8081/health\ncurl -s -o /dev/null -w 'gateway %{http_code}\\n' http://localhost:8080/health\n\n# ═══ اختبار الفشل (درس 5.3.3 / capstone المرحلة 5) ═══\ndocker compose stop payments          # ← أثبت إن الأحداث ما بتضيعش (Outbox + redelivery)\ndocker compose start payments\ndocker compose kill -s SIGKILL orders # ← فشل عنيف: إعادة تشغيل وسلوك واضح\n\n# ═══ التحديث والنشر المحلي ═══\ndocker compose pull                   # سحب أحدث الصور\ndocker compose up -d --no-deps --force-recreate orders   # إعادة إنشاء خدمة واحدة فقط\n\n# ═══ الإيقاف ═══\ndocker compose down                   # يوقف ويشيل الحاويات والشبكة\ndocker compose down --remove-orphans  # + خدمات مش موجودة في الملف دلوقتي\ndocker compose down -v                # ⚠⚠ **يمحو الـvolumes = كل البيانات** — لا تستخدمه بلا تفكير\n\n# ═══ القياس ═══\ndocker stats --no-stream              # CPU/ذاكرة لكل حاوية\ndocker compose ps -q | xargs docker inspect --format '{{.Name}} {{.State.Health.Status}}'\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "condition في `depends_on`",
+        "معناها",
+        "متى تستخدمها",
+        "الفخ"
+      ],
+      "rows": [
+        [
+          "`service_started` (افتراضي)",
+          "العملية بدأت — **مش معناه إنها جاهزة**",
+          "خدمات بتتعافى بنفسها (retry)",
+          "تفتكر إن DB جاهزة وهي لسه بتتهيّأ"
+        ],
+        [
+          "`service_healthy`",
+          "أول healthcheck نجح",
+          "★ قواعد البيانات، الوسيط، أي تابع حرج",
+          "بلا healthcheck في التابع = الشرط بلا معنى (ويسبب خطأ)"
+        ],
+        [
+          "`service_completed_successfully`",
+          "الحاوية اشتغلت وخرجت بكود 0",
+          "مهام لمرة واحدة: migrations، seed، codegen",
+          "لو المهمة فشلت → التابعين ما يشتغلوش (مقصود)"
+        ],
+        [
+          "(بلا `depends_on`)",
+          "ترتيب عشوائي",
+          "خدمات مستقلة تمامًا",
+          "تطبيقات بتفترض ترتيبًا ضمنيًا"
+        ],
+        [
+          "`restart: on-failure` + depends_on",
+          "إعادة محاولة عند الفشل",
+          "مستهلكين رسائل",
+          "حلقة إعادة لا نهائية لو السبب تكوين غلط"
+        ],
+        [
+          "`long` restart + `start_period`",
+          "مهلة إقلاع قبل اعتبارها فاشلة",
+          "تطبيقات JVM/.NET بتحميل ثقيل",
+          "healthcheck retries قليلة → الحاوية تُعتبر فاشلة وهي لسه بتقلع"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "9 أخطاء في compose بتكلّف وقت (وبيانات)",
+      "md": "\n1. **`docker compose down -v` بلا تفكير** = محو قواعد البيانات والوسيط. استخدم `down` عادي، و`-v` فقط لو تقصد إعادة ضبط كاملة.\n2. **`container_name` ثابت** = ما تقدرش تشغّل أكثر من نسخة (`docker compose up --scale orders=3` هيفشل).\n   استخدم أسماء الشبكة (service names) بدلًا منه.\n3. **المنشور مقابل المستهدف**: `\"8080:8080\"` = مضيف:حاوية. لو صورتك بتسمع على 8080 وكتبت `\"8080:80\"` → مفيش اتصال.\n4. **كشف منافذ البنية العامة**: `-p 5432:5432` بلا `127.0.0.1` = قاعدة بياناتك مفتوحة للشبكة.\n   ★ اربط على loopback دائمًا محليًا، ولا تكشف DB/Redis/RabbitMQ خالص لو مش محتاج.\n5. **أسرار في ملف compose** (أو في `.env` مرفوع للـgit) — استخدم `.env` + `.gitignore` + `.env.example` موثق،\n   وفي الإنتاج: K8s Secrets/Key Vault (درس 6.2.3).\n6. **`depends_on` بلا healthcheck** = وهم الترتيب. الخدمة تبدأ وDB لسه بتتهيّأ → فشل وصخب.\n7. **الاعتماد على `latest`** = البيئة بتتغير من غير ما تعمل deploy. ثبّت الإصدارات في كل الصور.\n8. **compose override في CI** = الإعدادات المحلية بتتسرب للاختبارات. استخدم `-f docker-compose.yml` صراحةً.\n9. **مفيش حدود موارد** = حاوية واحدة بتاكل ذاكرة الجهاز كله. `deploy.resources.limits` + `mem_limit` محليًا.\n\n⚠ **compose مش منصة إنتاج**: مفيش rescheduling، ولا rolling updates، ولا service discovery ديناميكي،\nولا autoscaling. هو ممتاز للتطوير/CI/بيئات صغيرة ثابتة — وللإنتاج الحقيقي Kubernetes أو Container Apps (درس 6.1.4 و6.2.1).\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "",
+        "Docker Compose",
+        ".NET Aspire",
+        "Kubernetes"
+      ],
+      "rows": [
+        [
+          "الغرض الأساسي",
+          "تشغيل نظام متعدد الحاويات",
+          "تطوير محلي منسّق + telemetry",
+          "تشغيل إنتاجي مرن"
+        ],
+        [
+          "الملف",
+          "`docker-compose.yml`",
+          "AppHost (كود C#)",
+          "manifests YAML/Helm"
+        ],
+        [
+          "يحتاج",
+          "Docker فقط",
+          ".NET SDK + Docker",
+          "cluster (محلي/سحابي)"
+        ],
+        [
+          "Service discovery",
+          "أسماء الخدمات (DNS)",
+          "`services__x__https__0` تلقائيًا",
+          "DNS + Services + Ingress"
+        ],
+        [
+          "ترتيب الإقلاع",
+          "`depends_on` + healthchecks",
+          "`WaitFor`/`WaitForCompletion`",
+          "probes (بلا ترتيب صريح)"
+        ],
+        [
+          "إعادة جدولة/توسع تلقائي",
+          "✗",
+          "✗",
+          "✓ (HPA/rollouts)"
+        ],
+        [
+          "Rolling update / rollback",
+          "✗ (إعادة إنشاء)",
+          "✗",
+          "✓"
+        ],
+        [
+          "لوحة تشخيص",
+          "✗ (logs فقط)",
+          "✓ (traces/metrics/logs)",
+          "عبر أدوات خارجية"
+        ],
+        [
+          "متعدد اللغات",
+          "✓ ممتاز",
+          "✓ (Java/Go/TS/Python…)",
+          "✓"
+        ],
+        [
+          "مناسب لـ",
+          "CI · بيئات صغيرة · مشاركة البيئة",
+          "تطوير يومي · تشخيص",
+          "إنتاج · فرق كبيرة · SLA"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أكتب compose file كامل لنظامي: بنية تحتية + خدمات + شبكة + volumes + healthchecks + ترتيب إقلاع.",
+        "أفرّق بين `service_started` و`service_healthy` و`service_completed_successfully` وأستخدم كل واحد في مكانه.",
+        "أفصل إعدادات التطوير في `docker-compose.override.yml` وأتجنبه في CI، وأدير الأسرار عبر `.env` (غير مرفوع) + `.env.example`.",
+        "أتقن أوامر التشغيل والتشخيص: `config` · `ps` · `logs` · `exec` · `down` (وأعرف خطر `-v`).",
+        "أعرف حدود compose مقابل Aspire مقابل Kubernetes وأختار الأداة المناسبة للغرض."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "`depends_on: postgres: {condition: service_healthy}` — الشرط اللازم؟",
+          "options": [
+            "مفيش شرط",
+            "خدمة postgres يكون عندها **healthcheck** معرّف — وإلا الشرط بلا معنى (أو خطأ)",
+            "restart policy",
+            "volume مشترك"
+          ],
+          "answer": 1,
+          "explain": "`service_healthy` بيتطلب healthcheck في التابع. بدونه compose ما يقدرش يعرف «صحي» من «بدأت العملية»."
+        },
+        {
+          "q": "مهمة الترحيلات (migrations) — إزاي تُعرّف؟",
+          "options": [
+            "خدمة عادية بـ`restart: always`",
+            "خدمة بأمر خاص + `restart: \"no\"` + التابعين بيستخدموا `service_completed_successfully`",
+            "بلا تعريف (تتنفذ يدويًا)",
+            "داخل الـentrypoint لكل خدمة"
+          ],
+          "answer": 1,
+          "explain": "لو كل خدمة بتعمل migrations في الـstartup → سباق وصراعات. الأفضل مهمة واحدة تُنفَّذ مرة، والباقي ينتظر نجاحها."
+        },
+        {
+          "q": "`ports: [\"5432:5432\"]` لخدمة postgres. المشكلة؟",
+          "options": [
+            "مفيش مشكلة",
+            "المنفذ منشور على **كل** الواجهات → أي جهاز على الشبكة يقدر يوصل لقاعدة بياناتك. اربط `127.0.0.1:5432:5432` أو ما تنشرهوش خالص",
+            "الترتيب غلط",
+            "بيبطّئ الإقلاع"
+          ],
+          "answer": 1,
+          "explain": "القاعدة: الخدمات الداخلية على الشبكة الداخلية فقط. النشر يكون للمضيف المحلي (loopback) أو للـgateway فقط."
+        },
+        {
+          "q": "`container_name: shop-orders` — إيه أثره؟",
+          "options": [
+            "مفيش أثر",
+            "يمنع تشغيل أكثر من نسخة من الخدمة (`--scale`) ويسبب تعارض أسماء لو النظام اتشغل مرتين",
+            "بيسرّع الإقلاع",
+            "مطلوب للشبكة"
+          ],
+          "answer": 1,
+          "explain": "استخدم اسم الخدمة كـhostname (compose بيحلّه تلقائيًا). الأسماء الثابتة بتكسر التوسع والتشغيل المتعدد."
+        },
+        {
+          "q": "إمتى تستخدم `docker-compose.override.yml`؟",
+          "options": [
+            "في CI والإنتاج",
+            "لإعدادات التطوير المحلي فقط (منافذ، بيئة Development، OTLP للوحة) — وفي CI تستخدم `-f docker-compose.yml` بدونه",
+            "دائمًا",
+            "للأسرار"
+          ],
+          "answer": 1,
+          "explain": "الـoverride بيتحمّل تلقائيًا محليًا. في CI لازم تستثنيه صراحةً عشان الاختبارات تشتغل بإعدادات قريبة من الإنتاج."
+        },
+        {
+          "q": "`docker compose down -v` بيعمل إيه؟",
+          "options": [
+            "يوقف الحاويات بس",
+            "يوقف الحاويات **ويمحو الـvolumes** = كل البيانات المحلية (قواعد البيانات، الرسائل) تضيع",
+            "يحذف الصور من الـregistry",
+            "يعيد البناء"
+          ],
+          "answer": 1,
+          "explain": "`down` = إزالة الحاويات والشبكة. `-v` تضيف محو البيانات. استخدمها فقط لما تقصد إعادة ضبط كاملة للبيئة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "compose يشغّل نظامك كاملًا بأمر واحد",
+          "md": "اكتب `docker-compose.yml` لنظامك (بنية تحتية + كل الخدمات + gateway) مع healthchecks وترتيب إقلاع صحيح ومهمة migrations، و`.env.example` موثق، و`docker-compose.override.yml` للتطوير. أثبت إن مطور جديد يقدر يشغّل النظام بأمرين فقط.",
+          "criteria": [
+            "`docker compose config --quiet` ناجح (بلا أخطاء/تحذيرات)",
+            "كل تابع حرج عليه healthcheck + `service_healthy`، ومهمة الترحيلات `service_completed_successfully` مع `restart: \"no\"`",
+            "مفيش أسرار في الملف: `${VAR:?required}` + `.env.example` + `.env` في `.gitignore` (مخرجات `git check-ignore`)",
+            "البنية التحتية منشورة على `127.0.0.1` فقط (أو مش منشورة خالص) — والـgateway هو الوحيد المكشوف",
+            "`init: true` + `no-new-privileges` + حدود موارد + حدود لوجات لكل خدمة .NET",
+            "إثبات: `docker compose up -d --build` من استنساخ نظيف → كل الخدمات healthy + `/health` بـ200 + طلب أعمال كامل بينجح (مخرجات SQL/الوسيط)",
+            "إثبات الترتيب: أوقف postgres وشغّل `up` → اللوجات بتوضح الانتظار لحد الصحة (مش فشل)",
+            "فقرة في README: أمران للتشغيل + المتطلبات + إزاي توقف/تمحو البيانات"
+          ],
+          "hint": "ابدأ بالبنية التحتية وحدها (postgres+redis+rabbit) وتأكد إنهم healthy، بعدين أضف خدمة واحدة، وبعدين الباقي. إضافة الكل مرة واحدة بتصعّب التشخيص.",
+          "solution": "",
+          "resources": [
+            {
+              "label": "Compose file reference",
+              "url": "https://docs.docker.com/reference/compose-file/"
+            },
+            {
+              "label": "Compose healthchecks & startup order",
+              "url": "https://docs.docker.com/compose/how-tos/startup-order/"
+            }
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "سيناريو فشل + مراقبة محلية",
+          "md": "شغّل النظام مع بروفايل مراقبة (Aspire dashboard أو pgAdmin/Portainer)، ونفّذ 3 سيناريوهات فشل (إيقاف مستهلك · قتل DB · ملء طابور)، وسجّل الملاحظات (لوجات/طوابير/حالات) وإزاي النظام اتصرف — وقارن بالسلوك المتوقع من capstone المرحلة 5.",
+          "criteria": [
+            "بروفايل مراقبة اختياري (`--profile monitoring`) بلا كشف عام (loopback فقط)",
+            "3 سيناريوهات: `stop payments` · `kill postgres` · ذروة رسائل في طابور — لكل واحد الأمر + المخرجات",
+            "لكل سيناريو: السلوك المتوقع (مكتوب **قبل** التنفيذ) مقابل الملاحظ + تفسير الفرق",
+            "إثبات إن الأحداث ما ضاعتش (Outbox/redelivery) — استعلام SQL + عدد الرسائل في الطابور",
+            "إثبات إن `restart: unless-stopped`/`init: true` بيشتغلوا (الحاوية رجعت لوحدها)",
+            "جدول «إيه اللي ناقص في compose مقابل الإنتاج» (rescheduling/rolling update/discovery) — 3 صفوف على الأقل"
+          ],
+          "solution": "",
+          "resources": [
+            {
+              "label": "Compose profiles",
+              "url": "https://docs.docker.com/compose/how-tos/profiles/"
+            },
+            {
+              "label": "Aspire dashboard standalone",
+              "url": "https://aspire.dev/dashboard/standalone/"
+            },
+            {
+              "label": "RabbitMQ CLI/monitoring",
+              "url": "https://www.rabbitmq.com/docs/monitoring"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Docker Compose docs",
+          "url": "https://docs.docker.com/compose/"
+        },
+        {
+          "label": "Compose file specification",
+          "url": "https://docs.docker.com/reference/compose-file/"
+        },
+        {
+          "label": "Startup order & healthchecks",
+          "url": "https://docs.docker.com/compose/how-tos/startup-order/"
+        },
+        {
+          "label": "Compose in CI/CD",
+          "url": "https://docs.docker.com/compose/how-tos/integration-testing/"
+        },
+        {
+          "label": "Migrate from Docker Compose to Aspire",
+          "url": "https://aspire.dev/app-host/migrate-from-docker-compose/"
+        },
+        {
+          "label": "PostgreSQL Docker image",
+          "url": "https://hub.docker.com/_/postgres"
+        }
+      ]
+    }
+  ]
+}

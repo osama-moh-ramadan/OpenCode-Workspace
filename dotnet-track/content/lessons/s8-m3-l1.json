@@ -1,0 +1,491 @@
+{
+  "id": "s8-m3-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "الـCapstone بتاع المرحلة 8 هو **الامتحان النهائي على كل حاجة قبل كده**: API من المرحلة 2 · قاعدة بيانات وفهارس من 3 · معمارية من 4 · رسائل من 5 · حاويات ونشر من 6 · مراقبة وأمان من 7 · وواجهة من 8.\n\n**الهدف:** تطبيق **يعمل end-to-end** — مستخدم بيسجّل دخول، بيشوف بياناته، بيعدّلها، وكل حاجة متتبَّعة بـtrace واحد من المتصفح للقاعدة، ومنشورة على Azure بـCI/CD. **6 ساعات موزّعة على 8 جلسات.** لو خلّصته، عندك مشروع واحد يغطّي 80% من كلام السيرة الذاتية."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① النطاق: اللي مطلوب واللي ممنوع"
+    },
+    {
+      "type": "table",
+      "caption": "حدود المشروع — التزم بها حرفيًا (النطاق المفتوح = مشروع مش بيخلص)",
+      "head": [
+        "مطلوب ✅",
+        "ممنوع ❌ (في هذا الـCapstone)"
+      ],
+      "rows": [
+        [
+          "**كيان واحد رئيس** + كيان تابع (مثال: `Order` + `OrderLine`)",
+          "ميكروسيرفيسز متعددة — مشروع واحد بـmodular monolith كافٍ"
+        ],
+        [
+          "5–7 endpoints REST مع OpenAPI 3.1",
+          "أي شاشة إدارة كاملة لكل كيان"
+        ],
+        [
+          "مصادقة **OIDC** بواجهة (BFF أو SPA) + سياسة تفويض واحدة على الأقل",
+          "نظام صلاحيات كامل (RBAC متعدد المستويات)"
+        ],
+        [
+          "EF Core 10 + PostgreSQL + migrations + فهرسين مبرّرين",
+          "أي NoSQL/بحث/كاش موزّع (إلا لو عندك سبب مقاس)"
+        ],
+        [
+          "واجهة واحدة (Blazor **أو** React): 3 صفحات (دخول · قائمة · تفاصيل/تعديل)",
+          "تصميم UI متقدم — استخدم Tailwind/Bootstrap جاهز"
+        ],
+        [
+          "OpenTelemetry (traces + metrics + logs) + Serilog JSON + `/health` + `/alive`",
+          "لوحات Grafana كاملة — يكفي trace واحد مترابط + 3 استعلامات"
+        ],
+        [
+          "اختبارات: 15+ وحدة · 4 تكامل · اختبار مصادقة واحد",
+          "اختبارات E2E كاملة للمتصفح"
+        ],
+        [
+          "Docker multi-stage + صورة chiseled + نشر على ACA + GitHub Actions بـOIDC",
+          "Kubernetes · Terraform · Bicep **والاثنان معًا**"
+        ],
+        [
+          "README + ADR واحد + مخطط معمارية",
+          "توثيق شامل لكل ملف"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② المعمارية: 5 مكوّنات فقط"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "خريطة المكوّنات",
+      "filename": "docs/architecture.txt",
+      "code": "\n   ┌─────────────────┐   HTTPS    ┌──────────────────────────────┐\n   │  المتصفح        │ ─────────► │  App (ACA)                    │\n   │  Blazor/React   │            │  ├─ BFF: /bff/login /bff/user │\n   └─────────────────┘            │  ├─ API: /api/orders …        │\n                                  │  ├─ /health /alive            │\n     ┌──────────────┐             │  └─ OTel → OTLP               │\n     │  Entra ID    │ ◄── OIDC ───┤                               │\n     │  (المزوّد)   │  PKCE/Code  └──────────────┬───────────────┘\n     └──────────────┘                             │ EF Core 10\n                                                  ▼\n                                       ┌────────────────────┐\n                                       │ PostgreSQL (ACA)   │\n                                       │ + migrations + bk  │\n                                       └────────────────────┘\n\n  Observability: OTLP → (Aspire Dashboard محليًا) / Application Insights أو\n  أي OTLP backend في السحابة. serilog → stdout JSON (Container Apps logs).\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "هيكل الحل + أوامر الإنشاء",
+      "filename": "docs/setup.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\n\n# 1) الحل: 4 مشاريع فقط\ndotnet new sln -n Shop\ndotnet new webapi   -n Shop.Api        -o src/Shop.Api\ndotnet new blazor   -n Shop.Web        -o src/Shop.Web      # أو npm create vite@latest web -- --template react-ts\ndotnet new xunit3   -n Shop.Api.Tests  -o tests/Shop.Api.Tests\ndotnet new classlib -n Shop.Domain     -o src/Shop.Domain\n\ndotnet sln add src/Shop.Api src/Shop.Web src/Shop.Domain tests/Shop.Api.Tests\n\n# 2) الحزم الأساسية\ndotnet add src/Shop.Api package Microsoft.EntityFrameworkCore.Npgsql\ndotnet add src/Shop.Api package Microsoft.AspNetCore.Authentication.OpenIdConnect\ndotnet add src/Shop.Api package Serilog.AspNetCore\ndotnet add src/Shop.Api package Serilog.Formatting.Compact\ndotnet add src/Shop.Api package Serilog.Sinks.OpenTelemetry\ndotnet add src/Shop.Api package Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore\ndotnet add src/Shop.Api package OpenTelemetry.Extensions.Hosting\ndotnet add src/Shop.Api package OpenTelemetry.Instrumentation.AspNetCore\ndotnet add src/Shop.Api package OpenTelemetry.Instrumentation.Http\ndotnet add src/Shop.Api package OpenTelemetry.Instrumentation.Runtime\ndotnet add src/Shop.Api package OpenTelemetry.Exporter.OpenTelemetryProtocol\ndotnet add tests/Shop.Api.Tests package Testcontainers.PostgreSql\ndotnet add tests/Shop.Api.Tests package NSubstitute\ndotnet add tests/Shop.Api.Tests package Shouldly\n\n# 3) قاعدة بيانات محلية (6.2: compose للتطوير)\ncat > compose.yaml <<'EOF'\nservices:\n  db:\n    image: postgres:18\n    environment:\n      POSTGRES_DB: shop\n      POSTGRES_USER: shop\n      POSTGRES_PASSWORD: dev-only-password\n    ports: [\"5432:5432\"]\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U shop -d shop\"]\n      interval: 5s\n      retries: 10\nEOF\ndocker compose up -d db\n\n# 4) أول migration\ndotnet ef migrations add Initial -p src/Shop.Api\ndotnet ef database update -p src/Shop.Api\n\necho \"شغّل: dotnet run --project src/Shop.Api\"\necho \"الـAPI: http://localhost:5080  ·  OpenAPI: /openapi/v1.json\"\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ المصادقة: BFF + سياسة تفويض"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Shop.Api/Program.cs — OIDC (code+PKCE) + كوكي + سياسات + حماية CSRF",
+      "filename": "src/Shop.Api/Program.cs",
+      "code": "using Microsoft.AspNetCore.Authentication.Cookies;\nusing Microsoft.AspNetCore.Authentication.OpenIdConnect;\nusing Microsoft.AspNetCore.Authorization;\nusing Microsoft.EntityFrameworkCore;\n\nvar builder = WebApplication.CreateBuilder(args);\n\n// ── قاعدة البيانات ────────────────────────────────────────────────\nbuilder.Services.AddDbContext<ShopDbContext>(o =>\n    o.UseNpgsql(builder.Configuration.GetConnectionString(\"Db\")));\n\n// ── BFF: OIDC على الخادم، المتصفح يشوف كوكي فقط (8.1.2) ──────────\nbuilder.Services\n    .AddAuthentication(o =>\n    {\n        o.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;\n        o.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;\n    })\n    .AddCookie(o =>\n    {\n        o.Cookie.Name = \"__Host-shop\";        // يفرض Secure + Path=/ + بلا Domain\n        o.Cookie.HttpOnly = true;\n        o.Cookie.SameSite = SameSiteMode.Lax; // كافٍ مع ترويسة CSRF للطلبات المعدّلة\n        o.Cookie.SecurePolicy = CookieSecurePolicy.Always;\n        o.SlidingExpiration = false;\n        o.ExpireTimeSpan = TimeSpan.FromHours(8);\n        o.Events.OnValidatePrincipal = SessionValidator.ValidateAsync; // جلسة ملغاة؟\n    })\n    .AddOpenIdConnect(o =>\n    {\n        o.Authority = builder.Configuration[\"Oidc:Authority\"];\n        o.ClientId = builder.Configuration[\"Oidc:ClientId\"];\n        o.ClientSecret = builder.Configuration[\"Oidc:ClientSecret\"]; // confidential: في Key Vault\n        o.ResponseType = \"code\";\n        o.UsePkce = true;                     // إلزامي (RFC 9700)\n        o.SaveTokens = true;                  // التوكنات في الخادم لا في المتصفح\n        o.GetClaimsFromUserInfoEndpoint = true;\n        o.Scope.Clear();\n        o.Scope.Add(\"openid\"); o.Scope.Add(\"profile\"); o.Scope.Add(\"shop.api\");\n        o.TokenValidationParameters.NameClaimType = \"name\";\n        o.MapInboundClaims = false;\n        o.Events.OnTokenValidated = ClaimsMapper.MapAsync;  // دور التطبيق من الأدوار\n    });\n\n// ── التفويض: سياسة واحدة على الأقل ────────────────────────────────\nbuilder.Services.AddAuthorizationBuilder()\n    .AddPolicy(\"CanManageOrders\", p => p\n        .RequireAuthenticatedUser()\n        .RequireClaim(\"role\", \"orders.write\"));\n\n// ── مراقبة (7.1) ─────────────────────────────────────────────────\nbuilder.Services.AddObservability(builder.Configuration, builder.Environment);\n\n// ── API ──────────────────────────────────────────────────────────\nbuilder.Services.AddProblemDetails();\nbuilder.Services.AddOpenApi();\nbuilder.Services.AddAntiforgery();        // للطلبات المعدّلة من الواجهة\n\nvar app = builder.Build();\n\napp.UseExceptionHandler();                // → ProblemDetails موحّد (2.2.3)\napp.UseSecurityHeaders();                 // CSP · HSTS · X-Content-Type-Options (7.2.3)\napp.UseSerilogRequestLogging();\napp.UseAuthentication();\napp.UseAuthorization();\napp.UseAntiforgery();\n\napp.MapOpenApi();\napp.MapObservabilityEndpoints();          // /health /alive /metrics\n\n// ── نقاط الـBFF ──────────────────────────────────────────────────\napp.MapGet(\"/bff/user\", (HttpContext ctx) => ctx.User.Identity?.IsAuthenticated == true\n    ? Results.Ok(new\n    {\n        isAuthenticated = true,\n        name = ctx.User.Identity!.Name,\n        roles = ctx.User.FindAll(\"role\").Select(c => c.Value).ToArray(),\n    })\n    : Results.Ok(new { isAuthenticated = false, name = (string?)null, roles = Array.Empty<string>() }))\n   .AllowAnonymous();\n\napp.MapGet(\"/bff/login\", (string? returnUrl, HttpContext ctx) =>\n{\n    // ✅ منع open redirect: مسارات نسبية فقط (8.1.2)\n    var target = IsSafeLocal(returnUrl) ? returnUrl! : \"/\";\n    return Results.Challenge(new AuthenticationProperties { RedirectUri = target },\n        [OpenIdConnectDefaults.AuthenticationScheme]);\n});\n\napp.MapPost(\"/bff/logout\", async (HttpContext ctx) =>\n{\n    await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);\n    await ctx.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme, new AuthenticationProperties\n    {\n        RedirectUri = \"/\",\n    });\n});\n\n// ── نقاط الـAPI (محمية) ──────────────────────────────────────────\napp.MapOrdersEndpoints();\n\napp.Run();\n\nstatic bool IsSafeLocal(string? url) =>\n    !string.IsNullOrWhiteSpace(url) && url.StartsWith('/') && !url.StartsWith(\"//\");\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "4 تفاصيل مصادقة تُغفَل وتكلّف ساعات",
+      "md": "**① `__Host-` prefix** يحتاج `Secure` + `Path=/` + **بلا `Domain`** — لو حددت Domain، الكوكي بيُرفض.\n**② `MapInboundClaims = false`** يمنعك من رؤية `http://schemas.microsoft.com/...` كأسماء مطوّلة؛ بس لازم تقرأ الـclaims بأسمائها الأصلية.\n**③ الـlogout يحتاج جلسة RP-initiated** — تسجيل خروج من الكوكي بس يخلّي جلسة المزوّد مفتوحة، فالدخول التالي بيمرّ بلا كلمة سر.\n**④ `SameSite=Lax` + ترويسة CSRF** — كفيل عادةً، لكن أي endpoint معدّل لازم `app.UseAntiforgery()` وإرسال `RequestVerificationToken`."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ الـAPI: نقطة واحدة كاملة كمرجع (BFF موثّق بكل طبقاته)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Endpoints/OrdersEndpoints.cs — تفويض + idempotency + cursor + مشكلة موحّدة",
+      "filename": "src/Shop.Api/Endpoints/OrdersEndpoints.cs",
+      "code": "using System.Security.Claims;\nusing Microsoft.AspNetCore.Http.HttpResults;\nusing Microsoft.EntityFrameworkCore;\n\npublic static class OrdersEndpoints\n{\n    public static void MapOrdersEndpoints(this IEndpointRouteBuilder app)\n    {\n        var group = app.MapGroup(\"/api/orders\").RequireAuthorization();\n\n        group.MapGet(\"/\", async (ShopDbContext db, ClaimsPrincipal user,\n            [FromQuery] string? cursor, [FromQuery] int? limit, CancellationToken ct) =>\n        {\n            var take = Math.Clamp(limit ?? 20, 1, 100);\n            var ownerId = user.GetSubjectId();\n\n            var query = db.Orders\n                .AsNoTracking()\n                .Where(o => o.OwnerId == ownerId);\n\n            // ترقيم بالمفاتيح: لا OFFSET (3.3) — cursor = CreatedAt|Id\n            if (Cursor.TryDecode(cursor, out var after))\n            {\n                query = query.Where(o => o.CreatedAt < after.CreatedAt\n                    || (o.CreatedAt == after.CreatedAt && o.Id.CompareTo(after.Id) < 0));\n            }\n\n            var rows = await query\n                .OrderByDescending(o => o.CreatedAt).ThenByDescending(o => o.Id)\n                .Take(take + 1)\n                .Select(o => new OrderSummary(o.Id, o.Status, o.Total, o.Currency, o.CreatedAt))\n                .ToListAsync(ct);\n\n            var hasMore = rows.Count > take;\n            var page = rows.Take(take).ToList();\n            var next = hasMore ? Cursor.Encode(page[^1].CreatedAt, page[^1].Id) : null;\n\n            return TypedResults.Ok(new PageDto<OrderSummary>(page, next));\n        });\n\n        group.MapGet(\"/{id}\", async Task<Results<Ok<OrderDto>, NotFound, ForbidHttpResult>> (\n            string id, ShopDbContext db, ClaimsPrincipal user, CancellationToken ct) =>\n        {\n            var row = await db.Orders.AsNoTracking()\n                .Where(o => o.Id == id)\n                .Select(o => new\n                {\n                    o.OwnerId,\n                    Dto = new OrderDto(o.Id, o.Status, o.Total, o.Currency, o.CreatedAt,\n                        o.Lines.Select(l => new LineDto(l.Sku, l.Qty, l.UnitPrice)).ToList()),\n                })\n                .FirstOrDefaultAsync(ct);\n\n            if (row is null) return TypedResults.NotFound();\n\n            // ✅ فحص الملكية في الخادم (لا يكفي إخفاء الزر في الواجهة)\n            var canReadAll = user.HasClaim(\"role\", \"orders.read.all\");\n            if (row.OwnerId != user.GetSubjectId() && !canReadAll) return TypedResults.Forbid();\n            return TypedResults.Ok(row.Dto);\n        });\n\n        // ✅ كتابة: سياسة + idempotency + تحقق + نتيجة واضحة\n        group.MapPost(\"/\", async Task<Results<Created<OrderDto>, ValidationProblem, Conflict<string>>> (\n            CreateOrderRequest req, ShopDbContext db, ClaimsPrincipal user,\n            [FromHeader(Name = \"Idempotency-Key\")] string? idempotencyKey, CancellationToken ct) =>\n        {\n            if (Validate(req) is { Count: > 0 } errors)\n                return TypedResults.ValidationProblem(errors);\n\n            if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 64)\n                return TypedResults.Conflict(\"Idempotency-Key مطلوب (≤64 حرفًا)\");\n\n            // ① نفس المفتاح لمستخدم آخر = مرفوض\n            var existing = await db.IdempotencyRecords\n                .FirstOrDefaultAsync(r => r.Key == idempotencyKey && r.UserId == user.GetSubjectId(), ct);\n            if (existing is not null)\n                return TypedResults.Created($\"/api/orders/{existing.OrderId}\",\n                    await LoadDtoAsync(db, existing.OrderId, ct));\n\n            // ② إنشاء + تسجيل المفتاح في **نفس** الترانزاكشن\n            var order = Order.Create(user.GetSubjectId(), req.Lines);\n            db.Orders.Add(order);\n            db.IdempotencyRecords.Add(new IdempotencyRecord(idempotencyKey, user.GetSubjectId(), order.Id,\n                DateTimeOffset.UtcNow));\n\n            try { await db.SaveChangesAsync(ct); }\n            catch (DbUpdateException ex) when (ex.IsUniqueViolation())\n            {\n                // ③ سباق: طلب متزامن بنفس المفتاح → أعِد النتيجة بدل خطأ\n                var winner = await db.IdempotencyRecords\n                    .FirstAsync(r => r.Key == idempotencyKey, ct);\n                return TypedResults.Created($\"/api/orders/{winner.OrderId}\",\n                    await LoadDtoAsync(db, winner.OrderId, ct));\n            }\n\n            return TypedResults.Created($\"/api/orders/{order.Id}\",\n                await LoadDtoAsync(db, order.Id, ct));\n        }).RequireAuthorization(\"CanManageOrders\");\n\n        group.MapPost(\"/{id}/cancel\", async Task<Results<NoContent, NotFound, ProblemHttpResult>> (\n            string id, ShopDbContext db, ClaimsPrincipal user, CancellationToken ct) =>\n        {\n            var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == id, ct);\n            if (order is null) return TypedResults.NotFound();\n\n            var result = order.Cancel(user.GetSubjectId());   // منطق النطاق (4.x)\n            if (!result.IsSuccess)\n                return TypedResults.Problem(result.Error, statusCode: StatusCodes.Status409Conflict);\n\n            await db.SaveChangesAsync(ct);\n            return TypedResults.NoContent();\n        });\n    }\n\n    private static Dictionary<string, string[]> Validate(CreateOrderRequest r) => new()\n    {\n        [\"lines\"] = r.Lines.Count == 0 ? [\"سطر واحد على الأقل\"] : [],\n        [\"lines[].qty\"] = r.Lines.Any(l => l.Qty <= 0) ? [\"الكمية يجب أن تكون موجبة\"] : [],\n        [\"lines[].sku\"] = r.Lines.Any(l => string.IsNullOrWhiteSpace(l.Sku)) ? [\"SKU مطلوب\"] : [],\n    };\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Pagination/Cursor.cs — ترميز/فك المؤشر (bounded، بلا Offset)",
+      "filename": "src/Shop.Api/Pagination/Cursor.cs",
+      "code": "using System.Buffers.Text;\nusing System.Globalization;\nusing System.Text;\n\n/// <summary>\n/// مؤشر ترقيم شفاف: \"ticks|id\" مُرمّز Base64Url.\n/// لا يحتوي أي سر ولا حالة خادم — وله سقف طول لمنع الإساءة.\n/// </summary>\npublic readonly record struct Cursor(DateTimeOffset CreatedAt, string Id)\n{\n    public static string Encode(DateTimeOffset createdAt, string id) =>\n        Base64Url.EncodeToString(Encoding.UTF8.GetBytes(string.Create(\n            CultureInfo.InvariantCulture,\n            $\"{createdAt.UtcTicks}|{id}\")));\n\n    public static bool TryDecode(string? value, out Cursor cursor)\n    {\n        cursor = default;\n        if (string.IsNullOrEmpty(value) || value.Length > 200) return false;\n\n        try\n        {\n            var raw = Encoding.UTF8.GetString(Base64Url.DecodeFromChars(value));\n            var sep = raw.IndexOf('|');\n            if (sep <= 0) return false;\n\n            if (!long.TryParse(raw[..sep], NumberStyles.None, CultureInfo.InvariantCulture, out var ticks))\n                return false;\n\n            var id = raw[(sep + 1)..];\n            if (id.Length is 0 or > 64) return false;\n\n            cursor = new Cursor(new DateTimeOffset(ticks, TimeSpan.Zero), id);\n            return true;\n        }\n        catch (FormatException)\n        {\n            return false;   // مؤشر تالف → ابدأ من البداية بدل 500\n        }\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "لماذا هذه النقطة تحديدًا هي «المرجع»",
+      "md": "لأنها تجمع **كل قرارات المراحل السابقة في مكان واحد**: ترقيم بالمفاتيح (3.3) · `AsNoTracking` للقراءة · تصفية بالمالك + سياسة (2.2.1) · تحقق قبل القاعدة (2.2.2) · `ProblemDetails`/`ValidationProblem` (2.2.3) · **idempotency** في نفس الترانزاكشن (5.2.5) · منطق نطاق في الكيان لا في الـendpoint (4.x) · و`CancellationToken` في كل استدعاء.\nلو مش فاهم سطر منها، ارجع للدرس المذكور — الـCapstone بيختبر التوليف، مش بيعلّم من جديد."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ الواجهة: 3 صفحات فقط (Blazor أو React)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Shop.Web/Pages/Orders.razor — Blazor InteractiveServer + حالة + تحقق",
+      "filename": "src/Shop.Web/Pages/Orders.razor",
+      "code": "@page \"/orders\"\n@using Microsoft.AspNetCore.Authorization\n@rendermode InteractiveServer\n@attribute [Authorize]\n@inject IOrdersClient Api\n@inject NavigationManager Nav\n\n<PageTitle>الطلبات</PageTitle>\n\n<h1 class=\"text-xl font-semibold\">الطلبات</h1>\n\n@if (_state == UiState.Loading)\n{\n    <div class=\"grid gap-2\" aria-busy=\"true\">\n        @for (var i = 0; i < 3; i++) { <div class=\"h-14 animate-pulse rounded bg-gray-100\"></div> }\n    </div>\n}\nelse if (_state == UiState.Error)\n{\n    <div class=\"rounded border border-red-300 bg-red-50 p-4\" role=\"alert\">\n        <p class=\"font-medium text-red-700\">@_error</p>\n        <button class=\"mt-2 rounded border px-3 py-1.5\" @onclick=\"LoadAsync\">إعادة المحاولة</button>\n    </div>\n}\nelse if (_orders.Count == 0)\n{\n    <div class=\"rounded border p-8 text-center text-gray-600\">لا طلبات بعد.</div>\n}\nelse\n{\n    <ul class=\"grid gap-2\">\n        @foreach (var o in _orders)\n        {\n            <li class=\"flex items-center justify-between rounded border p-3\" @key=\"o.Id\">\n                <span dir=\"ltr\" class=\"font-mono text-sm\">@o.Id</span>\n                <span>@StatusText(o.Status)</span>\n                <span dir=\"ltr\" class=\"tabular-nums\">@o.Total.ToString(\"N2\") @o.Currency</span>\n                <button class=\"rounded border px-3 py-1 text-sm\"\n                        disabled=\"@(o.Status == \"cancelled\" || _busyId == o.Id)\"\n                        @onclick=\"() => CancelAsync(o.Id)\">\n                    @(_busyId == o.Id ? \"جارٍ الإلغاء…\" : \"إلغاء\")\n                </button>\n            </li>\n        }\n    </ul>\n\n    @if (_nextCursor is not null)\n    {\n        <button class=\"mt-3 rounded border px-3 py-2 text-sm\" disabled=\"@_loadingMore\"\n                @onclick=\"LoadMoreAsync\">@(_loadingMore ? \"جارٍ التحميل…\" : \"تحميل المزيد\")</button>\n    }\n}\n\n<p class=\"mt-6\">\n    <a href=\"/orders/new\" class=\"rounded bg-blue-600 px-3 py-2 text-white\">طلب جديد</a>\n</p>\n\n@code {\n    private enum UiState { Loading, Ready, Error }\n\n    private UiState _state = UiState.Loading;\n    private List<OrderSummary> _orders = [];\n    private string? _nextCursor;\n    private string? _error;\n    private string? _busyId;\n    private bool _loadingMore;\n\n    protected override Task OnInitializedAsync() => LoadAsync();\n\n    private async Task LoadAsync()\n    {\n        _state = UiState.Loading;\n        _error = null;\n        try\n        {\n            var page = await Api.GetOrdersAsync(cursor: null);\n            _orders = page.Items.ToList();\n            _nextCursor = page.NextCursor;\n            _state = UiState.Ready;\n        }\n        catch (ApiException ex)\n        {\n            _error = ex.StatusCode == 401 ? \"انتهت الجلسة — سجّل الدخول مرة أخرى.\"\n                                         : \"تعذّر تحميل الطلبات.\";\n            _state = UiState.Error;\n        }\n    }\n\n    private async Task LoadMoreAsync()\n    {\n        if (_nextCursor is null) return;\n        _loadingMore = true;\n        try\n        {\n            var page = await Api.GetOrdersAsync(_nextCursor);\n            _orders.AddRange(page.Items);\n            _nextCursor = page.NextCursor;\n        }\n        finally { _loadingMore = false; }\n    }\n\n    private async Task CancelAsync(string id)\n    {\n        _busyId = id;\n        var snapshot = _orders.ToList();\n        // تحديث متفائل (8.1.4)\n        _orders = _orders.Select(o => o.Id == id ? o with { Status = \"cancelled\" } : o).ToList();\n        try\n        {\n            await Api.CancelAsync(id);\n        }\n        catch (ApiException)\n        {\n            _orders = snapshot;                 // تراجع\n            _error = \"تعذّر إلغاء الطلب.\";\n        }\n        finally { _busyId = null; }\n    }\n\n    private static string StatusText(string status) => status switch\n    {\n        \"paid\" => \"مدفوع\",\n        \"pending\" => \"قيد الدفع\",\n        \"cancelled\" => \"ملغى\",\n        _ => status,\n    };\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑥ المراقبة: trace واحد يربط المتصفح بالقاعدة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Observability/ServiceCollectionExtensions.cs — OTel + Serilog + health",
+      "filename": "src/Shop.Api/Observability/ServiceCollectionExtensions.cs",
+      "code": "using OpenTelemetry.Metrics;\nusing OpenTelemetry.Resources;\nusing OpenTelemetry.Trace;\nusing Serilog;\nusing Serilog.Formatting.Compact;\n\npublic static class ObservabilityExtensions\n{\n    public static IServiceCollection AddObservability(\n        this IServiceCollection services, IConfiguration config, IHostEnvironment env)\n    {\n        // ── Serilog: JSON مضغوط + scrubbing للحقول الحساسة (7.1.3) ──\n        services.AddSerilog((sp, lc) => lc\n            .ReadFrom.Configuration(config)\n            .Enrich.FromLogContext()\n            .Enrich.WithProperty(\"service.name\", \"shop-api\")\n            .Enrich.WithProperty(\"deployment.environment\", env.EnvironmentName)\n            .WriteTo.Console(new CompactJsonFormatter())\n            .WriteTo.OpenTelemetry(o =>\n            {\n                o.Endpoint = config[\"Otlp:Endpoint\"] ?? \"http://localhost:18889\";\n                o.Protocol = Serilog.Sinks.OpenTelemetry.OtlpProtocol.Grpc;\n            }));\n\n        // ── OpenTelemetry: traces + metrics + runtime ──\n        services.AddOpenTelemetry()\n            .ConfigureResource(r => r\n                .AddService(serviceName: \"shop-api\", serviceVersion: \"1.0.0\")\n                .AddAttributes(new Dictionary<string, object>\n                {\n                    [\"deployment.environment\"] = env.EnvironmentName,\n                }))\n            .WithTracing(t => t\n                .AddAspNetCoreInstrumentation(o => o.RecordException = true)\n                .AddHttpClientInstrumentation()\n                .AddEntityFrameworkCoreInstrumentation(o => o.SetDbStatementForText = false)\n                .AddOtlpExporter())        // ⚠️ لا تجمعها مع UseOtlpExporter\n            .WithMetrics(m => m\n                .AddAspNetCoreInstrumentation()\n                .AddHttpClientInstrumentation()\n                .AddRuntimeInstrumentation()\n                .AddMeter(\"Shop.Orders\")   // عدّادات الأعمال\n                .AddOtlpExporter());\n\n        services.AddSingleton<OrdersMetrics>();\n        services.AddHealthChecks()\n            .AddDbContextCheck<ShopDbContext>(\"db\")\n            .AddCheck(\"self\", () => HealthCheckResult.Healthy());\n\n        return services;\n    }\n\n    public static void MapObservabilityEndpoints(this IEndpointRouteBuilder app)\n    {\n        app.MapHealthChecks(\"/health\");                       // جاهز للحركة\n        app.MapHealthChecks(\"/alive\", new()\n        {\n            Predicate = r => r.Name == \"self\",                // liveness: بلا قاعدة\n        });\n        // ملاحظة: مُصدّر Prometheus في OTel .NET ما زال beta (7.1.2) —\n        // في الإنتاج فضّل OTLP إلى backend، واستخدم Prometheus فقط لو عندك مكدّس جاهز.\n        // app.MapPrometheusScrapingEndpoint();               // يتطلب OpenTelemetry.Exporter.Prometheus.AspNetCore\n    }\n}\n\n/// <summary>عدّادات أعمال بسيطة — قابلة للإنذار (7.1.4).</summary>\npublic sealed class OrdersMetrics\n{\n    public Counter<long> Created { get; }\n    public Counter<long> Cancelled { get; }\n    public Histogram<double> TotalValue { get; }\n\n    public OrdersMetrics(IMeterFactory factory)\n    {\n        var meter = factory.Create(\"Shop.Orders\");\n        Created   = meter.CreateCounter<long>(\"orders.created\");\n        Cancelled = meter.CreateCounter<long>(\"orders.cancelled\");\n        TotalValue = meter.CreateHistogram<double>(\"orders.total_value\", unit: \"EGP\");\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "إثبات الترابط: trace واحد + استعلامان + SLO",
+      "filename": "docs/evidence/observability.md",
+      "code": "# إثبات المراقبة (يُرفَق مع التسليم)\n\n## 1) trace واحد end-to-end\n# طلب: POST /api/orders  → شوف trace-id في الرد (traceparent) وفي اللوج\ncurl -s -D - -X POST https://shop.example.com/api/orders \\\n  -H \"Content-Type: application/json\" -H \"Idempotency-Key: $(uuidgen)\" \\\n  --cookie \"__Host-shop=...\" -d '{\"lines\":[{\"sku\":\"A-1\",\"qty\":2}]}' | tee /tmp/resp.txt\nTRACE=$(grep -i traceparent /tmp/resp.txt | cut -d'-' -f2)\necho \"trace=$TRACE\"\n\n# في اللوحة: ابحث بالـtrace-id — لازم تشوف:\n#   HTTP POST /api/orders (server) → SELECT orders (db) → INSERT orders (db)\n#   + أي خروج HTTP (إن وُجد) بنفس الـtrace-id. عدد spans ≥ 4.\n\n## 2) استعلامان يُجابان في < 30 ثانية\n# (أ) كم طلبًا فشل في آخر ساعة؟\ncount_over_time({service_name=\"shop-api\"} |= \"status=500\" [1h])\n# (ب) p95 لزمن الـAPI آخر 6 ساعات\nhistogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket[6h])) by (le))\n\n## 3) SLO + إنذار\n# الهدف: 99.5% نجاح على /api/* خلال 30 يومًا (7.1.5)\n# إنذار: p95 > 800ms لمدة 5 دقائق  → ticket (burn 1×)\n# إنذار: نسبة خطأ > 2% لمدة 10 دقائق → page (burn 6×)\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑦ النشر: ACA + GH Actions بـOIDC (بلا أسرار)"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": ".github/workflows/deploy.yml — build → test → صورة chiseled → ACA",
+      "filename": ".github/workflows/deploy.yml",
+      "code": "name: deploy\n\non:\n  push:\n    branches: [main]\n  workflow_dispatch:\n\npermissions:\n  id-token: write        # OIDC إلى Azure\n  contents: read\n\nenv:\n  ACR: ${{ vars.ACR_NAME }}\n  APP: ${{ vars.ACA_APP }}\n  RG: ${{ vars.AZURE_RG }}\n  IMAGE: ${{ vars.ACR_NAME }}.azurecr.io/shop-api\n\njobs:\n  build-test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-dotnet@v4\n        with:\n          dotnet-version: \"10.0.x\"\n          cache: true                  # ⚠️ يحتاج packages.lock.json\n      - run: dotnet restore --locked-mode\n      - run: dotnet build -c Release --no-restore\n      - run: dotnet test -c Release --no-build --logger \"trx;LogFileName=test.trx\"\n      - uses: actions/upload-artifact@v4\n        if: always()\n        with: { name: test-results, path: \"**/*.trx\" }\n\n  deploy:\n    needs: build-test\n    runs-on: ubuntu-latest\n    environment: production             # ← subject: repo:org/repo:environment:production\n    steps:\n      - uses: actions/checkout@v4\n\n      - uses: azure/login@v2\n        with:\n          client-id: ${{ secrets.AZURE_CLIENT_ID }}\n          tenant-id: ${{ secrets.AZURE_TENANT_ID }}\n          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}\n\n      - uses: docker/login-action@v3\n        with:\n          registry: ${{ env.ACR }}.azurecr.io\n          username: ${{ secrets.ACR_USER }}\n          password: ${{ secrets.ACR_PASSWORD }}\n\n      - name: Build & push (chiseled, non-root UID 1654)\n        run: |\n          docker build -f src/Shop.Api/Dockerfile \\\n            -t \"$IMAGE:${{ github.sha }}\" -t \"$IMAGE:latest\" .\n          docker push \"$IMAGE:${{ github.sha }}\"\n          docker push \"$IMAGE:latest\"\n\n      - name: Deploy to Container Apps\n        run: |\n          az containerapp update -n \"$APP\" -g \"$RG\" \\\n            --image \"$IMAGE:${{ github.sha }}\" \\\n            --set-env-vars \"Otlp__Endpoint=${{ vars.OTLP_ENDPOINT }}\" \\\n            --revision-suffix \"r$(git rev-parse --short HEAD)\"\n\n      - name: Smoke (health + 401 على API محمي)\n        run: |\n          FQDN=$(az containerapp show -n \"$APP\" -g \"$RG\" --query properties.configuration.ingress.fqdn -o tsv)\n          curl -fsS \"https://$FQDN/alive\" -o /dev/null || exit 1\n          curl -fsS \"https://$FQDN/health\" -o /dev/null || exit 1\n          code=$(curl -s -o /dev/null -w \"%{http_code}\" \"https://$FQDN/api/orders\")\n          test \"$code\" = \"401\" || { echo \"الأمان: توقع 401 ووُجد $code\"; exit 1; }\n"
+    },
+    {
+      "type": "code",
+      "lang": "dockerfile",
+      "title": "src/Shop.Api/Dockerfile — multi-stage + chiseled (6.1)",
+      "filename": "src/Shop.Api/Dockerfile",
+      "code": "# ── build ───────────────────────────────────────────────\nFROM mcr.microsoft.com/dotnet/sdk:10.0-noble AS build\nWORKDIR /src\nCOPY Directory.Packages.props* packages.lock.json* ./\nCOPY src/Shop.Api/*.csproj src/Shop.Api/\nRUN dotnet restore src/Shop.Api/Shop.Api.csproj --locked-mode\nCOPY src/ src/\nRUN dotnet publish src/Shop.Api/Shop.Api.csproj -c Release -o /app/publish \\\n    --no-restore /p:UseAppHost=false\n\n# ── runtime: chiseled (بلا shell/package manager — سطح هجوم أقل) ──\nFROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS final\nWORKDIR /app\nENV ASPNETCORE_HTTP_PORTS=8080 \\\n    DOTNET_GCServer=1 \\\n    DOTNET_TieredPGO=1\nCOPY --from=build /app/publish .\nUSER 1654                              # non-root (المستخدم المدمج في chiseled)\nEXPOSE 8080\nENTRYPOINT [\"dotnet\", \"Shop.Api.dll\"]\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑧ خطة الجلسات الثمانية (6 ساعات)"
+    },
+    {
+      "type": "steps",
+      "title": "نفّذ بالترتيب — كل جلسة لها «ناتج» يُثبت",
+      "items": [
+        {
+          "title": "الجلسة 1 — (45 د) الهيكل والقاعدة",
+          "md": "أنشئ الحل والمشاريع · EF Core + PostgreSQL (compose) · كيانان + migration · seed بيانات تجريبية.\n**الناتج:** `dotnet ef database update` ينجح، و`GET /api/orders` (مؤقتًا بلا مصادقة) يرجّع 20 صفًا."
+        },
+        {
+          "title": "الجلسة 2 — (60 د) الـAPI الكامل",
+          "md": "انقل النقاط لـ`MapGroup` محمي · ترقيم cursor · تحقق · `ProblemDetails` · `Idempotency-Key` في نفس الترانزاكشن · سياسة `CanManageOrders`.\n**الناتج:** مجموعة `requests.http` (أو curl) تغطي 8 حالات: نجاح · 400 · 401 · 403 · 404 · 409 · idempotent-replay · cursor."
+        },
+        {
+          "title": "الجلسة 3 — (60 د) المصادقة",
+          "md": "OIDC على الخادم (code+PKCE) · كوكي `__Host-` · `/bff/user` · `/bff/login` بمصفاة `returnUrl` · logout RP-initiated · `UseAntiforgery`.\n**الناتج:** تسجيل لقطة/سجل يوضح: زائر → 401 · دخول → 200 · `returnUrl=https://evil.com` → يُتجاهل."
+        },
+        {
+          "title": "الجلسة 4 — (60 د) الواجهة",
+          "md": "3 صفحات (قائمة · جديد · تفاصيل/إلغاء) · حالات 4 · تحديث متفائل · ربط `/bff/user` لإظهار الاسم/الأدوار.\n**الناتج:** فيديو 60 ثانية: تصفح، إنشاء طلب، إلغاء، خطأ متعمد (خادم مغلق) وإعادة محاولة."
+        },
+        {
+          "title": "الجلسة 5 — (45 د) المراقبة",
+          "md": "Serilog JSON + OTLP · OTel (AspNetCore/HttpClient/EFCore/Runtime) · عدّادات `orders.created` · `/health` و`/alive` بشكل صحيح (liveness بلا قاعدة).\n**الناتج:** trace واحد بـ≥4 spans من المتصفح للـINSERT + صورة اللوحة."
+        },
+        {
+          "title": "الجلسة 6 — (60 د) الحاوية والنشر",
+          "md": "Dockerfile multi-stage + chiseled/non-root · تشغيل محلي `docker run` · ACR + ACA (min-scale 0) · متغيرات البيئة والأسرار في Key Vault/RBAC.\n**الناتج:** URL عام يعمل + `docker images` يوضح الحجم (`docker history`)."
+        },
+        {
+          "title": "الجلسة 7 — (60 د) CI/CD والاختبارات",
+          "md": "15+ اختبار وحدة · 4 تكامل (Testcontainers) · اختبار مصادقة · GH Actions بـOIDC · smoke test يتحقق من 401.\n**الناتج:** تشغيل أخضر (رابط Run) + لقطة من فشل متعمد (اختبار مكسور) ثم إصلاحه."
+        },
+        {
+          "title": "الجلسة 8 — (30 د) التغليف والتوثيق",
+          "md": "README (لقطات · تشغيل بأمرين · قرارات) · ADR واحد · `CAPSTONE.md` بالروابط والأدلة · مراجعة «ماذا لو» مع مقابلة تجريبية لنفسك.\n**الناتج:** مستودع نظيف + `CAPSTONE.md` مكتمل."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑨ الأدلة العشرون (هي اللي هتتقاس)"
+    },
+    {
+      "type": "table",
+      "caption": "كل بند = دليل قابل للفحص في 30 ثانية",
+      "head": [
+        "#",
+        "الدليل",
+        "أين يوجد",
+        "معيار القبول"
+      ],
+      "rows": [
+        [
+          "1",
+          "`GET /openapi/v1.json` يرجع OpenAPI 3.1",
+          "URL عام",
+          "يظهر في المتصفح + عدد المسارات ≥7"
+        ],
+        [
+          "2",
+          "زائر → `/api/orders` = **401**",
+          "curl في README",
+          "مخرَج الطلب مرفق"
+        ],
+        [
+          "3",
+          "مستخدم بلا دور → **403**",
+          "سجل/لقطة",
+          "نفس المستخدم بعد إضافة الدور → 200"
+        ],
+        [
+          "4",
+          "`returnUrl` خبيث مرفوض",
+          "اختبار وحدة/سجل",
+          "`//evil.com` و`https://evil.com` → `/`"
+        ],
+        [
+          "5",
+          "idempotency: نفس المفتاح مرتين = **طلب واحد**",
+          "اختبار تكامل",
+          "عدّ الصفوف في القاعدة = 1"
+        ],
+        [
+          "6",
+          "ترقيم cursor يعمل مع 25 صفًا",
+          "طلبين متتاليين",
+          "لا تكرار ولا فقد بين الصفحتين"
+        ],
+        [
+          "7",
+          "تحقق: كمية 0 → **400** + `errors`",
+          "طلب/اختبار",
+          "شكل `ValidationProblemDetails`"
+        ],
+        [
+          "8",
+          "سياسة CSRF: POST بلا ترويسة → 400",
+          "اختبار",
+          "مع الترويسة → 201"
+        ],
+        [
+          "9",
+          "trace واحد ≥4 spans",
+          "لقطة لوحة",
+          "HTTP → db → db (+ خروج إن وُجد)"
+        ],
+        [
+          "10",
+          "لوج JSON بلا PII",
+          "عيّنة 20 سطرًا",
+          "لا بريد/اسم/توكن؛ `traceId` موجود"
+        ],
+        [
+          "11",
+          "`/health` و`/alive` مختلفان",
+          "docker stop db",
+          "`/alive` 200 و`/health` 503"
+        ],
+        [
+          "12",
+          "مقياس أعمال `orders.created`",
+          "استعلام",
+          "يزداد بعد كل إنشاء"
+        ],
+        [
+          "13",
+          "صورة chiseled غير جذرية",
+          "`docker inspect`",
+          "`User=1654` · الحجم ≤ 130MB"
+        ],
+        [
+          "14",
+          "ملف compose للتطوير",
+          "`compose.yaml`",
+          "`docker compose up` يعمل بلا تعديل"
+        ],
+        [
+          "15",
+          "15+ اختبار وحدة",
+          "`dotnet test`",
+          "أخضر · تغطية منطق النطاق ≥70%"
+        ],
+        [
+          "16",
+          "4 اختبارات تكامل Testcontainers",
+          "مجلد tests",
+          "تشتغل بلا قاعدة خارجية"
+        ],
+        [
+          "17",
+          "CI أخضر + Smoke",
+          "رابط workflow",
+          "يفشل عند كسر 401 (إثبات)"
+        ],
+        [
+          "18",
+          "نشر ACA + دومين",
+          "URL",
+          "HTTPS فقط · HSTS · CSP"
+        ],
+        [
+          "19",
+          "ADR واحد",
+          "`docs/adr/0001-*.md`",
+          "سياق/بدائل/قرار/عواقب"
+        ],
+        [
+          "20",
+          "`CAPSTONE.md`",
+          "جذر المستودع",
+          "روابط كل الأدلة أعلاه"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑩ سيناريوهات فشل تختبرها بنفسك"
+    },
+    {
+      "type": "table",
+      "caption": "5 تجارب — كل واحدة 3 دقائق",
+      "head": [
+        "التجربة",
+        "ما تفعله",
+        "ما يجب أن يحدث",
+        "الخطأ الشائع إذا فشلت"
+      ],
+      "rows": [
+        [
+          "قاعدة متوقفة",
+          "`docker stop` للـdb ثم `GET /api/orders`",
+          "`/alive` 200 · `/health` 503 · الـAPI 503 بـProblemDetails · لا stack trace للمستخدم",
+          "liveness يفشل أيضًا → ACA يعيد تشغيل التطبيق بلا داعٍ"
+        ],
+        [
+          "طلب مكرر",
+          "نفس `Idempotency-Key` 5 مرات متوازية",
+          "طلب واحد + 4 إجابات 201 بنفس الـid",
+          "5 صفوف في القاعدة (خطأ كارثي في الدفع)"
+        ],
+        [
+          "جلسة ملغاة",
+          "احذف المستخدم في المزوّد ثم اطلب",
+          "401 + تحويل للدخول (لا 500)",
+          "استعلام كل طلب على المزوّد في المسار الحرج"
+        ],
+        [
+          "بطء قاعدة",
+          "`pg_sleep` في سيناريو أو قيد اتصال",
+          "p95 يتجاوز SLO → إنذار ticket (وليس page) للمرة الأولى",
+          "إنذار عند كل ارتفاع لحظي (إنذارات آلية متعبة)"
+        ],
+        [
+          "سر في الصورة",
+          "`docker history` + `grep` على المتغيرات",
+          "لا أسرار: كلها من Key Vault/بيئة ACA",
+          "سلسلة اتصال مكتوبة في `appsettings.Production.json`"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "أشهر 6 أخطاء تُفشل الـCapstone",
+      "md": "**① تأجيل المصادقة لآخر الجلسات** — بتحوّل كل الاختبارات والـUI لاحقًا؛ اعمل «مستخدم وهمي» في الجلسة 1 واستبدله بـOIDC في 3.\n**② نطاق مفتوح** — كل ميزة إضافية تأخذ ساعتين من اللي محتاجه الأدلة (20 بند). لو زادت عن 3 ساعات: **أعِدها للـbacklog**.\n**③ liveness بيفحص القاعدة** → إعادة تشغيل لا نهائية عند انقطاعها (افصل `/alive`).\n**④ idempotency خارج الترانزاكشن** → طلبان متزامنان = صفان (اختبر 5 متوازية!).\n**⑤ سجلات فيها PII** — تُرفض فورًا في المراجعة؛ استخدم redactor (7.1.3).\n**⑥ نشر بلا smoke** — 401 المتوقع لا يُفحص، فتشحن فتحًا أمنيًا بلا ملاحظة."
+    },
+    {
+      "type": "checkpoints",
+      "title": "قائمة التسليم النهائية (DoD)",
+      "items": [
+        "المستودع يبني من نسخة نظيفة (`git clone` → `dotnet build` → `docker build`) بلا خطوات سرية مكتوبة.",
+        "7 مسارات API على الأقل، منها مسار كتابة محمي بسياسة، ومسارات `/bff/*`.",
+        "كل الأخطاء تأتي بـ`application/problem+json` + `traceId` — لا استثناءات مكشوفة.",
+        "المصادقة BFF بكوكي `__Host-` + PKCE + تحقق `returnUrl` + logout RP-initiated.",
+        "البيانات تُفلتَر بالمالك في الاستعلام، وليس في الواجهة فقط.",
+        "كل كتابة تأخذ `Idempotency-Key` مع فحص فريد داخل ترانزاكشن.",
+        "القراءات `AsNoTracking`، والتعدادات ذات فهارس مبررة، وترقيم بالمفاتيح لا OFFSET.",
+        "trace واحد يربط HTTP → EF Core → أي خروج، ومقاييس أعمال مُصدّرة.",
+        "`/alive` مستقل عن القاعدة، `/health` يشمل القاعدة، والاستجابة للفشل مُختبرة.",
+        "صورة chiseled، تعمل كـnon-root، حجمها معروف، وبلا أسرار.",
+        "CI: build + test + docker + نشر + smoke يتحقق من 401.",
+        "15+ وحدة · 4 تكامل · اختبار مصادقة واحد على الأقل — كلها خضراء.",
+        "README + ADR + `CAPSTONE.md` بالأدلة العشرين.",
+        "قرار مكتوب: ما الذي أقصرته عن قصد، ولماذا (الوقت مقابل القيمة)."
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "التسليم",
+      "intro": "مخرج واحد نهائي.",
+      "items": [
+        {
+          "id": "s8-m3-l1-t1",
+          "title": "سلّم Capstone المرحلة 8",
+          "md": "طبّق الجلسات الثماني واملأ `CAPSTONE.md` بالأدلة العشرين وروابطها. المراجعة: جرّب كل بند على نسخة نظيفة من المستودع بمفردك ثم مع شخص آخر (أو سجّل فيديو 5 دقائق).",
+          "criteria": [
+            "كل بنود DoD أعلاه محققة أو موثّق سبب التقصير.",
+            "الأدلة العشرون كلها موجودة وقابلة للفتح برابط/أمر واحد.",
+            "تشغيل نظيف من الصفر: `git clone` → 3 أوامر → التطبيق يعمل محليًا.",
+            "3 مشاكل حقيقية واجهتها + كيف حللتها (مكتوبة في `docs/lessons-learned.md`).",
+            "تسجيل 5 دقائق: عرض كامل (دخول → إنشاء → إلغاء → trace → نشر).",
+            "مراجعة أمنية سريعة من قائمة 7.2.3: 10 بنود على الأقلين تم فحصها.",
+            "تكلفة شهرية تقديرية مكتوبة (ACA + PostgreSQL + Log Analytics)."
+          ],
+          "hint": "لو الوقت ضاق: قلّل عدد الصفحات إلى 2 وعدد النقاط إلى 5 — لكن **لا تقلّل الأدلة**: (401 · 403 · idempotency · trace · نشر). أربع ساعات بدون مصادقة أو بدون نشر = مشروع غير صالح للبورتفوليو. وابدأ الجلسة 6 (النشر) مبكرًا لو تقدر — النشر بيكشف مشاكل بيئة لا تظهر محليًا.",
+          "solution": "المخرج النموذجي: ~2,500 سطر عبر API + واجهة + اختبارات، وصورة ~110MB تعمل على ACA بـscale-to-zero، وtrace من 6 spans، وREADME بلقطتين. أكبر مكسب تعليمي بيحصل في الجلسة 6 (النشر): مشاكل البيئة/الأسرار/`localhost`/CORS/الشهادات — وهي اللي بتفرّق بين «يعمل عندي» و«يعمل». ثاني مكسب: كتابة `CAPSTONE.md` بأدلة قابلة للفحص — وهي نفسها اللي هتتكلم عنها في المقابلة (s10).",
+          "resources": [
+            "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis/openapi",
+            "https://learn.microsoft.com/azure/container-apps/overview",
+            "https://learn.microsoft.com/azure/container-apps/scale-app",
+            "https://opentelemetry.io/docs/languages/dotnet/",
+            "https://learn.microsoft.com/aspnet/core/security/authentication/",
+            "https://learn.microsoft.com/dotnet/core/docker/container-images"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Minimal APIs + OpenAPI 3.1",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis/openapi"
+        },
+        {
+          "label": "Azure Container Apps",
+          "url": "https://learn.microsoft.com/azure/container-apps/overview"
+        },
+        {
+          "label": "قواعد scale في ACA",
+          "url": "https://learn.microsoft.com/azure/container-apps/scale-app"
+        },
+        {
+          "label": "OpenTelemetry .NET",
+          "url": "https://opentelemetry.io/docs/languages/dotnet/"
+        },
+        {
+          "label": "صور .NET المحسّنة (chiseled)",
+          "url": "https://learn.microsoft.com/dotnet/core/docker/container-images"
+        },
+        {
+          "label": "GitHub Actions: OIDC إلى Azure",
+          "url": "https://docs.github.com/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-azure"
+        },
+        {
+          "label": "OWASP ASVS (مراجعة أمنية)",
+          "url": "https://owasp.org/www-project-application-security-verification-standard/"
+        }
+      ]
+    }
+  ]
+}

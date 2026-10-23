@@ -1,0 +1,287 @@
+{
+  "id": "s2-m1-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nفي .NET 10 مفيش سؤال «Minimal APIs ولا Controllers؟» كسؤال ديني — فيه سؤال: **أنهي أسلوب يديك أقل كود\nوأوضح عقد لنهاية (endpoint) معينة؟** الـMinimal APIs بقت ناضجة: groups، endpoint filters، OpenAPI metadata،\nvalidation، وTypedResults. والـControllers لسه أفضل لما عندك تراث كبير أو بتحتاج action filters/model binders معقدة.\n\nالدرس ده: تبني API بـMinimal APIs **منظّم بـfeatures** (مش Program.cs بـ2000 سطر)، وتكتب قرار الاختيار بمعايير.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Endpoint",
+          "def": "وحدة التنفيذ: مسار + HTTP method + delegate. Minimal APIs بتعرّفها مباشرة على الـrouter."
+        },
+        {
+          "term": "Route Group",
+          "def": "`MapGroup(\"/api/orders\")` — prefix + إعدادات مشتركة (auth، rate limit، tags، filters) لكل endpoints المجموعة."
+        },
+        {
+          "term": "TypedResults",
+          "def": "نسخة من `Results` بأنواع إرجاع صريحة (`ValidationProblem`، `NotFound<T>`) → metadata أدق في OpenAPI."
+        },
+        {
+          "term": "Endpoint Filter",
+          "def": "كود cross-cutting يدور حول endpoint واحد أو مجموعة (validation، logging، authorization إضافي) بدون middleware عام."
+        },
+        {
+          "term": "IEndpointRouteBuilder",
+          "def": "الواجهة اللي بتمدها extension methods عشان تسجّل endpoints من أي مكان في الكود."
+        },
+        {
+          "term": "Feature folder",
+          "def": "تنظيم حسب القدرة (`Orders/`, `Catalog/`) بدل الطبقات (`Controllers/`, `Models/`) — أساس الـvertical slice."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "القرار: معايير مش تفضيلات"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "Minimal APIs",
+        "Controllers"
+      ],
+      "rows": [
+        [
+          "حجم الكود لـendpoint بسيط",
+          "أقل (delegate + typed result)",
+          "أكثر (class + attributes + action)"
+        ],
+        [
+          "OpenAPI metadata",
+          "ممتاز مع `TypedResults` و`Produces<T>()`",
+          "ممتاز مع `ApiController` و`ProducesResponseType`"
+        ],
+        [
+          "Filters",
+          "Endpoint filters (بسيطة، قابلة للتركيب)",
+          "Action/Result/Exception filters (أغنى)"
+        ],
+        [
+          "Model binding معقّد",
+          "جيد؛ أقل مرونة في custom binders",
+          "أقوى (custom model binders, form files)"
+        ],
+        [
+          "إرث موجود",
+          "إعادة كتابة مكلفة",
+          "الأفضل لو عندك مئات الـactions"
+        ],
+        [
+          "فريق كبير ومنظم",
+          "يحتاج انضباط في التنظيم",
+          "الـconvention واضح تلقائيًا"
+        ],
+        [
+          "الأداء",
+          "أقل overhead (بدون pipeline الـMVC)",
+          "overhead أعلى قليلًا"
+        ]
+      ],
+      "caption": "الخلاصة العملية: مشروع جديد → Minimal APIs. مشروع MVC قائم → ما تهاجرش لمجرد الموضة."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "التنظيم: feature folder + extension methods"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "شكل المشروع",
+      "code": "\nShop.Api/\n  Program.cs                     ← 20-40 سطر بس: build الـhost وربط الـfeatures\n  Infrastructure/\n    ExceptionHandling/GlobalExceptionHandler.cs\n    Filters/ValidationEndpointFilter.cs\n  Features/\n    Orders/\n      OrdersEndpoints.cs         ← MapOrdersApi(this IEndpointRouteBuilder)\n      OrdersHandlers.cs\n      OrderDtos.cs\n      CreateOrderValidator.cs\n    Catalog/\n      CatalogEndpoints.cs\n      ...\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Program.cs",
+      "title": "Program.cs يبقى صغيرًا — كل feature بتسجّل نفسها",
+      "code": "\nvar builder = WebApplication.CreateBuilder(args);\n\nbuilder.Services.AddProblemDetails();\nbuilder.Services.AddExceptionHandler<GlobalExceptionHandler>();\nbuilder.Services.AddOpenApi();\nbuilder.Services.AddApplicationServices(builder.Configuration);   // DI لكل الـfeatures\n\nvar app = builder.Build();\n\napp.UseExceptionHandler(string.Empty);\napp.UseSerilogRequestLogging();\n\nif (app.Environment.IsDevelopment())\n{\n    app.MapOpenApi();                 // → /openapi/v1.json\n    app.MapScalarApiReference();      // → /scalar/v1\n}\n\napp.UseAuthentication();\napp.UseAuthorization();\n\napp.MapOrdersApi();                   // ← كل feature بتضيف endpoints الخاصة بيها\napp.MapCatalogApi();\napp.MapHealthChecks(\"/health/live\");\n\napp.Run();\n\npublic partial class Program;         // للاختبارات (WebApplicationFactory<Program>)\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Orders/OrdersEndpoints.cs",
+      "title": "Group + filters + metadata صريحة",
+      "code": "\nusing Microsoft.AspNetCore.Http.HttpResults;\n\npublic static class OrdersEndpoints\n{\n    public static IEndpointRouteBuilder MapOrdersApi(this IEndpointRouteBuilder app)\n    {\n        var group = app.MapGroup(\"/api/orders\")\n            .WithTags(\"Orders\")\n            .RequireAuthorization(\"CustomerOrAdmin\")\n            .AddEndpointFilter<ValidationEndpointFilter<CreateOrderRequest>>()\n            .RequireRateLimiting(\"orders-write\");\n\n        group.MapPost(\"/\", CreateOrder)\n            .WithName(\"CreateOrder\")\n            .Produces<Created<OrderCreatedResponse>>(StatusCodes.Status201Created)\n            .ProducesValidationProblem()\n            .ProducesProblem(StatusCodes.Status404NotFound);\n\n        group.MapGet(\"/{id:guid}\", GetOrder)\n            .WithName(\"GetOrder\")\n            .Produces<OrderResponse>(StatusCodes.Status200OK)\n            .ProducesProblem(StatusCodes.Status404NotFound);\n\n        group.MapGet(\"/\", ListOrders)\n            .WithName(\"ListOrders\")\n            .RequireAuthorization()\n            .Produces<PagedResult<OrderSummary>>(StatusCodes.Status200OK);\n\n        group.MapPost(\"/{id:guid}/cancel\", CancelOrder)\n            .WithName(\"CancelOrder\")\n            .RequireAuthorization(\"AdminOnly\")\n            .Produces<NoContent>(StatusCodes.Status204NoContent)\n            .ProducesProblem(StatusCodes.Status409Conflict);\n\n        return app;\n    }\n\n    // الـhandler نفسه: دالة ساكنة نقية — سهلة الاختبار وقابلة للـsource generation\n    private static async Task<Results<Created<OrderCreatedResponse>, ValidationProblem>> CreateOrder(\n        CreateOrderRequest request,\n        IOrderService orders,\n        CancellationToken ct)\n    {\n        var order = await orders.CreateAsync(request, ct);\n        return TypedResults.Created($\"/api/orders/{order.Id}\", new OrderCreatedResponse(order.Id, order.Total));\n    }\n\n    private static async Task<Results<Ok<OrderResponse>, NotFound<ProblemDetails>>> GetOrder(\n        Guid id, IOrderService orders, CancellationToken ct) =>\n        await orders.GetAsync(id, ct) is { } order\n            ? TypedResults.Ok(OrderResponse.From(order))\n            : TypedResults.NotFound(ProblemDetailsFactory.ForNotFound(id));\n\n    private static async Task<Ok<PagedResult<OrderSummary>>> ListOrders(\n        [AsParameters] OrderListQuery query, IOrderService orders, CancellationToken ct) =>\n        TypedResults.Ok(await orders.ListAsync(query, ct));\n\n    private static async Task<Results<NoContent, Conflict<ProblemDetails>>> CancelOrder(\n        Guid id, IOrderService orders, CancellationToken ct) =>\n        await orders.CancelAsync(id, ct)\n            ? TypedResults.NoContent()\n            : TypedResults.Conflict(ProblemDetailsFactory.ForConflict(\"Order\", id, \"لا يمكن إلغاء طلب مدفوع\"));\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "ليه `Results<A, B>` مش `IActionResult`",
+      "md": "\nالـunion type ده **هو** مصدر الـmetadata: لما تكتب `Results<Created<T>, ValidationProblem>`\nالـOpenAPI generator يعرف تلقائيًا إن فيه 201 و400، و`TypedResults` بيرجّع أنواع صريحة.\nلو رجّعت `IResult` عام، هتحتاج `Produces<T>()` يدويًا لكل حالة — وناسيين كتير بينسوها.\nالقاعدة: **اكتب كل حالات الفشل في التوقيع**، حتى لو حسيتها تطويل.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Endpoint Filters: المكان الصح للـcross-cutting"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Filters/ValidationEndpointFilter.cs",
+      "title": "FluentValidation كـendpoint filter قابل لإعادة الاستخدام",
+      "code": "\nusing FluentValidation;\n\n/// <summary>\n/// Filter عام: يلاقي الـvalidator المناسب لنوع TRequest وينفّذه قبل الـhandler.\n/// .NET 10 فيه دعم validation مدمج في Minimal APIs — راجع الرابط في المصادر،\n/// لكن الـfilter ده بيشتغل على أي إصدار وبيديك تحكم كامل في شكل الاستجابة.\n/// </summary>\npublic sealed class ValidationEndpointFilter<TRequest>(IValidator<TRequest> validator) : IEndpointFilter\n{\n    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext ctx, EndpointFilterDelegate next)\n    {\n        var request = ctx.Arguments.OfType<TRequest>().FirstOrDefault();\n        if (request is null) return await next(ctx);\n\n        var result = await validator.ValidateAsync(request, ctx.HttpContext.RequestAborted);\n        if (result.IsValid) return await next(ctx);\n\n        var errors = result.Errors\n            .GroupBy(e => e.PropertyName)\n            .ToDictionary(g => g.Key, g => g.Select(e => e.ErrorMessage).ToArray());\n\n        return TypedResults.ValidationProblem(errors);\n    }\n}\n\n/// <summary>Filter بسيط: تسجيل زمن التنفيذ لكل endpoint (بديل مصغر عن APM).</summary>\npublic sealed class TimingEndpointFilter(ILogger<TimingEndpointFilter> log) : IEndpointFilter\n{\n    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext ctx, EndpointFilterDelegate next)\n    {\n        var started = TimeProvider.System.GetTimestamp();\n        try { return await next(ctx); }\n        finally\n        {\n            var elapsed = TimeProvider.System.GetElapsedTime(started);\n            if (elapsed > TimeSpan.FromMilliseconds(300))\n                log.LogWarning(\"slow endpoint {Endpoint} took {Elapsed}ms\",\n                    ctx.HttpContext.GetEndpoint()?.DisplayName, elapsed.TotalMilliseconds);\n        }\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الموقف",
+        "استخدم"
+      ],
+      "rows": [
+        [
+          "منطق يخص endpoint/مجموعة endpoints (validation، authorization إضافي)",
+          "Endpoint filter"
+        ],
+        [
+          "منطق يخص كل الطلبات (logging، correlation id، handling الأخطاء)",
+          "Middleware / `UseExceptionHandler`"
+        ],
+        [
+          "منطق يخص الاستجابة نفسها (كاش، ضغط، رؤوس)",
+          "Middleware مخصص أو Output caching"
+        ],
+        [
+          "تحويل استثناء لحالة HTTP موحدة",
+          "`IExceptionHandler`"
+        ],
+        [
+          "قياس/تتبع (metrics, tracing)",
+          "Middleware + OpenTelemetry"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/ExceptionHandling/GlobalExceptionHandler.cs",
+      "title": "استثناء واحد → problem+json واحد",
+      "code": "\nusing Microsoft.AspNetCore.Diagnostics;\n\npublic sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> log) : IExceptionHandler\n{\n    public async ValueTask<bool> TryHandleAsync(HttpContext ctx, Exception ex, CancellationToken ct)\n    {\n        var traceId = ctx.TraceIdentifier;\n        var (status, title) = ex switch\n        {\n            NotFoundException       => (StatusCodes.Status404NotFound,    \"المورد غير موجود\"),\n            ConflictException       => (StatusCodes.Status409Conflict,      \"تعارض مع الحالة الحالية\"),\n            InsufficientStockException => (StatusCodes.Status422UnprocessableEntity, \"المخزون غير كافٍ\"),\n            TimeoutException        => (StatusCodes.Status504GatewayTimeout,\"تعذّر إتمام العملية\"),\n            _                       => (StatusCodes.Status500InternalServerError, \"خطأ غير متوقع\"),\n        };\n\n        // 5xx يُسجَّل بالكامل؛ 4xx خطأ عميل فلا يلوث السجلات بمستوى Error\n        if (status >= 500) log.LogError(ex, \"unhandled error on {Path} trace={TraceId}\", ctx.Request.Path, traceId);\n        else               log.LogInformation(\"{Type} on {Path}: {Message}\", ex.GetType().Name, ctx.Request.Path, ex.Message);\n\n        ctx.Response.StatusCode = status;\n        await ctx.Response.WriteAsJsonAsync(new ProblemDetails\n        {\n            Status = status,\n            Title = title,\n            Detail = status >= 500 ? null : ex.Message,   // لا تسرّب تفاصيل داخلية\n            Instance = ctx.Request.Path,\n            Extensions = { [\"traceId\"] = traceId },\n        }, cancellationToken: ct);\n\n        return true;\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أخطاء شائعة في Minimal APIs",
+      "md": "\n- **Program.cs بيكبر لـ1500 سطر** → الحل في extension methods لكل feature (`MapOrdersApi`).\n- **رجوع `IResult` بدل `Results<A,B>`** → OpenAPI ناقص والمستهلك ما يعرفش حالات الفشل.\n- **نسيان `CancellationToken`** → طلبات ملغاة بتكمل شغلها في الخلفية (تسريب موارد).\n- **`app.MapPost(\"/\", async (MyDto dto) => ...)` بدون `[FromBody]` في حالة ambiguous** → لو عندك أكثر من مصدر (route + body)، وضّح بـ`[AsParameters]` أو أنواع صريحة.\n- **تسجيل الـhandlers كـservices** مش ضروري — لكن لو الـhandler بياخد 8 تبعيات، دي إشارة إن المنطق لازم يكون في service وراه handler رفيع.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أبرر اختيار Minimal APIs أو Controllers بمعايير (مش بتفضيل).",
+        "أنظم endpoints في feature folders مع `MapGroup` وextension methods.",
+        "أرجّع `Results<A,B>` صريحة عشان OpenAPI يعكس كل حالات الفشل.",
+        "أكتب endpoint filter وأعرف الفرق بينه وبين الـmiddleware."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "أهم فائدة عملية لـ`Results<Created<T>, ValidationProblem>` في التوقيع؟",
+          "options": [
+            "أسرع في التنفيذ",
+            "الـOpenAPI metadata بيولّد حالات الاستجابة تلقائيًا بدون `Produces` يدوي",
+            "يمنع الأخطاء في وقت الترجمة",
+            "بيختصر عدد الأسطر"
+          ],
+          "answer": 1,
+          "explain": "الأنواع الصريحة هي مصدر الحقيقة للعقد. من غيرها لازم تفتكر تضيف `Produces`/`ProducesValidationProblem` لكل حالة."
+        },
+        {
+          "q": "validation خاص بـCreateOrderRequest — أنهي أداة أنسب؟",
+          "options": [
+            "Middleware عام",
+            "Endpoint filter على مجموعة orders",
+            "Background service",
+            "Health check"
+          ],
+          "answer": 1,
+          "explain": "الـfilter بيتنفذ حول الـendpoint المعني بس، فبيبقى أرخص وأوضح من middleware يمر على كل الطلبات."
+        },
+        {
+          "q": "ليه `Program.cs` المفروض يفضل صغير؟",
+          "options": [
+            "متطلب تشغيلي",
+            "عشان التسجيل والتوجيه يبقوا مركزيين وواضحين، والمنطق يتوزع على features قابلة للاختبار",
+            "عشان الأداء",
+            "عشان الـDI"
+          ],
+          "answer": 1,
+          "explain": "Program.cs هو مكان **التكوين**. لما يتحول لمكان **التنفيذ**، الاختبار وإعادة الاستخدام بيصبحوا صعبين."
+        },
+        {
+          "q": "نسيان تمرير `CancellationToken` للـhandler يسبب إيه؟",
+          "options": [
+            "مفيش أثر",
+            "شغل بيكمل بعد إلغاء العميل: استهلاك اتصال قاعدة بيانات وموارد بلا فائدة",
+            "فشل الترجمة",
+            "401"
+          ],
+          "answer": 1,
+          "explain": "الـtoken بيوصل من `HttpContext.RequestAborted`. بدونه، الإلغاء ما بينتشرش لـEF Core أو HttpClient."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "إعادة تنظيم API موجود (أو بناء جديد)",
+          "md": "حوّل endpoints لمشروعك إلى feature folders مع `MapGroup` و`MapXxxApi` extension methods، واجعل Program.cs أقل من 50 سطرًا. رجّع `Results<A,B>` صريحة في 3 endpoints على الأقل.",
+          "criteria": [
+            "Program.cs ≤ 50 سطر وكل feature بتسجّل نفسها",
+            "3 endpoints على الأقل بتستخدم union types صريحة",
+            "OpenAPI document يعرض حالات 200/201/400/404/409 بشكل صحيح",
+            "اختبارات الـIntegration من المرحلة 1 لسه ناجحة"
+          ],
+          "hint": "ابدأ بنقل endpoints لمجلد feature واحد وتأكد إن الاختبارات عايزة، ثم كرر. النقل الجماعي مرة واحدة بيصعّب التشخيص."
+        },
+        {
+          "id": "t2",
+          "title": "قرار مكتوب",
+          "md": "اكتب ADR قصير (نصف صفحة): أنهي أسلوب اخترت لمشروعك، المعايير اللي حكمتك، وإمتى هتعيد النظر. احفظه في ملاحظات الدرس.",
+          "criteria": [
+            "يذكر 3 معايير على الأقل من جدول الدرس",
+            "يحدد شرطًا قابلًا للقياس لإعادة النظر",
+            "لا يعتمد على «أشهر» أو «أحدث» كسبب وحيد"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Minimal APIs overview",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis"
+        },
+        {
+          "label": "Minimal APIs — parameter binding",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis/parameter-binding"
+        },
+        {
+          "label": "Endpoint filters",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis/filters"
+        },
+        {
+          "label": "TypedResults",
+          "url": "https://learn.microsoft.com/dotnet/api/microsoft.aspnetcore.http.typedresults"
+        },
+        {
+          "label": "Handle errors with IExceptionHandler",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/error-handling"
+        }
+      ]
+    }
+  ]
+}

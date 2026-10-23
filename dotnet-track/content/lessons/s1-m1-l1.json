@@ -1,0 +1,252 @@
+{
+  "id": "s1-m1-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\n**SOLID** مش خمسة ملصقات تحفظها — دي خمس طرق تسأل بيها سؤال واحد: *مين مسؤول عن إيه، ومين بيعرف عن مين؟*\nفي مشروع ASP.NET Core حقيقي، المبادئ دي بتظهر في قرارات يومية: هل الـService دي بتعمل حاجتين؟ هل إضافة\nوسيلة دفع جديدة هتعدّل كود موجود؟ هل أقدر أختبر الـLogic من غير قاعدة بيانات؟\n\nإحنا هنا مش هنشرح التعريفات — هنشوف كود **قبل وبعد**، ونربط كل مبدأ بعلامة تحذير تشوفها في Code Review.\n"
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "SRP — Single Responsibility",
+          "def": "الكلاس له سبب واحد للتغيير. مش معناه «دالة واحدة»، معناه **مسؤولية واحدة قدام جهة واحدة**."
+        },
+        {
+          "term": "OCP — Open/Closed",
+          "def": "مفتوح للامتداد، مقفول للتعديل: إضافة سلوك جديد بدون تعديل الكود الموجود (بالـpolymorphism مش بالـif)."
+        },
+        {
+          "term": "LSP — Liskov Substitution",
+          "def": "أي نوع مشتق لازم يقدر يحل محل الأساسي من غير ما يكسر توقعات المستخدم."
+        },
+        {
+          "term": "ISP — Interface Segregation",
+          "def": "لا تجبر عميلًا على الاعتماد على أعضاء هو مش محتاجها — واجهات صغيرة أفضل من واجهة ضخمة."
+        },
+        {
+          "term": "DIP — Dependency Inversion",
+          "def": "التبعيات تكون على **تجريدات** (interfaces) مش على تفاصيل التنفيذ. السياسة العليا ما تعتمدش على التفاصيل الواطية."
+        },
+        {
+          "term": "Cohesion / Coupling",
+          "def": "التماسك: قد إيه أجزاء الكلاس بتخدم هدف واحد. الاقتران: قد إيه تغيير هنا يجبر تغيير هناك."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "قبل: كلاس له خمسة أسباب للتغيير"
+    },
+    {
+      "type": "text",
+      "md": "\nده الشكل اللي بنلاقيه في مشاريع كتير — وكل سطر فيه بيكسر مبدأ مختلف:\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "OrderService.cs",
+      "title": "قبل التعديل — God Service",
+      "code": "\npublic class OrderService\n{\n    // SRP: حفظ + حساب + إشعار + فاتورة + تسعير = 5 أسباب للتغيير\n    public async Task Place(Order order)\n    {\n        await using var db = new AppDbContext(\"Server=.;Database=Shop;Trusted_Connection=True\"); // DIP: تفاصيل الاتصال هنا\n        order.Total = order.Lines.Sum(l => l.Price * l.Qty);\n\n        if (order.Customer.Country == \"EG\") order.Total *= 1.14m;        // OCP: أي دولة جديدة = تعديل هنا\n        else if (order.Customer.Country == \"SA\") order.Total *= 1.15m;\n        else if (order.Customer.Country == \"AE\") order.Total *= 1.05m;\n\n        db.Orders.Add(order);\n        await db.SaveChangesAsync();\n\n        // ISP: نفس الكلاس بيعرف عن SMTP وعن PDF\n        using var smtp = new SmtpClient(\"smtp.mailgun.org\", 587);\n        await smtp.SendMailAsync(\"no-reply@shop.com\", order.Customer.Email, \"تم استلام طلبك\", order.Id.ToString());\n\n        File.WriteAllBytes($\"invoices/{order.Id}.pdf\", InvoicePdf.Render(order)); // تفاصيل تنفيذ ثابتة\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أعراض بتقول إن الكود ده هيتعبك",
+      "md": "\n- عشان تختبر حساب الإجمالي لازم قاعدة بيانات وSMTP شغالين.\n- إضافة دولة جديدة معناها تعديل ملف موجود (خطر regression).\n- أي تغيير في طريقة إرسال الإيميل بيعدّل نفس الكلاس.\n- الـconnection string مكتوب جوه الكود = مستحيل تغييره لكل بيئة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "بعد: مسؤوليات مفصولة وتبعيات معكوسة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Domain/Orders",
+      "title": "الـDomain: قواعد العمل من غير أي تفاصيل تقنية",
+      "code": "\npublic interface ITaxPolicy           // DIP: التجريد في الـDomain\n{\n    decimal Apply(Order order);\n}\n\npublic interface IOrderStore\n{\n    Task SaveAsync(Order order, CancellationToken ct = default);\n}\n\npublic interface IOrderNotifier\n{\n    Task NotifyAsync(Order order, CancellationToken ct = default);\n}\n\npublic sealed class Order\n{\n    public Guid Id { get; init; } = Guid.NewGuid();\n    public required Customer Customer { get; init; }\n    public required IReadOnlyList<OrderLine> Lines { get; init; }\n    public decimal SubTotal => Lines.Sum(l => l.Price * l.Quantity);\n    public decimal Total { get; private set; }\n\n    // SRP: الكيان مسؤول عن حالته وقواعد عمله فقط\n    public void ApplyTax(ITaxPolicy policy) =>\n        Total = policy.Apply(this);\n}\n\npublic sealed class OrderPlacementService   // التنسيق فقط\n{\n    private readonly IOrderStore _store;\n    private readonly IOrderNotifier _notifier;\n    private readonly ITaxPolicy _tax;\n\n    public OrderPlacementService(IOrderStore store, IOrderNotifier notifier, ITaxPolicy tax)\n        => (_store, _notifier, _tax) = (store, notifier, tax);\n\n    public async Task PlaceAsync(Order order, CancellationToken ct = default)\n    {\n        order.ApplyTax(_tax);\n        await _store.SaveAsync(order, ct);\n        await _notifier.NotifyAsync(order, ct);\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Tax/EgyptTaxPolicy.cs",
+      "title": "OCP: دولة جديدة = كلاس جديد، من غير تعديل موجود",
+      "code": "\npublic sealed class EgyptTaxPolicy : ITaxPolicy\n{\n    private const decimal Vat = 0.14m;\n    public decimal Apply(Order order) =>\n        order.Customer.Country == \"EG\" ? order.SubTotal * (1 + Vat) : order.SubTotal;\n}\n\n// اختيار السياسة من الإعداد (Composition Root) — مش جوه الـDomain\npublic static class TaxPolicyResolver\n{\n    public static ITaxPolicy Resolve(string country) => country switch\n    {\n        \"EG\" => new EgyptTaxPolicy(),\n        \"SA\" => new SaudiTaxPolicy(),\n        \"AE\" => new EmiratesTaxPolicy(),\n        _    => new NoTaxPolicy(),\n    };\n}\n"
+    },
+    {
+      "type": "text",
+      "md": "\nلاحظ الفرق: في النسخة الأولى كان `switch` البلدان **جوّه** منطق الطلب، فأي بلد جديد بيعدّل كود موجود.\nفي النسخة التانية، الـswitch بقى في **مكان واحد مسؤول عن الاختيار** (Composition Root / DI)، والـDomain\nما بيعرفش حاجة عن الضرائب المحلية.\n\nوكمان: `OrderPlacementService` بقى قابل للاختبار بثواني، لأن كل تبعياته تجريدات:\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "OrderPlacementServiceTests.cs",
+      "title": "DIP بيمكّنك تختبر من غير قاعدة بيانات ولا SMTP",
+      "code": "\npublic sealed class OrderPlacementServiceTests\n{\n    private sealed class FakeStore : IOrderStore\n    {\n        public List<Order> Saved { get; } = [];\n        public Task SaveAsync(Order order, CancellationToken ct = default)\n        {\n            Saved.Add(order);\n            return Task.CompletedTask;\n        }\n    }\n\n    private sealed class FakeNotifier : IOrderNotifier\n    {\n        public int Calls;\n        public Task NotifyAsync(Order order, CancellationToken ct = default)\n        {\n            Interlocked.Increment(ref Calls);\n            return Task.CompletedTask;\n        }\n    }\n\n    [Fact]\n    public async Task Place_applies_tax_then_saves_then_notifies()\n    {\n        var store = new FakeStore();\n        var notifier = new FakeNotifier();\n        var sut = new OrderPlacementService(store, notifier, new EgyptTaxPolicy());\n\n        var order = new Order\n        {\n            Customer = new Customer { Country = \"EG\" },\n            Lines = [new OrderLine { Price = 100m, Quantity = 2 }],\n        };\n\n        await sut.PlaceAsync(order);\n\n        order.Total.Should().Be(228m);          // 200 + 14%\n        store.Saved.Should().ContainSingle();\n        notifier.Calls.Should().Be(1);\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المبدأ",
+        "يعني إيه عمليًا في ASP.NET Core",
+        "علامة إنك كسرته"
+      ],
+      "rows": [
+        [
+          "SRP",
+          "كل كلاس له سبب واحد للتغيير، والـControllers بتنسّق مش بتنّفذ",
+          "الكلاس عنده 300+ سطر أو بيشتغل مع SMTP وEF في نفس الوقت"
+        ],
+        [
+          "OCP",
+          "الامتداد بالـinterfaces/الـstrategies، مش بـif/else متنامية",
+          "إضافة نوع جديد بتعدّل switch موجود في أكثر من ملف"
+        ],
+        [
+          "LSP",
+          "المشتق بيحترم عقد الأساسي (يرجع نفس الضمانات)",
+          "مشتق بيرمي NotImplementedException أو بيتجاهل معاملة مهمة"
+        ],
+        [
+          "ISP",
+          "واجهات صغيرة حسب استخدام العميل",
+          "تنفيذ بيضطر يكتب أعضاء فاضية أو يرمي استثناء"
+        ],
+        [
+          "DIP",
+          "الطبقات العليا تعتمد على تجريدات مسجّلة في DI",
+          "new AppDbContext() أو new SmtpClient() جوه كلاس عمل"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "Over-engineering: إمتى SOLID بيضر",
+      "md": "\nمش كل كلاس محتاج interface. قاعدة عملية:\nاعمل abstraction لما **(1)** فيه أكثر من تنفيذ متوقع، أو **(2)** محتاج seam للاختبار، أو **(3)** ده حدّ وحدة/موديول.\nغير كده، كلاس واحد مباشر أسهل في القراءة وأرخص في الصيانة.\nوكمان: **متعملش Repository فوق EF Core** لمجرد «النظافة» — `DbContext` نفسه Unit of Work وRepository،\nوالطبقة الزايدة غالبًا بتسرّب LINQ على أي حال.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أقدر أحدد سبب التغيير لكل كلاس في مشروعي، وأقول لو فيه كلاس له أكثر من سبب.",
+        "أقدر أحوّل if/else متنامية إلى Strategy مسجّلة في DI.",
+        "أقدر أكتب اختبار Unit لمنطق عمل من غير قاعدة بيانات ولا شبكة.",
+        "أعرف الفرق بين «كود نظيف» و«كود فيه تجريدات بلا داعي»."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "كل ما العميل يطلب وسيلة دفع جديدة (فيزا/فودافون كاش/تقسيط) إنت بتعدّل نفس `switch` في `PaymentService`. أنهي مبدأ بيتكسر أساسًا؟",
+          "options": [
+            "SRP",
+            "OCP",
+            "LSP",
+            "ISP"
+          ],
+          "answer": 1,
+          "explain": "المشكلة إن الكود **مقفول للامتداد**: كل إضافة بتعدّل كود قائم. الحل: `IPaymentMethod` مع تنفيذ لكل وسيلة وتسجيلها في DI (Strategy)."
+        },
+        {
+          "q": "`public class ReadOnlyOrderStore : IOrderStore { public Task SaveAsync(...) => throw new NotImplementedException(); }` — ده خرق لأنهي مبدأ؟",
+          "options": [
+            "DIP",
+            "ISP (وLSP كمان)",
+            "SRP",
+            "OCP"
+          ],
+          "answer": 1,
+          "explain": "العميل اتجبر يعتمد على عضو هو مش محتاجه (ISP)، والمشتق ما يقدرش يحل محل الأساسي (LSP). الحل: فصل `IOrderReader` عن `IOrderWriter`."
+        },
+        {
+          "q": "أنهي تعديل يحقق DIP فعليًا؟",
+          "options": [
+            "نقل الـconnection string لملف appsettings",
+            "استقبال `IOrderStore` في الـconstructor بدل `new AppDbContext()` جوه الدالة",
+            "تقسيم الدالة الطويلة لدالتين",
+            "إضافة try/catch حول الحفظ"
+          ],
+          "answer": 1,
+          "explain": "DIP يعني الاعتماد على تجريد يُحقن من بره. نقل الـconnection string تحسين إعدادات، مش عكس اتجاه الاعتماد."
+        },
+        {
+          "q": "إمتى **ما** تعملش interface لخدمة عندك؟",
+          "options": [
+            "لما يكون فيها منطق عايز تختبره بمعزل",
+            "لما تتوقع تنفيذين مختلفين (مثلًا provider محلي وcloud)",
+            "لما تكون خدمة داخلية بتنفيذ واحد ومش محتاج seam للاختبار",
+            "لما تكون حدّ بين وحدتين (modules)"
+          ],
+          "answer": 2,
+          "explain": "تجريد بلا سبب = ضوضاء. لو تنفيذ واحد ومش محتاج تستبدله في الاختبار، الكلاس المباشر أوضح."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "intro": "اعمل المهام دي على مشروعك الحقيقي لو ممكن — التعلم بيثبت لما تعدّل كود إنت كاتبه.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "فكّك God Service",
+          "md": "خد أكبر Service في مشروعك (أو استخدم `OrderService` فوق)، وفصلها لـ3 مسؤوليات على الأقل مع حقن التبعيات من الـconstructor.",
+          "criteria": [
+            "مفيش `new` لأي تبعية خارجية (DB/SMTP/HTTP) جوه كلاس العمل",
+            "كل مسؤولية في كلاس مستقل باسم يشرحها",
+            "الـController/Endpoint بقى بينادي خدمة تنسيق واحدة",
+            "الكود بيترجم من غير تحذيرات جديدة"
+          ],
+          "hint": "ابدأ بسؤال: «لو اتغيرت طريقة إرسال الإيميل، أنهي ملف بيتعدّل؟» — الملف ده لازم يبقى `EmailOrderNotifier` بس.",
+          "solution": "الشكل النهائي: `IOrderStore` (EF implementation)، `IOrderNotifier` (Email/SMS implementations)، `ITaxPolicy` (policies)، و`OrderPlacementService` بتنسّق. سجلهم في `Program.cs` بـ`AddScoped`/`AddSingleton` حسب الطبيعة."
+        },
+        {
+          "id": "t2",
+          "title": "اختبار يثبت الـDIP",
+          "md": "اكتب اختبار xUnit واحد لـ`OrderPlacementService` باستخدام fakes (مش mocking library) يثبت إن: الضريبة اتحسبت، الطلب اتحفظ، والإشعار اتبعت — بالترتيب.",
+          "criteria": [
+            "الاختبار بيشتغل من غير قاعدة بيانات ولا شبكة",
+            "بيفشل لو شلت `await _store.SaveAsync(...)`",
+            "الـassertions على السلوك (Saved/Calls/Total) مش على تفاصيل داخلية"
+          ],
+          "hint": "لو لسه ما ثبّتّش مكتبة assertions، استخدم `Assert.Equal` العادية — الفكرة في الـfakes.",
+          "solution": [
+            {
+              "type": "code",
+              "lang": "bash",
+              "title": "إنشاء مشروع الاختبار",
+              "code": "dotnet new xunit -n Shop.Tests\ndotnet add Shop.Tests reference Shop.Core\ndotnet test"
+            },
+            {
+              "type": "text",
+              "md": "الكود الكامل للاختبار موجود في مثال `OrderPlacementServiceTests` فوق — انسخه وشغّله، وبعدين اكسره عمدًا (شيل سطر الحفظ) واتأكد إنه fail."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Microsoft — Architectural principles",
+          "url": "https://learn.microsoft.com/dotnet/architecture/"
+        },
+        {
+          "label": "Refactoring Guru — Design patterns",
+          "url": "https://refactoring.guru/design-patterns"
+        },
+        {
+          "label": "Clean Architecture sample (ardalis)",
+          "url": "https://github.com/ardalis/CleanArchitecture"
+        }
+      ]
+    }
+  ]
+}

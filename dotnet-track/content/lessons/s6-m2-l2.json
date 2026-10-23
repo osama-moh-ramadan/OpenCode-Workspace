@@ -1,0 +1,425 @@
+{
+  "id": "s6-m2-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "مش كل شغل يستاهل خدمة شغالة 24 ساعة. webhook، رسالة على طابور، ملف وصل storage، مهمة مجدولة، أو **سير عمل طويل** فيه انتظار وموافقات — دول نموذج Azure Functions. في الدرس ده: **نموذج isolated worker** (الوحيد المدعوم لـ.NET 10)، الخطط الأربعة وأرقامها، و**Durable Functions** لسير العمل اللي «بينام أسبوع ويكمل» من غير ما تفقد الحالة — مع القواعد الحتمية اللي بتكسر الـorchestrator لو خالفتها."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "Trigger",
+          "def": "الحدث اللي بيشغّل الدالة: HTTP · Timer · Service Bus · Event Grid · Blob · Queue · Cosmos DB. دالة واحدة = trigger واحد."
+        },
+        {
+          "term": "Binding",
+          "def": "اختصار للإدخال/الإخراج: بدل ما تكتب كود قراءة/إرسال، تصرّح `BlobInput`/`ServiceBusOutput` والمنصة بتنفذ."
+        },
+        {
+          "term": "Isolated worker model",
+          "def": "كودك في **عملية .NET مستقلة** بتتكلم مع الـhost عبر gRPC: `Program.cs` + DI كامل + middleware + أي إصدار .NET حديث. **النموذج in-process انتهى دعمه 2026-11-10**."
+        },
+        {
+          "term": "Consumption / Flex Consumption / Premium",
+          "def": "خطط الاستضافة: Consumption (الأرخص، timeout قصير، بلا VNet، **.NET 10 غير مدعوم على Linux Consumption**) · Flex Consumption (أسرع إقلاعًا، timeout أطول، VNet، مخصص لكل دالة) · Premium (دافئ دايمًا، بلا cold start)."
+        },
+        {
+          "term": "Cold start",
+          "def": "زمن تجهيز أول instance بعد السكون. بيتحسّن بـPremium/Flex (instances مُسخّنة) وبـNative AOT في isolated worker."
+        },
+        {
+          "term": "Durable Functions",
+          "def": "امتداد بيديك **سير عمل بحالة**: orchestrator يحدد الخطوات، activities تنفذ الشغل، والمنصة بتخزن الحالة وبتكمل بعد فشل/إعادة تشغيل/انتظار أيام."
+        },
+        {
+          "term": "Orchestrator determinism",
+          "def": "الـorchestrator **بيتعاد تشغيله (replay)** من الأول عند كل خطوة، فلازم يدي نفس القرارات: ممنوع `DateTime.UtcNow` / `Guid.NewGuid()` / I/O مباشر / `Task.Delay` — استخدم بدائل الـcontext."
+        },
+        {
+          "term": "Checkpoint / History",
+          "def": "سجل خطوات الـorchestration المخزّن؛ منه بيتم الـreplay ومنه بتعرف وصلت فين. حجمه بيكبر مع عدد الخطوات → نمط Fan-out/Fan-in والإصدارات."
+        },
+        {
+          "term": "`FUNCTIONS_WORKER_RUNTIME`",
+          "def": "إعداد التطبيق اللي بيقول للـhost أي worker يشغّل: **`dotnet-isolated`**. لو غلط أو متعارض مع الكود المنشور، التطبيق يدخل في حالة خطأ و500 لكل الدوال."
+        },
+        {
+          "term": "DLQ / إعادة المحاولة",
+          "def": "الرسالة اللي فشل استهلاكها بعد كل المحاولات بتروح **Dead-Letter Queue** — لازم يكون فيه خطة لمعالجتها مش تجاهلها."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① قرار 2026 الإجباري: isolated worker + الخطة الصح"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "معلومتان لازم تحفظهم",
+      "md": "**① نموذج in-process انتهى دعمه في 10 نوفمبر 2026** (نفس يوم نهاية دعم .NET 8 و9) — أي مشروع جديد لازم **isolated worker** (`FUNCTIONS_WORKER_RUNTIME=dotnet-isolated`)، وهو الوحيد اللي بيدعم .NET 9/10/11. **② .NET 10 ما بيشتغلش على Linux Consumption** — لو عايز Linux و.NET 10 فالخطة هي **Flex Consumption** (أو Premium/Dedicated). التحقق قبل ما تبني: اقرأ صفحة دعم الإصدارات، لأن التفاصيل دي بتتغير."
+    },
+    {
+      "type": "table",
+      "caption": "خطط Azure Functions (2026) — الأرقام تقريبية ومن توثيق Microsoft؛ تحقق لخطتك ومنطقتك",
+      "head": [
+        "",
+        "Consumption",
+        "Flex Consumption",
+        "Premium",
+        "Dedicated (App Service Plan)"
+      ],
+      "rows": [
+        [
+          "النسخ",
+          "0 → ~200",
+          "0 → ~1000",
+          "1 → ~100 (دافئ)",
+          "حسب الخطة"
+        ],
+        [
+          "Timeout",
+          "~5 د افتراضيًا / 10 كحد أقصى",
+          "~30 د",
+          "~60 د (وقد تكون غير محدودة)",
+          "غير محدود"
+        ],
+        [
+          "VNet",
+          "✗",
+          "✓",
+          "✓",
+          "✓"
+        ],
+        [
+          "Cold start",
+          "الأسوأ (ثوانٍ)",
+          "أقل (instances مُسخّنة)",
+          "شبه معدوم",
+          "مفيش"
+        ],
+        [
+          ".NET 10 على Linux",
+          "**✗**",
+          "✓",
+          "✓",
+          "✓"
+        ],
+        [
+          "التوسع",
+          "لكل function app",
+          "**لكل دالة** (أدق)",
+          "لكل app",
+          "يدوي/تلقائي حسب الخطة"
+        ],
+        [
+          "الفوترة",
+          "لكل تنفيذ + GB-s (مع منحة مجانية)",
+          "لكل تنفيذ + GB-s",
+          "لكل instance (دايمًا)",
+          "لكل instance في الخطة"
+        ],
+        [
+          "الأنسب",
+          "حمل خفيف/متقطع، Windows",
+          "**الإنتاج بلا خوادم لـ.NET 10**",
+          "latency حساس + VNet",
+          "أحمال طويلة/مستمرة أو مشاركة خطة"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② المشروع: csproj + Program.cs + ثلاث دوال"
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "title": "src/Shop.Notifications/Shop.Notifications.csproj",
+      "filename": "src/Shop.Notifications/Shop.Notifications.csproj",
+      "code": "<Project Sdk=\"Azure.Functions.Sdk/1.0.0\">\n  <!-- ⚠ SDK جديد (مش Microsoft.NET.Sdk.Functions القديم): بيولّد metadata الدوال وقت البناء -->\n\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <OutputType>Exe</OutputType>                     <!-- isolated worker = تطبيق قابل للتنفيذ -->\n    <AzureFunctionsVersion>v4</AzureFunctionsVersion>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <Nullable>enable</Nullable>\n    <!-- Native AOT مدعوم في isolated worker وبيقلل cold start جذريًا —\n         بس جرّبه: بعض الحزم بتعتمد على reflection/emit. -->\n    <!-- <PublishAot>true</PublishAot> -->\n  </PropertyGroup>\n\n  <ItemGroup>\n    <!-- تحسينات الإقلاع الموصى بها: Framework reference لـASP.NET Core -->\n    <FrameworkReference Include=\"Microsoft.AspNetCore.App\" />\n  </ItemGroup>\n\n  <ItemGroup>\n    <PackageReference Include=\"Microsoft.Azure.Functions.Worker\" Version=\"2.50.*\" />\n    <PackageReference Include=\"Microsoft.Azure.Functions.Worker.Extensions.Http\" Version=\"3.*\" />\n    <PackageReference Include=\"Microsoft.Azure.Functions.Worker.Extensions.Http.AspNetCore\" Version=\"2.*\" />\n    <PackageReference Include=\"Microsoft.Azure.Functions.Worker.Extensions.ServiceBus\" Version=\"5.*\" />\n    <PackageReference Include=\"Microsoft.Azure.Functions.Worker.Extensions.Timer\" Version=\"4.*\" />\n    <PackageReference Include=\"Microsoft.Azure.Functions.Worker.Extensions.DurableTask\" Version=\"1.*\" />\n    <PackageReference Include=\"Microsoft.Azure.Functions.Worker.OpenTelemetry\" Version=\"1.*\" />\n    <!-- الإصدارات بتتحرك بسرعة: خد آخر مستقر من NuGet ولا تُثبّت أرقامًا من الذاكرة -->\n  </ItemGroup>\n</Project>\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Program.cs — نفس Generic Host اللي تعرفه",
+      "filename": "src/Shop.Notifications/Program.cs",
+      "code": "using Microsoft.Azure.Functions.Worker;\nusing Microsoft.Extensions.DependencyInjection;\nusing Microsoft.Extensions.Hosting;\nusing Microsoft.Extensions.Logging;\nusing Shop.Notifications.Services;\n\nvar builder = FunctionsApplication.CreateBuilder(args);\n\n// ConfigureFunctionsWebApplication = تكامل ASP.NET Core:\n// تستخدم HttpRequest/HttpResponse وMinimal API وmiddleware العادية.\n// (بدونها: HttpRequestData/HttpResponseData — نموذج أقدم وأقل راحة.)\nbuilder.ConfigureFunctionsWebApplication();\n\nbuilder.Services.AddApplicationInsightsTelemetryWorkerService();\nbuilder.Services.ConfigureFunctionsApplicationInsights();\n\n// كل ما بنيته في المراحل السابقة يُعاد استخدامه هنا حرفيًا:\nbuilder.Services.Configure<OrderOptions>(builder.Configuration.GetSection(\"Orders\"))\n       .ValidateDataAnnotations()\n       .ValidateOnStart();\nbuilder.Services.AddSingleton<EmailSender>();\nbuilder.Services.AddHttpClient(\"payments\", c => c.Timeout = TimeSpan.FromSeconds(8));\n// للتتبع الموزّع (5.3.2): أضف AddOpenTelemetry() مع OTLP exporter كما في بقية خدماتك،\n// وتحقق من اسم حزمة تكامل Functions مع OpenTelemetry في إصدارك قبل الاعتماد عليها.\n\nvar host = builder.Build();\nhost.Run();\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Functions.cs — HTTP + Service Bus + Timer",
+      "filename": "src/Shop.Notifications/Functions.cs",
+      "code": "using System.Text.Json;\nusing Microsoft.Azure.Functions.Worker;\nusing Microsoft.Azure.Functions.Worker.Http;\nusing Microsoft.Extensions.Logging;\n\nnamespace Shop.Notifications;\n\npublic class Functions(ILogger<Functions> log, EmailSender email)\n{\n    // ── HTTP: Minimal API عادي (بفضل ConfigureFunctionsWebApplication) ──\n    [Function(\"Ping\")]\n    public IActionResult Ping([HttpTrigger(AuthorizationLevel.Anonymous, \"get\", Route = \"ping\")]\n        HttpRequest req) => Results.Ok(new { ok = true, at = DateTimeOffset.UtcNow });\n\n    [Function(\"Webhook\")]\n    public async Task<IActionResult> Webhook(\n        [HttpTrigger(AuthorizationLevel.Function, \"post\", Route = \"webhooks/payments\")]\n        HttpRequest req, CancellationToken ct)\n    {\n        // ⚠ أي webhook لازم يتعامل مع «نفس الرسالة مرتين» (الدرس 5.2.4):\n        var payload = await JsonSerializer.DeserializeAsync<PaymentEvent>(req.Body, cancellationToken: ct);\n        if (payload is null) return Results.BadRequest();\n\n        // Idempotency: جدول/مفتاح مخصص — مش افتراض إن الرسالة جديدة.\n        if (!await email.MarkSeenAsync(payload.EventId, ct))\n        {\n            log.LogInformation(\"Duplicate webhook {EventId} ignored\", payload.EventId);\n            return Results.Ok(new { ignored = true });\n        }\n\n        await email.SendReceiptAsync(payload, ct);\n        return Results.Accepted();\n    }\n\n    // ── Service Bus: trigger + إخراج بـbinding ──\n    [Function(\"OnOrderPlaced\")]\n    [ServiceBusOutput(\"orders-audit\", Connection = \"ServiceBus\")]   // قيمة الإرجاع = رسالة\n    public async Task<string> OnOrderPlaced(\n        [ServiceBusTrigger(\"orders-placed\", Connection = \"ServiceBus\")] string body,\n        FunctionContext ctx)\n    {\n        var log = ctx.GetLogger<Functions>();\n        var e = JsonSerializer.Deserialize<OrderPlaced>(body)!;\n        await email.SendOrderConfirmationAsync(e, CancellationToken.None);\n        return JsonSerializer.Serialize(new { e.OrderId, auditedAt = DateTimeOffset.UtcNow });\n        // ⚠ لو رميت exception، المنصة تعيد المحاولة ثم ترمي الرسالة للـDLQ.\n        //   ففكر: أي أخطاء تستاهل إعادة محاولة وأيها لازم تُسجَّل وتُبتلع؟\n    }\n\n    // ── Timer: CRON بالتوقيت العالمي (مش توقيت جهازك) ──\n    [Function(\"NightlyReport\")]\n    public async Task NightlyReport(\n        [TimerTrigger(\"0 30 2 * * *\", RunOnStartup = false)] TimerInfo info)\n    {\n        log.LogInformation(\"Nightly report at {When}\", info.ScheduleStatus?.Next);\n        await email.BuildDailyReportAsync(CancellationToken.None);\n        // RunOnStartup=false مهم: وإلا اشتغلت الدالة عند كل نشر/إعادة تشغيل.\n    }\n}\n\npublic record PaymentEvent(string EventId, string OrderId, decimal Amount, string Currency);\npublic record OrderPlaced(string OrderId, string Email, decimal Total);\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ Durable Functions: سير عمل بينام أسبوع ويكمل"
+    },
+    {
+      "type": "text",
+      "md": "تخيل «طلب فيه موافقة»: احجز المخزون → لو المبلغ > 5,000 جنيه استنى موافقة مدير (**قد تستغرق أيامًا**) → اخصم الدفع → أرسل الشحن → لو فشل أي شيء اعمل تعويض. بالكود العادي ده يعني طوابير وجداول حالة ومؤقتات ومراقبة. بـDurable Functions ده **orchestrator واحد مقروء**، والمنصة بتخزن الحالة وبتكمل بعد فشل أو إعادة تشغيل."
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "OrderApprovalOrchestration.cs — النمط الكامل",
+      "filename": "src/Shop.Notifications/OrderApprovalOrchestration.cs",
+      "code": "using Microsoft.Azure.Functions.Worker;\nusing Microsoft.Azure.Functions.Worker.Http;\nusing Microsoft.DurableTask;          // ⚠ مساحة أسماء isolated worker (مش WebJobs)\nusing Microsoft.Extensions.Logging;\n\nnamespace Shop.Notifications.Orchestrations;\n\npublic record OrderRequest(string OrderId, string CustomerEmail, decimal Total);\npublic record ApprovalDecision(bool Approved, string By);\n\npublic class OrderApprovalOrchestration\n{\n    // ── نقطة البداية: HTTP يُشغّل الـorchestration ويرجع فورًا بمعرف النسخة ──\n    [Function(\"StartApproval\")]\n    public async Task<HttpResponseData> StartApproval(\n        [HttpTrigger(AuthorizationLevel.Function, \"post\", Route = \"orders/approvals\")]\n        HttpRequestData req,\n        [DurableTaskTrigger] DurableTaskClient client,\n        CancellationToken ct)\n    {\n        var input = await req.ReadFromJsonAsync<OrderRequest>()\n                    ?? throw new InvalidOperationException(\"body required\");\n\n        // InstanceId ثابت مشتق من معرف الطلب = حماية من تشغيل مزدوج (idempotency):\n        var instanceId = $\"approval-{input.OrderId}\";\n\n        // Idempotency: نفحص أولًا، ولو المنصة رفضت تكرار المعرف نلتقط ونرجع 409\n        // (نافذة سباق صغيرة بين الفحص والبدء — عالجها بالتقاط الاستثناء لا بالافتراض).\n        var existing = await client.GetInstancesAsync(instanceId, getInputsAndOutputs: false, ct);\n        if (existing is not null)\n            return req.CreateResponse(System.Net.HttpStatusCode.Conflict);\n\n        await client.ScheduleNewOrchestrationInstanceAsync(\n            \"OrderApproval\", input, new StartOrchestrationOptions { InstanceId = instanceId });\n\n        var resp = req.CreateResponse(System.Net.HttpStatusCode.Accepted);\n        await resp.WriteAsJsonAsync(new { instanceId, statusQuery = $\"/runtime/webhooks/durableTask/instances/{instanceId}\" });\n        return resp;\n    }\n\n    // ── الـOrchestrator: حتمي 100% (القواعد في الجدول الجاي) ──\n    [Function(\"OrderApproval\")]\n    public static async Task<string> OrderApproval(TaskOrchestrationContext ctx, OrderRequest req)\n    {\n        ILogger log = ctx.CreateReplaySafeLogger(nameof(OrderApproval));   // ✓ logger آمن للـreplay\n        log.LogInformation(\"Approval started for {OrderId}\", req.OrderId);\n\n        // 1) احجز المخزون\n        var reservation = await ctx.CallActivityAsync<string>(\"ReserveStock\", req.OrderId);\n\n        try\n        {\n            // 2) موافقة لو المبلغ كبير — مع انتظار خارجي (قد يستغرق أيامًا)\n            if (req.Total > 5000m)\n            {\n                // انتظار حدث خارجي بمهلة = نمط «الموافقة البشرية»:\n                var decision = await ctx.WaitForExternalEvent<ApprovalDecision>(\n                    \"ManagerApproval\", TimeSpan.FromDays(3));\n\n                if (!decision.Approved)\n                    return await CompensateAsync(ctx, req.OrderId, reservation, \"rejected by manager\");\n            }\n\n            // 3) Fan-out: شغل ثلاث مهام بالتوازي وانتظر الكل (نمط شائع جدًا)\n            var tasks = new[]\n            {\n                ctx.CallActivityAsync<bool>(\"ChargePayment\", req),\n                ctx.CallActivityAsync<bool>(\"NotifyWarehouse\", req),\n                ctx.CallActivityAsync<bool>(\"SendCustomerEmail\", req),\n            };\n            var results = await Task.WhenAll(tasks);\n\n            if (!results.All(r => r))\n                return await CompensateAsync(ctx, req.OrderId, reservation, \"downstream failure\");\n\n            // 4) مؤجَّل: تابع بعد 7 أيام — CreateTimer بدل Task.Delay (المنصة بتخزّن المؤقت)\n            await ctx.CreateTimer(TimeSpan.FromDays(7), ctx.CancellationToken);\n\n            await ctx.CallActivityAsync(\"CloseOrder\", req.OrderId);\n            return \"completed\";\n        }\n        catch (TaskFailedException ex)\n        {\n            log.LogError(ex, \"Activity failed: {Name}\", ex.Name);\n            return await CompensateAsync(ctx, req.OrderId, reservation, ex.Message);\n        }\n    }\n\n    private static async Task<string> CompensateAsync(\n        TaskOrchestrationContext ctx, string orderId, string reservation, string reason)\n    {\n        // التعويض نفسه activity (يعني بيتخزن وله إعادة محاولة):\n        await ctx.CallActivityAsync(\"ReleaseStock\", reservation);\n        await ctx.CallActivityAsync(\"NotifyFailure\", (orderId, reason));\n        return $\"compensated: {reason}\";\n    }\n\n    // ── استقبال الموافقة البشرية من الخارج (يرفع الحدث المُنتظَر) ──\n    [Function(\"Approve\")]\n    public async Task<IActionResult> Approve(\n        [HttpTrigger(AuthorizationLevel.Function, \"post\", Route = \"orders/approvals/{instanceId}/approve\")]\n        HttpRequest req, string instanceId,\n        [DurableTaskTrigger] DurableTaskClient client, CancellationToken ct)\n    {\n        var decision = await req.ReadFromJsonAsync<ApprovalDecision>(ct)\n                       ?? new ApprovalDecision(false, \"unknown\");\n        await client.RaiseEventAsync(instanceId, \"ManagerApproval\", decision, ct);\n        return Results.Accepted();\n    }\n}\n\n// ── الأنشطة في class مستقل: DI عادي بالـconstructor (الأنشطة مكان كل I/O) ──\npublic class StockActivities(StockService stock)\n{\n    [Function(\"ReserveStock\")]\n    public Task<string> ReserveStock(TaskActivityContext ctx, string orderId) =>\n        stock.ReserveAsync(orderId, ctx.CancellationToken);\n\n    [Function(\"ReleaseStock\")]\n    public Task ReleaseStock(TaskActivityContext ctx, string reservation) =>\n        stock.ReleaseAsync(reservation, ctx.CancellationToken);\n\n    [Function(\"CloseOrder\")]\n    public Task CloseOrder(TaskActivityContext ctx, string orderId) =>\n        stock.FinalizeAsync(orderId, ctx.CancellationToken);\n}\n\npublic class PaymentActivities(PaymentClient payments, EmailSender email)\n{\n    [Function(\"ChargePayment\")]\n    public Task<bool> ChargePayment(TaskActivityContext ctx, OrderRequest req) =>\n        payments.ChargeAsync(req.OrderId, req.Total, ctx.CancellationToken);\n\n    [Function(\"SendCustomerEmail\")]\n    public Task<bool> SendCustomerEmail(TaskActivityContext ctx, OrderRequest req) =>\n        email.SendOrderConfirmationAsync(req.OrderId, req.CustomerEmail, ctx.CancellationToken);\n\n    [Function(\"NotifyFailure\")]\n    public Task NotifyFailure(TaskActivityContext ctx, (string OrderId, string Reason) info) =>\n        email.SendFailureNoticeAsync(info.OrderId, info.Reason, ctx.CancellationToken);\n}\n"
+    },
+    {
+      "type": "table",
+      "caption": "قواعد الحتمية — أي مخالفة بتفسد الـreplay وبتنتج سلوك عشوائي صعب التشخيص",
+      "head": [
+        "ممنوع في الـorchestrator",
+        "البديل الصح",
+        "ليه"
+      ],
+      "rows": [
+        [
+          "`DateTime.UtcNow` / `DateTime.Now`",
+          "`ctx.CurrentUtcDateTime`",
+          "الـreplay بيحصل في وقت مختلف → قرار مختلف (مثال: مهلة الموافقة)"
+        ],
+        [
+          "`Guid.NewGuid()`",
+          "`ctx.NewGuid()`",
+          "المعرّفات لازم تتطابق بين الإعادة والإعادة"
+        ],
+        [
+          "`Task.Delay(...)`",
+          "`ctx.CreateTimer(...)` / `ctx.SleepAsync(...)`",
+          "المؤقت لازم يُخزَّن في المنصة عشان ينجو من إعادة التشغيل"
+        ],
+        [
+          "استدعاء HTTP/قاعدة بيانات/بريد مباشرة",
+          "لفّه في **activity** و`CallActivityAsync`",
+          "أي I/O بيحصل مرتين أو أكتر مع كل replay"
+        ],
+        [
+          "`ILogger` عادي",
+          "`ctx.CreateReplaySafeLogger(...)`",
+          "الـlogger العادي بيسجّل نفس السطر مع كل replay"
+        ],
+        [
+          "`ConfigureAwait(false)`",
+          "لا تستخدمه في الـorchestrator",
+          "خيط إعادة التشغيل بيحتاج يستمر على نفس السياق — ممكن يكسر التنفيذ"
+        ],
+        [
+          "اعتماد على ترتيب تنفيذ المهام المتوازية",
+          "`Task.WhenAll` وقراءة النتائج بعد الكل",
+          "الأنشطة المتوازية بتكمل بترتيب غير مضمون"
+        ],
+        [
+          "تغيير متغير حالة (state) محلي بعد `await`",
+          "اعتمد على نتائج الأنشطة و`ctx`",
+          "الحالة الحقيقية في سجل الـorchestration، مش في الذاكرة"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ التطوير المحلي والنشر والتشخيص"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "functions-devops.sh",
+      "filename": "functions-devops.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\n\n# ═══ 1) الأدوات ═══\ndotnet tool install -g Microsoft.Azure.Functions.CoreTools   # أو من حزمة المنصة\nnpm i -g azurite                                             # محاكي Storage محليًا\nfunc --version\n\n# ═══ 2) مشروع جديد بالنموذج الصح من أول أمر ═══\nfunc init Shop.Notifications --worker-runtime dotnet-isolated --target-framework net10.0\ncd Shop.Notifications && func new --template \"HTTP trigger\" --name Ping\n\n# ═══ 3) الإعدادات المحلية (لا تُرفع لـGit) ═══\ncat > local.settings.json <<'JSON'\n{\n  \"IsEncrypted\": false,\n  \"Values\": {\n    \"AzureWebJobsStorage\": \"UseDevelopmentStorage=true\",\n    \"FUNCTIONS_WORKER_RUNTIME\": \"dotnet-isolated\",\n    \"ServiceBus\": \"Endpoint=sb://<ns>.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...\",\n    \"Orders__MaxTotalWithoutApproval\": \"5000\"\n  }\n}\nJSON\n# .gitignore: local.settings.json\n\n# ═══ 4) شغّل محليًا (Azurite في طرفية أخرى) ═══\nazurite --silent --location /tmp/azurite &\nfunc start            # يطبع عناوين كل دالة: http://localhost:7071/api/ping\n\n# ═══ 5) اختبار الدالة محليًا (HTTP) ═══\ncurl -s http://localhost:7071/api/ping | jq\n# إرسال رسالة تجريبية لطابور (لو مربوط بـService Bus حقيقي):\naz servicebus topic message send --namespace-name <ns> --topic-name orders-placed \\\n  --body '{\"orderId\":\"o-1\",\"email\":\"a@b.c\",\"total\":120}' 2>/dev/null || echo \"استخدم Portal/SDK\"\n\n# ═══ 6) النشر (الأفضل من CI — الدرس 6.3.1) ═══\ndotnet publish src/Shop.Notifications -c Release -o publish/\naz functionapp create --resource-group rg-shop-dev --name fn-shop-notifications \\\n  --storage-account stshopdev --consumption-plan-location westeurope \\\n  --functions-version 4 --runtime dotnet-isolated --os-type Linux\n# ⚠ لو Linux و.NET 10 → استخدم Flex Consumption (الخطة Consumption ما تدعمش .NET 10 على Linux)\naz functionapp config appsettings set --name fn-shop-notifications --resource-group rg-shop-dev \\\n  --settings FUNCTIONS_WORKER_RUNTIME=dotnet-isolated\naz functionapp deployment source config-zip --name fn-shop-notifications \\\n  --resource-group rg-shop-dev --src publish.zip\n\n# ═══ 7) التشخيص: السجلات والتتبع والحالة ═══\naz monitor app-insights metrics show --app fn-shop-notifications --resource-group rg-shop-dev \\\n  --metric requests/duration --interval PT1M\nfunc durable get-history --connection-string-name AzureWebJobsStorage --task-hub-name <hub> 2>/dev/null || true\n# الأسهل عمليًا: Application Insights → «Failures» و«End-to-end transaction details»\n# ولفحص orchestration معيّن: اقرأ الحالة من الـstatus query URL اللي رجّعته الدالة.\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "إمتى Functions مش الاختيار الصح",
+      "md": "**① شغل أطول من حد الخطة** (10 د في Consumption): استخدم Durable أو خدمة عادية. **② اتصال دائم** (WebSocket/SSE/gRPC streaming): Functions مش مصممة له → App Service/ACA. **③ حالة في الذاكرة** (cache محلي، singleton counters): كل تنفيذ ممكن يكون على instance جديد → استخدم Redis/Storage. **④ حمل مستمر عالي**: الفوترة لكل تنفيذ بتبقى أغلى من خدمة ثابتة. **⑤ «function sprawl»**: 200 دالة صغيرة بلا اختبارات ولا عقود = نظام مستحيل الفهم؛ احتفظ بالحدود الواضحة (نفس منطق الـbounded contexts في 5.1.2). والقاعدة: لو الدالة بتعمل أكتر من «استقبال حدث → تحويل → استدعاء/حفظ → إخراج»، فكر في خدمة."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أعرف إن **isolated worker** هو النموذج الوحيد المدعوم لـ.NET 10، وإن in-process انتهى دعمه 10 نوفمبر 2026.",
+        "أعرف إن **Linux Consumption ما بيدعمش .NET 10** → Flex Consumption هو مسار الإنتاج على Linux.",
+        "أقدر أبني مشروع Functions بـ`Azure.Functions.Sdk` + `OutputType Exe` + `ConfigureFunctionsWebApplication` وأعيد استخدام كل الـDI/Options/OTel اللي بنيته قبل كده.",
+        "أفرق بين trigger وbinding، وأعرف أتعامل مع التكرار (idempotency) والـDLQ.",
+        "أقدر أكتب orchestrator حتمي وأنقل كل I/O للأنشطة، وأستخدم `CurrentUtcDateTime`/`NewGuid`/`CreateTimer`/`CreateReplaySafeLogger`.",
+        "أعرف نمط Fan-out/Fan-in والانتظار لحدث خارجي (موافقة بشرية) والتعويض عند الفشل.",
+        "أقدر أشغّل محليًا بـAzurite وأنشر بـzip من CI وأشخّص بـApplication Insights."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على النموذج والخطط وDurable.",
+      "questions": [
+        {
+          "q": "مشروع Functions جديد على .NET 10 وLinux. أي خطة + أي نموذج؟",
+          "options": [
+            "Consumption + in-process",
+            "Flex Consumption (أو Premium/Dedicated) + **isolated worker**",
+            "Consumption + isolated",
+            "أي خطة + in-process"
+          ],
+          "answer": 1,
+          "explain": "in-process انتهى دعمه 10 نوفمبر 2026 وما بيدعمش .NET 10 أصلًا. و.NET 10 على Linux محتاج Flex Consumption (أو Premium/Dedicated) — Consumption على Linux مش مدعوم لـ.NET 10."
+        },
+        {
+          "q": "`FUNCTIONS_WORKER_RUNTIME` مضبوط `dotnet` بينما الكود المنشور isolated. النتيجة؟",
+          "options": [
+            "هيشتغل عادي",
+            "التطبيق يدخل حالة خطأ و500 لكل الدوال — الإعداد والكود لازم يتغيروا معًا (يفضَّل عبر slot)",
+            "هيشتغل أبطأ",
+            "هيتحول تلقائيًا"
+          ],
+          "answer": 1,
+          "explain": "ده أشهر خطأ في الهجرة: الـhost بيحاول يشغّل worker غلط. الحل: غيّر الإعداد والكود معًا، واستخدم deployment slot للتأكد قبل الإنتاج."
+        },
+        {
+          "q": "ليه `DateTime.UtcNow` ممنوعة داخل الـorchestrator؟",
+          "options": [
+            "بطيئة",
+            "لأن الـorchestrator بيتعاد تشغيله (replay) في أوقات مختلفة → قرارات مختلفة وسجل فاسد؛ البديل `ctx.CurrentUtcDateTime`",
+            "لأنها مش thread-safe",
+            "لأنها بتستهلك ذاكرة"
+          ],
+          "answer": 1,
+          "explain": "Durable بيعيد تشغيل الـorchestrator من الأول بعد كل نشاط. أي قيمة غير حتمية (وقت/عشوائي/I/O) بتنتج مسار مختلف عن المسجل. كل الشغل الحقيقي يروح للأنشطة."
+        },
+        {
+          "q": "محتاج «استنى موافقة مدير لحد 3 أيام ثم كمّل». الأنسب؟",
+          "options": [
+            "`Task.Delay(3 أيام)` في دالة عادية",
+            "`ctx.WaitForExternalEvent<ApprovalDecision>(\"ManagerApproval\", TimeSpan.FromDays(3))` في orchestrator + دالة HTTP ترفع الحدث",
+            "طابور مع رسالة مؤجلة 3 أيام",
+            "Timer function تفحص كل دقيقة"
+          ],
+          "answer": 1,
+          "explain": "الانتظار لحدث خارجي بمهلة هو نمط Durable المصمم للحالة دي: الحالة بتُخزَّن، مفيش عملية شغالة بتستهلك موارد، والموافقة بتوصل من HTTP فترفع الحدث ويكمل الـorchestrator."
+        },
+        {
+          "q": "دالة Service Bus trigger رمَت exception. بيحصل إيه؟",
+          "options": [
+            "الرسالة بتضيع",
+            "إعادة محاولة حسب السياسة، ثم **DLQ** — ولازم يكون فيه خطة لمعالجة الرسائل الميتة",
+            "التطبيق بيتوقف",
+            "الرسالة بترجع للطابور للأبد"
+          ],
+          "answer": 1,
+          "explain": "ده السلوك المتوقع. قرارك الهندسي: أي استثناء يستاهل إعادة محاولة (مؤقت: شبكة/قفل DB) وأيها «سم» (payload غلط) لازم يُسجَّل ويُرمى للـDLQ. وراقب عمق الـDLQ كمؤشر (2.3.4)."
+        },
+        {
+          "q": "إيه اللي **مش** سبب لاستخدام Functions؟",
+          "options": [
+            "webhook خارجي",
+            "مهمة مجدولة ليلية",
+            "اتصال WebSocket دائم يبعت تحديثات لحظية",
+            "معالجة رسالة من طابور"
+          ],
+          "answer": 2,
+          "explain": "الاتصالات الطويلة/الدائمة (WebSocket/SSE/gRPC streaming) محتاجة عملية شغالة باستمرار → App Service أو Container Apps (SignalR درس 2.3.1). الباقي حالات Functions الكلاسيكية."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "دالة شغالة + سير عمل حتمي باختبارات.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: webhook + مستهلك طابور على isolated worker — مع idempotency وDLQ",
+          "md": "**السياق:** مزوّد دفع بيبعت webhook، ونظام الطلبات بينشر `order-placed` على Service Bus. عايزين دالتين: واحدة تستقبل الـwebhook، والتانية تستهلك الرسالة وتبعت بريد تأكيد.\n\n**المطلوب:**\n1. مشروع Functions بـ`Azure.Functions.Sdk` و`net10.0` و`OutputType Exe` و`ConfigureFunctionsWebApplication`.\n2. دالة `Webhook` بـ`AuthorizationLevel.Function`: تتحقق من توقيع المزوّد (HMAC بمفتاح من Key Vault/env)، وتفحص `EventId` ضد جدول/مفتاح idempotency، وترجع `202 Accepted` أو `200 {ignored:true}`.\n3. دالة `OnOrderPlaced` بـService Bus trigger + `ServiceBusOutput` لـ`orders-audit`، ومعالجة أخطاء صريحة: أخطاء مؤقتة → ارمِ (إعادة محاولة)، أخطاء بيانات → سجّل وأرجع (تجنب حلقة لا نهائية).\n4. `local.settings.json` + تشغيل محلي بـAzurite + سكريبت `curl` يختبر الحالتين (جديد/مكرر).\n5. **اختبارات**: unit tests للدالة باستخدام فئات مجردة (مش platform) — اختبار «مكرر → لا يرسل بريد» و«توقيع غلط → 401».",
+          "criteria": [
+            "المشروع isolated worker بالكامل (مفيش أي `Microsoft.Azure.WebJobs.*`) ويشتغل بـ`func start`.",
+            "التحقق من التوقيع قبل أي معالجة، والمفتاح من إعداد/Key Vault (مش ثابت في الكود).",
+            "Idempotency: تنفيذ مكرر لنفس `EventId` **ما يبعتش بريد مرتين** — ومُثبت باختبار.",
+            "سياسة أخطاء مكتوبة في الكود بتعليق: أي الاستثناءات تُرمى (إعادة محاولة) وأيها تُبتلع (بيانات فاسدة) + ملاحظة عن الـDLQ.",
+            "`ServiceBusOutput` مستخدم للإخراج (مش SDK يدوي) — مع شرح سبب الاختيار.",
+            "اختباران على الأقل (مكرر/توقيع غلط) بيعملوا في `dotnet test` من غير Azure.",
+            "ملف `docs/functions-runbook.md`: أوامر التشغيل المحلي، النشر، ومكان مراقبة الفشل والـDLQ."
+          ],
+          "hint": "للاختبارات من غير Azure: اجعل منطق الدالة في class عادي (`WebhookHandler`) والدالة نفسها غلاف رقيق — كده تختبر الـhandler مباشرة. وللتوقيع استخدم `HMACSHA256` مع مقارنة ثابتة الزمن (`CryptographicOperations.FixedTimeEquals`). ولو عايز idempotency محليًا للاختبار، `IMemoryCache`/`ConcurrentDictionary` خلف واجهة.",
+          "solution": "البنية: `Functions.cs` (غلاف رقيق: deserialize + استدعاء handler + إرجاع result) و`Handlers/WebhookHandler.cs` (المنطق: تحقق توقيع → idempotency → أمر) و`Services/ISeenStore.cs` (تنفيذان: in-memory للاختبار، Redis/SQL للإنتاج). الاختبارات: (1) نفس `EventId` مرتين → `SendReceiptAsync` اتنادت مرة واحدة (بتحقق من mock) (2) توقيع غلط → `Results.Unauthorized` وما وصلش للمتجر (3) payload غير صالح → 400. دالة الطابور: `try { … } catch (JsonException) { log + return null /* لا إعادة محاولة */ }` مقابل ترك الاستثناءات المؤقتة تطلع. ملاحظة runbook: راقب `ServiceBus/DLQ` كمؤشر صحة (2.3.4)، واعمل صفحة/سكريبت يعيد تشغيل الرسائل الميتة بعد إصلاح السبب.",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/azure-functions/dotnet-isolated-process-guide",
+            "https://learn.microsoft.com/en-us/azure/azure-functions/functions-bindings-service-bus-trigger",
+            "https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-dead-letter-queues",
+            "https://learn.microsoft.com/en-us/azure/azure-functions/functions-test-local",
+            "https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: Durable orchestration بموافقة بشرية + تعويض + اختبارات حتمية",
+          "md": "**السياق:** «طلب فيه موافقة»: احجز المخزون → لو `Total > 5000` استنى موافقة مدير (حتى 3 أيام) → نفّذ الدفع والشحن والبريد بالتوازي → عند أي فشل اعمل تعويض (حرر المخزون + أخطِر).\n\n**المطلوب:**\n1. `StartApproval` (HTTP) يبدأ orchestration بـ**InstanceId مشتق من `OrderId`** ويمنع التشغيل المزدوج.\n2. `OrderApproval` orchestrator **حتمي 100%**: `CreateReplaySafeLogger`، `CurrentUtcDateTime`، `WaitForExternalEvent` بمهلة، `Task.WhenAll` للأنشطة المتوازية، و`CreateTimer`/`SleepAsync` للمتابعة بعد 7 أيام.\n3. الأنشطة: `ReserveStock` · `ChargePayment` · `NotifyWarehouse` · `SendCustomerEmail` · `ReleaseStock` · `NotifyFailure` · `CloseOrder` — كلها بتستقبل `TaskActivityContext` وبتستخدم DI.\n4. دالة `Approve` (HTTP) ترفع الحدث `ManagerApproval`.\n5. **مخطط حالة** في `docs/approval-flow.md`: الحالات (Started → AwaitingApproval → Charging → Completed / Compensated / TimedOut) والانتقالات ومن المسؤول عن كل انتقال.\n6. **اختبارات**: على الأقل (أ) مسار بدون موافقة يكمل (ب) رفض → تعويض (ج) مهلة الموافقة → تعويض بسبب timeout — باستخدام Durable Task test APIs أو بتشغيل الأنشطة كـunit tests مع mocks.",
+          "criteria": [
+            "مفيش أي `DateTime.UtcNow`/`Guid.NewGuid()`/`Task.Delay`/I/O مباشر داخل الـorchestrator (يُفحص بالقراءة).",
+            "`InstanceId` مشتق من `OrderId` ومحاولة بدء مكرر بترجع 409 (مش نسخة ثانية).",
+            "مسار الموافقة: انتظار حدث خارجي بمهلة 3 أيام، وقرار الرفض بيقود لتعويض.",
+            "Fan-out/Fan-in بـ`Task.WhenAll` مع فحص **كل** النتائج (مش افتراض النجاح).",
+            "التعويض نفسه أنشطة مخزَّنة (`ReleaseStock` + `NotifyFailure`) — يعني بينجو من إعادة التشغيل.",
+            "مخطط حالة مكتوب فيه الانتقالات والمسؤول عنها وحالة `TimedOut`.",
+            "ثلاثة اختبارات على المسارات الثلاثة بتشتغل في `dotnet test`.",
+            "فقرة في `docs/approval-flow.md` عن **حدود الـhistory**: إمتى يكبر السجل وإزاي تتعامل (أنشطة أقل/أكبر، fan-out محدود، أو continue-as-new)."
+          ],
+          "hint": "الحيلة الاختبارية الأهم: افصل المنطق في أنشطة قابلة للاختبار (كل activity class لها dependencies واضحة)، واختبر الـorchestrator كـ«ترتيب» باستخدام mocks. ولو استخدمت `Task.WhenAll` خد بالك إن النتائج بترجع بمصفوفة بنفس ترتيب المهام (مش ترتيب الإكمال). وللمهلة: `WaitForExternalEvent<T>(name, timeout)` بيرمي `TaskFailedException`/`OperationCanceledException` حسب الإصدار — لفّه في try/catch وسجّل `TimedOut` صراحةً.",
+          "solution": "التدفق: `Started` → `ReserveStock` (نجاح) → [لو Total ≤ 5000] مباشرة إلى `Charging`؛ [لو > 5000] → `AwaitingApproval` مع مهلة 3 أيام: (أ) `Approved=true` → `Charging` (ب) `Approved=false` → `Compensated(rejected)` (ج) انتهت المهلة → `Compensated(timeout)`. في `Charging`: ثلاثة أنشطة بالتوازي؛ لو أي نتيجة false → `Compensated(downstream)`، وإلا `CreateTimer(7d)` → `CloseOrder` → `Completed`. الاختبارات: mock `StockService` و`PaymentService`، وشغّل الحالات الثلاثة بتغيير `Total` وقرار الموافقة. فقرة حدود الـhistory: كل نشاط بيضيف حدثًا للسجل، فـfan-out بآلاف العناصر بيضخّم الـhistory ويبطّئ الـreplay — الحل: دفعات (batches) من 50–100 مع `Task.WhenAll` لكل دفعة، أو تقسيم إلى orchestrations فرعية (sub-orchestrations)، أو `ContinueAsNew` للمهام الطويلة جدًا.",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-dotnet-isolated-overview",
+            "https://learn.microsoft.com/en-us/azure/azure-functions/durable-functions/durable-functions-phone-verification",
+            "https://learn.microsoft.com/en-us/azure/azure-functions/durable-functions/durable-functions-orchestrations",
+            "https://learn.microsoft.com/en-us/azure/azure-functions/durable-functions/durable-functions-perf-and-scale",
+            "https://learn.microsoft.com/en-us/azure/azure-functions/durable-functions/durable-functions-external-events"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "دليل C# في نموذج isolated worker (مرجع أساسي)",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-functions/dotnet-isolated-process-guide"
+        },
+        {
+          "label": "الفروق بين isolated وin-process",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-functions/dotnet-isolated-in-process-differences"
+        },
+        {
+          "label": "مقارنة إصدارات runtime Azure Functions",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-functions/functions-versions"
+        },
+        {
+          "label": "Durable Functions في isolated worker",
+          "url": "https://learn.microsoft.com/en-us/azure/durable-task/durable-functions/durable-functions-dotnet-isolated-overview"
+        },
+        {
+          "label": "أنماط الـorchestration (fan-out/fan-in · monitoring · human interaction)",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-functions/durable-functions/durable-functions-overview"
+        },
+        {
+          "label": "خطط الاستضافة ومقارنتها",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-functions/functions-scale"
+        },
+        {
+          "label": "Azurite (محاكي Storage محليًا)",
+          "url": "https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite"
+        },
+        {
+          "label": "Core Tools والأوامر",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-functions/functions-run-local"
+        }
+      ]
+    }
+  ]
+}

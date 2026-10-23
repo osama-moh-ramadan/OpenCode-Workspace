@@ -1,0 +1,443 @@
+{
+  "id": "s6-m3-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "كل اللي بنيته — الصورة الصغيرة، الاختبارات، الـmanifests، الهوية المُدارة — بيضيع لو النشر لسه «من جهازي». في الدرس ده هتبني pipeline حقيقي لـ.NET على GitHub Actions: **CI على كل PR** (restore مقفل · build بتحذيرات كأخطاء · اختبارات بتغطية · نتائج منشورة) · **Release** (صورة بـdigest ثابت + SBOM + provenance + توقيع cosign + attestation) · **Deploy بلا سر واحد** عن طريق OIDC وfederated credentials مربوطة بـ**GitHub Environment** فيه موافقة بشرية. وهتعرف إزاي تخلّي الـpipeline سريع (cache + matrix + مسارات مُفلترة + reusable workflows)."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "Workflow / Job / Step",
+          "def": "الـ**workflow** = ملف YAML بيُشغَّل بأحداث (push/PR/schedule). الـ**job** = وحدة تنفيذ على runner (بتشتغل بالتوازي افتراضيًا). الـ**step** = أمر أو action داخل job."
+        },
+        {
+          "term": "Runner",
+          "def": "الجهاز اللي بينفّذ: **GitHub-hosted** (`ubuntu-latest` — مجاني للحسابات العامة ودقائق محدودة للخاصة) أو **self-hosted** (أسرع/أرخص للأحمال الثقيلة، بس مسؤوليتك أمنيًا)."
+        },
+        {
+          "term": "`permissions`",
+          "def": "صلاحيات الـ`GITHUB_TOKEN` لكل workflow/job. **الافتراضي الآمن: `contents: read` فقط**، وتضيف `id-token: write` للـOIDC و`attestations: write` للـattestations. صلاحيات واسعة = خطر لو action اختُرق."
+        },
+        {
+          "term": "OIDC + federated credential",
+          "def": "الـworkflow بياخد توكن قصير العمر من GitHub، وEntra ID بيبدّله بتوكن Azure بعد التحقق من `issuer` و`subject` و`audiences`. **مفيش client secret مخزّن نهائيًا**."
+        },
+        {
+          "term": "GitHub Environment",
+          "def": "كيان في إعدادات المستودع (`production`/`staging`) بيحمل: **required reviewers** (حتى 6) · **wait timer** · **deployment branches** · secrets/variables خاصة به. وبيظهر في `subject` توكن الـOIDC."
+        },
+        {
+          "term": "Pinning بـSHA",
+          "def": "تثبيت الـaction على commit SHA كامل (`azure/login@8c334a1…`) بدل tag (`@v2`) — حماية من اختراق upstream. الأهم للـactions الخارجية (غير `actions/*`)."
+        },
+        {
+          "term": "`global.json`",
+          "def": "تثبيت إصدار SDK للمشروع كله (محليًا وفي CI). `setup-dotnet` بيقراه عبر `global-json-file` — يعني CI ومحطة التطوير على نفس الإصدار دائمًا."
+        },
+        {
+          "term": "Lock file (`packages.lock.json`)",
+          "def": "قائمة الحزم بإصداراتها الدقيقة. بيمكّن `dotnet restore --locked-mode` (يرفض أي تغيير غير مقصود) و**بيخلي cache الـNuGet شغال فعلًا** (مفتاح الكاش بيعتمد عليه)."
+        },
+        {
+          "term": "Cache وArtifacts",
+          "def": "**Cache** = تسريع بين التشغيلات (NuGet/صور Docker). **Artifact** = مخرجات محفوظة من job لـjob (نتائج اختبارات · تقرير تغطية · zip منشور · **digest الصورة**)."
+        },
+        {
+          "term": "`concurrency`",
+          "def": "إلغاء/تسلسل التشغيلات المتزامنة لنفس الفرع: `group` + `cancel-in-progress` — بيوفر دقائق runner وبيمنع نشرين متعارضين."
+        },
+        {
+          "term": "Reusable workflow",
+          "def": "workflow بـ`workflow_call` بيتنادى من workflows تانية — يعني CI موحّد لكل الخدمات في الـmonorepo بدل نسخ/لصق."
+        },
+        {
+          "term": "Merge queue",
+          "def": "طابور دمج في GitHub: كل PR بيتدمج بعد ما يُختبر **مع التغييرات السابقة في الطابور** — بيمنع «أخضر لوحده، مكسور مع غيره»."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① شكل الـpipeline: 7 محطات من commit لـproduction"
+    },
+    {
+      "type": "steps",
+      "title": "المسار الكامل (وكل محطة ليها سبب)",
+      "items": [
+        {
+          "title": "1) PR: تحقق سريع (أقل من 5 دقائق)",
+          "md": "restore مقفل · build بتحذيرات كأخطاء · تنسيق · اختبارات وحدة · اختبارات معمارية. الهدف: feedback فوري للمطوّر. لو أبطأ من 5 دقائق، المطوّر هيبدأ يتجاهله.",
+          "code": ""
+        },
+        {
+          "title": "2) PR: اختبارات التكامل على Testcontainers",
+          "md": "job منفصل (بيشتغل بالتوازي) فيه PostgreSQL/Redis/RabbitMQ حقيقية (1.2.4 و5.3.3). لو بطيء، شغّله على `pull_request` بس للمسارات الحساسة أو على merge queue.",
+          "code": ""
+        },
+        {
+          "title": "3) بعد الدمج على main: بناء الصورة ونشرها بـdigest",
+          "md": "صورة متعددة المراحل (6.1.1) + SBOM + provenance + توقيع cosign + attestation. **المُخرج المهم: الـdigest** — هو اللي هيتنقل بين البيئات (مش tag متحرك).",
+          "code": ""
+        },
+        {
+          "title": "4) نشر تلقائي لـdev/staging",
+          "md": "بنفس الـdigest، مع `environment: staging` (بلا موافقة عادةً)، وبعده **smoke tests** على `/health` و`/alive` ومسار عمل حقيقي (6.3.3).",
+          "code": ""
+        },
+        {
+          "title": "5) البنية ككود: what-if قبل النشر",
+          "md": "لو فيه تغيير في `infra/`، شغّل `az deployment group what-if` (أو `terraform plan`) وانشر الناتج كتعليق على الـPR — البنية بتتراجع زي الكود (6.3.4).",
+          "code": ""
+        },
+        {
+          "title": "6) موافقة بشرية ثم إنتاج",
+          "md": "`environment: production` بـ**required reviewers** — الـjob بيقف لحد ما حد يوافق. والـfederated credential مربوط بنفس البيئة، يعني **تجاوز branch protection ما يفيدش**: بلا موافقة مفيش توكن Azure أصلًا.",
+          "code": ""
+        },
+        {
+          "title": "7) تحقق بعد النشر + رجوع جاهز",
+          "md": "smoke tests + مراقبة p95 والأخطاء (2.3.4) + أمر رجوع واحد مُختبَر (6.3.3). النشر من غير خطة رجوع = قمار.",
+          "code": ""
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② ملف CI الكامل"
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "title": "global.json + csproj: تثبيت الإصدار والقفل",
+      "filename": "global.json",
+      "code": "{\n  \"sdk\": {\n    \"version\": \"10.0.100\",\n    \"rollForward\": \"latestFeature\",\n    \"allowPrerelease\": false\n  }\n}\n\n// وفي كل csproj (أو Directory.Build.props مرة واحدة):\n//   <PropertyGroup>\n//     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>\n//     <RestoreLockedMode Condition=\"'$(CI)' == 'true'\">true</RestoreLockedMode>\n//     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>\n//     <AnalysisLevel>latest-recommended</AnalysisLevel>\n//   </PropertyGroup>\n//\n// ليه: lock file = (1) restore --locked-mode يرفض الحزم الجديدة غير المقصودة\n//                (2) مفتاح cache الـNuGet في setup-dotnet بيعتمد عليه\n//      TreatWarningsAsErrors = التحذيرات ما تتراكمش لحد ما تبقى مستحيلة الإصلاح\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": ".github/workflows/ci.yml",
+      "filename": ".github/workflows/ci.yml",
+      "code": "name: CI\n# ⚠ ملاحظة تثبيت: الأفعال هنا مكتوبة بـtags (v4/v6) للوضوح التعليمي.\n#   في مستودع حقيقي ثبّت الأفعال **الخارجية** على commit SHA كامل\n#   (مثال: azure/login@8c334a195cbb38e46038007b304988d888bf676a) وخلي Dependabot يقترح التحديث.\n# ملاحظة YAML: بعض المحللات بتقرأ المفتاح `on` كقيمة boolean — GitHub بيتعامل معها صح.\non:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\n  merge_group:                    # لو فعّلت merge queue (موصى به)\n    types: [checks_requested]\n\n# أقل صلاحيات — وتُرفع فقط في الـjob اللي محتاجها:\npermissions:\n  contents: read\n\nenv:\n  DOTNET_NOLOGO: \"true\"\n  DOTNET_CLI_TELEMETRY_OPTOUT: \"true\"\n  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages   # يخلي الـcache صغيرًا ومتوقعًا\n  CONFIGURATION: Release\n\n# ألغِ التشغيلات القديمة لنفس الفرع (توفير دقائق + منع تعارض):\nconcurrency:\n  group: ci-${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}   # لا تلغِ على main\n\njobs:\n  build-test:\n    name: Build & Test (${{ matrix.tfm }})\n    runs-on: ubuntu-latest\n    timeout-minutes: 15                 # لا تترك job عالقًا يستهلك دقائق\n    strategy:\n      fail-fast: false                  # شغّل كل المصفوفة حتى لو واحد فشل\n      matrix:\n        tfm: [net10.0]                  # أضف net8.0 لو مكتبة متعددة الأهداف\n    steps:\n      - uses: actions/checkout@v4\n\n      - name: Setup .NET\n        uses: actions/setup-dotnet@v4\n        with:\n          global-json-file: global.json  # نفس إصدار SDK محليًا وفي CI\n          cache: true\n          cache-dependency-path: |\n            **/packages.lock.json\n            **/Directory.Packages.props\n\n      - name: Restore (locked)\n        run: dotnet restore --locked-mode\n\n      - name: Format (verify only)\n        if: github.event_name == 'pull_request'\n        run: dotnet format --verify-no-changes --severity info\n\n      - name: Build (warnings as errors)\n        run: dotnet build --no-restore -c ${{ env.CONFIGURATION }} /warnaserror\n\n      - name: Architecture tests\n        run: dotnet test tests/Shop.ArchitectureTests -c ${{ env.CONFIGURATION }} --no-build\n\n      - name: Unit tests + coverage\n        run: >\n          dotnet test tests/Shop.UnitTests -c ${{ env.CONFIGURATION }} --no-build\n          --collect:\"XPlat Code Coverage\"\n          --results-directory ${{ github.workspace }}/coverage\n          --logger \"trx;LogFileName=unit.trx\"\n\n      - name: Upload results\n        if: always()                     # النتائج مهمة خصوصًا عند الفشل\n        uses: actions/upload-artifact@v4\n        with:\n          name: results-${{ matrix.tfm }}\n          path: |\n            coverage/**/*.xml\n            **/*.trx\n          retention-days: 14\n\n  integration:\n    name: Integration (Testcontainers)\n    runs-on: ubuntu-latest\n    timeout-minutes: 25\n    needs: build-test\n    if: github.event_name != 'merge_group'\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-dotnet@v4\n        with: { global-json-file: global.json, cache: true }\n      - run: dotnet restore --locked-mode\n      - name: Integration tests (Docker required)\n        run: >\n          dotnet test tests/Shop.IntegrationTests -c ${{ env.CONFIGURATION }}\n          --collect:\"XPlat Code Coverage\" --results-directory ${{ github.workspace }}/coverage\n          --logger \"trx;LogFileName=integration.trx\"\n        env:\n          TESTCONTAINERS_RYUK_DISABLED: \"false\"\n      - uses: actions/upload-artifact@v4\n        if: always()\n        with:\n          name: integration-results\n          path: [\"coverage/**/*.xml\", \"**/*.trx\"]\n          retention-days: 14\n\n  quality-gate:\n    name: Quality gate\n    runs-on: ubuntu-latest\n    needs: [build-test, integration]\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/download-artifact@v4\n        with: { path: artifacts }\n      - name: Merge coverage & enforce threshold\n        run: |\n          dotnet tool install -g dotnet-reportgenerator-globaltool\n          reportgenerator \\\n            -reports:\"artifacts/**/coverage.cobertura.xml\" \\\n            -targetdir:\"coverage-report\" \\\n            -reporttypes:\"Cobertura;MarkdownSummaryGithub\"\n          # البوابة الرقمية (الدرس 6.3.2): افشل تحت الحد\n          python3 - <<'PY'\n          import sys, xml.etree.ElementTree as ET\n          rate = float(ET.parse(\"coverage-report/Cobertura.xml\").getroot().attrib[\"line-rate\"]) * 100\n          print(f\"line coverage = {rate:.1f}% (threshold 80%)\")\n          sys.exit(0 if rate >= 80 else 1)\n          PY\n          cat coverage-report/SummaryGithub.md >> \"$GITHUB_STEP_SUMMARY\"\n\n  # ── CI على المسارات الحساسة فقط: فلترة المسارات توفر دقائق ──\n  # paths: ['src/**', 'tests/**', 'global.json', '**/*.csproj', '**/packages.lock.json']\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ Release: صورة موقعة بـdigest + نشر بلا أسرار"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": ".github/workflows/release.yml",
+      "filename": ".github/workflows/release.yml",
+      "code": "name: Release & Deploy\n\non:\n  push:\n    tags: [\"v*.*.*\"]          # نسخة صريحة — أفضل من النشر على كل push لـmain\n  workflow_dispatch:\n    inputs:\n      environment:\n        description: \"البيئة المستهدفة\"\n        type: choice\n        options: [staging, production]\n        default: staging\n\npermissions:\n  contents: read\n\nenv:\n  REGISTRY: acrshopprod.azurecr.io\n  IMAGE: shop/orders\n\njobs:\n  package:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      id-token: write          # لتوقيع cosign بلا مفاتيح (keyless)\n      attestations: write      # لـattestation من GitHub\n      packages: read\n    outputs:\n      digest: ${{ steps.push.outputs.digest }}\n      image: ${{ env.REGISTRY }}/${{ env.IMAGE }}\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-dotnet@v4\n        with: { global-json-file: global.json, cache: true }\n      - run: dotnet publish src/Orders.Api -c Release -o publish/\n\n      - uses: docker/setup-buildx-action@v3\n      # الدخول للسجل بالهوية (OIDC) — بلا ACR_USERNAME/PASSWORD وبلا admin password:\n      - uses: azure/login@v2\n        with:\n          client-id: ${{ vars.AZURE_CLIENT_ID }}\n          tenant-id: ${{ vars.AZURE_TENANT_ID }}\n          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}\n      - run: az acr login --name acrshopprod\n\n      - id: meta\n        uses: docker/metadata-action@v5\n        with:\n          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}\n          tags: |\n            type=semver,pattern={{version}}\n            type=sha,format=long\n\n      - id: push\n        uses: docker/build-push-action@v6\n        with:\n          context: .\n          push: true\n          tags: ${{ steps.meta.outputs.tags }}\n          labels: ${{ steps.meta.outputs.labels }}\n          cache-from: type=gha\n          cache-to: type=gha,mode=max\n          provenance: mode=max          # SBOM/مصدر البناء\n          sbom: true\n\n      # توقيع بلا مفاتيح مخزّنة (6.1.3):\n      - uses: sigstore/cosign-installer@v3\n      - name: Sign image\n        run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE }}@${{ steps.push.outputs.digest }}\n\n      # إثبات مصدر البناء قابل للتحقق:\n      - uses: actions/attest-build-provenance@v2\n        with:\n          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE }}\n          subject-digest: ${{ steps.push.outputs.digest }}\n          push-to-registry: true\n\n  deploy-staging:\n    needs: package\n    runs-on: ubuntu-latest\n    environment: staging           # بلا مراجعين → تلقائي\n    permissions:\n      contents: read\n      id-token: write               # OIDC\n    steps:\n      - name: Login to Azure (OIDC — بلا secret)\n        uses: azure/login@v2\n        with:\n          client-id: ${{ vars.AZURE_CLIENT_ID }}            # معرّفات، لا أسرار → vars\n          tenant-id: ${{ vars.AZURE_TENANT_ID }}\n          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}\n\n      - name: Deploy by digest (ليس بـtag متحرك)\n        run: |\n          az containerapp update \\\n            --name orders --resource-group rg-shop-staging \\\n            --image ${{ needs.package.outputs.image }}@${{ needs.package.outputs.digest }}\n          az containerapp revision list -n orders -g rg-shop-staging -o table\n\n      - name: Smoke tests (6.3.3)\n        run: |\n          URL=$(az containerapp show -n orders -g rg-shop-staging \\\n                 --query properties.configuration.ingress.fqdn -o tsv)\n          for i in $(seq 1 30); do\n            code=$(curl -s -o /dev/null -w '%{http_code}' \"https://$URL/health\" || true)\n            [ \"$code\" = \"200\" ] && { echo \"healthy\"; exit 0; }\n            sleep 5\n          done\n          echo \"التطبيق لم يصبح صحيًا\"; exit 1\n\n  deploy-production:\n    needs: [package, deploy-staging]\n    runs-on: ubuntu-latest\n    environment: production        # required reviewers → الـjob ينتظر موافقة بشرية\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - uses: azure/login@v2\n        with:\n          client-id: ${{ vars.AZURE_CLIENT_ID }}\n          tenant-id: ${{ vars.AZURE_TENANT_ID }}\n          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}\n      - name: Canary ثم كل الحركة (6.3.3)\n        run: |\n          set -euo pipefail\n          IMAGE=\"${{ needs.package.outputs.image }}@${{ needs.package.outputs.digest }}\"\n          NEW=\"orders--${{ github.run_number }}\"\n          # التقط اسم النسخة الحالية **قبل** النسخ (بعدها latestRevisionName هيبقى الجديد):\n          CURRENT=$(az containerapp show -n orders -g rg-shop-prod \\\n                     --query properties.latestRevisionName -o tsv)\n          az containerapp revision copy -n orders -g rg-shop-prod \\\n            --revision \"$NEW\" --image \"$IMAGE\"\n          az containerapp ingress set -n orders -g rg-shop-prod \\\n            --traffic-split \"$CURRENT=90\" --traffic-split \"$NEW=10\"\n          echo \"راجع المؤشرات 15 دقيقة ثم رقِّ:\"\n          echo \"  az containerapp ingress set -n orders -g rg-shop-prod --traffic-split \\\"$NEW\\\"=100\"\n          echo \"وللرجوع الفوري:\"\n          echo \"  az containerapp ingress set -n orders -g rg-shop-prod --traffic-split \\\"$CURRENT\\\"=100\"\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "azure/70-oidc.sh — إعداد النشر بلا سر (مرة واحدة)",
+      "filename": "azure/70-oidc.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\n\nORG=your-org; REPO=shop; RG=rg-shop-prod\n\n# ═══ 1) App registration + service principal ═══\naz ad app create --display-name \"github-actions-$REPO\" >/dev/null\nAPP_ID=$(az ad app list --display-name \"github-actions-$REPO\" --query \"[0].appId\" -o tsv)\naz ad sp create --id \"$APP_ID\" >/dev/null\nOBJ_ID=$(az ad sp show --id \"$APP_ID\" --query id -o tsv)\n\n# ═══ 2) صلاحية محدودة: Contributor على مجموعة موارد الإنتاج فقط ═══\naz role assignment create --role Contributor \\\n  --assignee-object-id \"$OBJ_ID\" --assignee-principal-type ServicePrincipal \\\n  --scope \"/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG\"\n# لو النشر بيعدّل أسرار/أدوار → أضف \"User Access Administrator\" على نطاق الـvault فقط،\n# ولا تمنح Contributor على مستوى الاشتراك.\n\n# ═══ 3) federated credentials: واحد لكل بيئة (subject مختلف) ═══\n# البيئة (موصى به — بيشتغل مع required reviewers):\naz ad app federated-credential create --id \"$APP_ID\" --parameters '{\n  \"name\": \"github-prod-env\",\n  \"issuer\": \"https://token.actions.githubusercontent.com\",\n  \"subject\": \"repo:'\"$ORG\"'/'\"$REPO\"':environment:production\",\n  \"description\": \"GitHub Actions OIDC for the production environment\",\n  \"audiences\": [\"api://AzureADTokenExchange\"]\n}'\naz ad app federated-credential create --id \"$APP_ID\" --parameters '{\n  \"name\": \"github-staging-env\",\n  \"issuer\": \"https://token.actions.githubusercontent.com\",\n  \"subject\": \"repo:'\"$ORG\"'/'\"$REPO\"':environment:staging\",\n  \"audiences\": [\"api://AzureADTokenExchange\"]\n}'\n# الفرع (للاختبارات على main من غير environment):\naz ad app federated-credential create --id \"$APP_ID\" --parameters '{\n  \"name\": \"github-main\",\n  \"issuer\": \"https://token.actions.githubusercontent.com\",\n  \"subject\": \"repo:'\"$ORG\"'/'\"$REPO\"':ref:refs/heads/main\",\n  \"audiences\": [\"api://AzureADTokenExchange\"]\n}'\n# قيود: حتى 20 federated credentials لكل app registration،\n# وissuer/subject حتى 600 حرف. راجع التوثيق قبل ما تعتمد على الأرقام.\n\n# ═══ 4) في GitHub: Environments + variables (مش secrets!) ═══\n# Settings → Environments → New: \"staging\" و\"production\"\n#   production: Required reviewers = فريقك · Deployment branches = main فقط · Wait timer = 0\n#   Environment variables (معرّفات، ليست أسرارًا):\n#     AZURE_CLIENT_ID=$APP_ID\n#     AZURE_TENANT_ID=<tenant>\n#     AZURE_SUBSCRIPTION_ID=<subscription>\n# gh variable set NAME --body VALUE --env ENVIRONMENT   (تحقق: gh variable set --help)\ngh variable set AZURE_CLIENT_ID     --body \"$APP_ID\"                 --env production\ngh variable set AZURE_TENANT_ID     --body \"$(az account show --query tenantId -o tsv)\" --env production\ngh variable set AZURE_SUBSCRIPTION_ID --body \"$(az account show --query id -o tsv)\"     --env production\n\n# ═══ 5) تحقق ═══\necho \"لو الـworkflow فشل بـ AADSTS700016/700021 → الـsubject مش مطابق (environment مقابل ref)\"\necho \"لو فشل بـ 403 على az → ناقص دور على مجموعة الموارد\"\n"
+    },
+    {
+      "type": "table",
+      "caption": "إيه يتخزن فين — وأهم قرار أمني في الـpipeline",
+      "head": [
+        "النوع",
+        "المثال",
+        "أين يُخزَّن",
+        "ليه"
+      ],
+      "rows": [
+        [
+          "**معرّفات** (ليست أسرارًا)",
+          "`AZURE_CLIENT_ID` · `AZURE_TENANT_ID` · `AZURE_SUBSCRIPTION_ID`",
+          "**Variables** (على مستوى البيئة)",
+          "ظاهرة ومراجَعة في الـlogs — ومفيش سبب لإخفائها، وإخفاؤها بيعقّد التشخيص"
+        ],
+        [
+          "**أسرار حقيقية**",
+          "مفاتيح مزودين خارجيين · `ACR_PASSWORD` (لو مش مستخدم OIDC)",
+          "**Secrets** على مستوى البيئة (مش المستودع كله)",
+          "الوصول مقصور على jobs البيئة دي — تسريب أقل"
+        ],
+        [
+          "**بلا تخزين أصلًا**",
+          "دخول Azure للنشر",
+          "**OIDC + federated credential**",
+          "مفيش سر يدوّر ولا يتسرّب؛ والثقة مرتبطة بـrepo+environment، يعني موافقة بشرية = شرط للوصول"
+        ],
+        [
+          "**Actions**",
+          "`azure/login@v2`",
+          "**pin بـSHA** للأفعال الخارجية",
+          "tag بيتحرك: اختراق upstream = كود خبيث في pipeline بينشر لإنتاجك"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "5 أخطاء بتفتح ثغرة أو بتوقف النشر",
+      "md": "**① `AZURE_CREDENTIALS`/client secret مع OIDC**: وجود سر «احتياطي» معناه إنك لسه معرض للتسريب — احذفه. **② `subject` غلط**: لو الـfederated credential بـ`ref:refs/heads/main` والـjob فيه `environment: production` → فشل مصادقة (`AADSTS700021`/`700016`)؛ اعمل credential لكل pattern مستخدم. **③ `permissions: write-all` ضمنيًا**: أي action مخترق يقدر يعدّل الكود وينشره — خلي الافتراضي `contents: read` وارفع الصلاحيات per-job. **④ `azure/functions-action` مع `publish-profile` و`azure/login` معًا**: الأسلوبان متعارضان ولو مرّرت الاثنين، الـaction بيستخدم publish-profile ويتجاهل جلستك الآمنة. **⑤ tag متحرك للنشر** (`:latest` أو `:main`): النشر بيتكرر بصورة مختلفة عن اللي اختُبرت — انشر بـ**digest** دايمًا."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ السرعة: pipeline بطيء = pipeline بيتجاهل"
+    },
+    {
+      "type": "table",
+      "caption": "تقنيات التسريع — المكسب مقابل الثمن",
+      "head": [
+        "التقنية",
+        "المكسب",
+        "الثمن/الشرط",
+        "إمتى تستخدمها"
+      ],
+      "rows": [
+        [
+          "`setup-dotnet` مع `cache: true` + `packages.lock.json`",
+          "توفير 30–90 ثانية في الـrestore",
+          "لازم lock file (وإلا الكاش ما يشتغلش)",
+          "دايمًا"
+        ],
+        [
+          "`concurrency` + `cancel-in-progress` على PRs",
+          "إلغاء تشغيلات ميتة = دقائق runner",
+          "لو `true` على main ممكن تلغى تشغيل مهم",
+          "PRs نعم · main بحذر"
+        ],
+        [
+          "`paths` filters على الـworkflow",
+          "ما يشغلش CI لتغيير في `docs/`",
+          "ممكن يفوّت تغيير مؤثر (مثل تعديل reusable workflow)",
+          "للمستودعات الكبيرة"
+        ],
+        [
+          "تقسيم الاختبارات لـjobs متوازية (unit/integration/e2e)",
+          "الزمن الكلي = أبطأ job مش المجموع",
+          "تكلفة دقائق أعلى (runner لكل job)",
+          "دايمًا لما المجموع > 5 دقائق"
+        ],
+        [
+          "`docker/build-push-action` مع `cache-from/to: type=gha`",
+          "بناء صورة في ثوانٍ بدل دقائق",
+          "حد حجم الكاش (10 GB لكل مستودع)",
+          "لأي pipeline فيه صور"
+        ],
+        [
+          "Reusable workflow (`workflow_call`) + composite actions",
+          "CI موحّد لكل الخدمات + صيانة أقل",
+          "تعقيد أولي في تمرير المدخلات/المخرجات",
+          "monorepo أو 3+ خدمات"
+        ],
+        [
+          "Self-hosted runners",
+          "أسرع (كاش دائم) وأرخص للأحمال الثقيلة",
+          "**مسؤولية أمنيّة**: عزل · تحديثات · fork PRs خطر",
+          "لما الدقائق المدفوعة بقت بندًا في الفاتورة"
+        ],
+        [
+          "Merge queue",
+          "يمنع كسر main من PRs «خضرا لوحدها»",
+          "زمن انتظار أطول للدمج",
+          "لما فريقك > 3 مطورين"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قاعدة الـ5 دقائق",
+      "md": "خلي هدفك: **feedback على PR في أقل من 5 دقائق**. لما تتجاوز، المطوّر بيبدأ يدمج من غير ما يقرا النتيجة — والبوابة بقت ديكور. الأدوات: jobs متوازية · اختبارات سريعة في الـPR والثقيلة على main/merge queue · كاش · وفلترة مسارات. وقِس: GitHub بيديك زمن كل job في الـUI — راجع أبطأ 3 خطوات شهريًا."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أقدر أكتب workflow فيه `permissions` بأقل امتياز و`concurrency` و`timeout-minutes` وmatrix.",
+        "أعرف تثبيت إصدار SDK بـ`global.json` + `global-json-file`، وتفعيل `packages.lock.json` + `--locked-mode` (وهو شرط لعمل الكاش).",
+        "أقدر أنشر صورة بـ**digest** مع SBOM/provenance وتوقيع cosign وattestation، وتمرير الـdigest لـjob النشر.",
+        "فاهم OIDC بالكامل: `id-token: write` + `azure/login` + federated credential بـ`subject` مربوط بـ**environment**.",
+        "أعرف الفرق بين secrets وvariables وأين يُخزَّن كل واحد، وإزاي أعمل required reviewers لبيئة الإنتاج.",
+        "أقدر أثبّت الـactions بـSHA وأفهم ليه ده قرار أمني مش ترف.",
+        "أعرف 4 تقنيات لتسريع الـpipeline وأقدر أقيس أبطأ الخطوات."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على الـpipeline والأمان.",
+      "questions": [
+        {
+          "q": "`setup-dotnet` مع `cache: true` ما بيعملش كاش للـNuGet. السبب الأشهر؟",
+          "options": [
+            "الـrunner لا يدعم الكاش",
+            "**مفيش lock file** (`packages.lock.json`) — الكاش بيحسب المفتاح من ملفات القفل",
+            "`NUGET_PACKAGES` غير مضبوط",
+            "الإصدار `10.0.x` بدل `10.0.100`"
+          ],
+          "answer": 1,
+          "explain": "لازم `RestorePackagesWithLockFile=true` (ويُفضَّل `RestoreLockedMode` في CI) عشان يتولد `packages.lock.json` ويُستخدم كمفتاح للكاش — وهو نفسه اللي بيمكّن `restore --locked-mode`."
+        },
+        {
+          "q": "الـjob فيه `environment: production` والـfederated credential موضوع بـ`subject: repo:org/repo:ref:refs/heads/main`. النتيجة؟",
+          "options": [
+            "هيشتغل عادي",
+            "**فشل مصادقة**: الـsubject في التوكن بقى `environment:production` ولا يطابق القيد — لازم credential لكل pattern",
+            "هيشتغل بصلاحيات أقل",
+            "GitHub هيعدّل الـsubject تلقائيًا"
+          ],
+          "answer": 1,
+          "explain": "الـclaim بيتولد من سياق التشغيل. الحل الصحيح: credential بـ`environment:production` للإنتاج، وآخر بـ`environment:staging`، وثالث بـ`ref:refs/heads/main` للاختبارات. وميزة البيئة: بتشتغل مع required reviewers."
+        },
+        {
+          "q": "ليه تربط الـfederated credential بـ**environment** بدل branch؟",
+          "options": [
+            "أسرع",
+            "لأن البيئة بتضيف **موافقة بشرية** (required reviewers) وحماية فروع — يعني بلا موافقة لا يوجد توكن Azure أصلًا",
+            "لأن branch مش مدعوم",
+            "لأن البيئة تدعم client secret"
+          ],
+          "answer": 1,
+          "explain": "الثقة المرتبطة بفرع ملهاش human-in-the-loop: لو الـworkflow اتشغّل على main، هينشر. البيئة بتخلي الوصول للسحابة نفسه خلف موافقة."
+        },
+        {
+          "q": "ليه تثبّت الـactions بـcommit SHA؟",
+          "options": [
+            "أسرع في التحميل",
+            "لأن الـtag متحرك: لو الـaction الخارجي اختُرق، الإصدار الجديد بيشغّل كودًا خبيثًا بصلاحيات pipeline الإنتاج",
+            "مطلوب من GitHub",
+            "يمنع أخطاء YAML"
+          ],
+          "answer": 1,
+          "explain": "الأهم للـactions غير `actions/*`. التثبيت بـSHA بيخلي التحديث قرارًا واعيًا في PR (وممكن Dependabot يقترحه). وخلي `permissions` ضيقة عشان تقلل أثر أي اختراق."
+        },
+        {
+          "q": "النشر بيستخدم `--image repo/app:latest`. المشكلة؟",
+          "options": [
+            "الصورة كبيرة",
+            "**النشر مش مرتبط بالنسخة المُختبَرة**: `latest` بيتغير، فالرجوع والـcanary والتدقيق كلها بلا معنى — انشر بـdigest",
+            "ACR لا يدعمه",
+            "يبطّئ السحب"
+          ],
+          "answer": 1,
+          "explain": "الـdigest (`@sha256:…`) غير قابل للتغيير: اللي اختبرته في staging هو نفسه اللي بينزل في الإنتاج، والرجوع = إعادة نشر digest قديم."
+        },
+        {
+          "q": "عندك `AZURE_CREDENTIALS` (client secret) كـsecret «احتياطي» مع OIDC شغال. التصرف الصح؟",
+          "options": [
+            "اتركه للاحتياط",
+            "**احذفه**: وجود سر طويل العمر = خطر تسريب ودوران مفقود، وOIDC بيغطي كل الحالات",
+            "حوّله لـvariable",
+            "استخدمه بدل OIDC"
+          ],
+          "answer": 1,
+          "explain": "«احتياطي» في الأمان معناه «مسار غير مُراقَب». لو OIDC فشل، أصلح الإعداد (subject/دور) بدل ما ترجع للسر."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "pipeline شغال + نشر بلا سر.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: CI كامل لمشروعك (بوابات + كاش + نتائج)",
+          "md": "**السياق:** عندك حل .NET من المراحل السابقة (services + tests) ومحتاج CI على GitHub.\n\n**المطلوب:**\n1. `global.json` بإصدار SDK محدد + `RestorePackagesWithLockFile` و`TreatWarningsAsErrors` في `Directory.Build.props`، ورفع `packages.lock.json` للمستودع.\n2. `.github/workflows/ci.yml` فيه: `permissions: contents: read` · `concurrency` · `timeout-minutes` · job **build+unit** وjob **integration** (Testcontainers) بالتوازي/بالتسلسل حسب اختيارك المبرر · upload للنتائج بـ`if: always()`.\n3. job **quality-gate** بيدمج تقارير التغطية بـReportGenerator و**بيفشل تحت 80%** (أو حد تختاره وتبرره) وبيكتب ملخص في `GITHUB_STEP_SUMMARY`.\n4. فلترة مسارات (`paths`) بحيث تغييرات `docs/…` ما تشغّلش CI.\n5. **قياس**: سجّل زمن التشغيل قبل وبعد تفعيل الكاش (لقطة أو أرقام) — واكتب الفرق في `docs/ci-notes.md` مع أبطأ 3 خطوات.\n6. أضف **merge queue** أو على الأقل branch protection بـrequired checks (واكتب الإعدادات في `docs/ci-notes.md`).\n7. اختبر الفشل متعمدًا: ارفع PR فيه اختبار فاشل وفيه تحذير compiler وفيه حزمة جديدة بدون تحديث lock file — وثّق إن كل واحد منهم **كسر الـpipeline فعلًا**.",
+          "criteria": [
+            "`global.json` + lock files مرفوعة و`restore --locked-mode` شغال في CI.",
+            "التحذيرات أخطاء (`/warnaserror` أو `TreatWarningsAsErrors`) ومُثبتة بتجربة فشل.",
+            "بوابة تغطية رقمية تفشل تحت الحد، مع ملخص في `GITHUB_STEP_SUMMARY`.",
+            "`permissions` ضيقة على مستوى الـworkflow و`timeout-minutes` على كل job.",
+            "`if: always()` على رفع النتائج (وإلا مش هتشوف سبب الفشل).",
+            "قياس زمن قبل/بعد الكاش برقمين + قائمة أبطأ 3 خطوات.",
+            "branch protection أو merge queue موثق (أسماء الـrequired checks).",
+            "ثلاث تجارب فشل متعمدة موثقة (اختبار · تحذير · lock file) — كل واحدة كسرت الـpipeline."
+          ],
+          "hint": "أسهل طريقة لكسر الكاش عن غير قصد: تنسى رفع `packages.lock.json` (يظهر في `.gitignore` الافتراضي لبعض القوالب). وللتغطية: `--collect:\"XPlat Code Coverage\"` بيطلع `coverage.cobertura.xml` في مجلد GUID لكل مشروع — استخدم `…/coverage.cobertura.xml` في ReportGenerator. وللاختبارات البطيئة: `dotnet test --filter Category!=Slow` في الـPR وjob كامل على main.",
+          "solution": "الملفات الناتجة: `global.json` · `Directory.Build.props` (lock+warnaserror+AnalysisLevel) · `.github/workflows/ci.yml` (3 jobs) · إعدادات branch protection (required: `Build & Test`, `Integration`, `Quality gate` + linear history + merge queue). الأرقام النموذجية: أول تشغيل ~4–6 دقائق، وبعد الكاش ~2–4 دقائق (التوفير الأكبر في الـrestore). أبطأ الخطوات نموذجيًا: (1) اختبارات التكامل مع سحب صور Testcontainers (2) `dotnet build` للحل الكامل (3) ReportGenerator. تجارب الفشل: اختبار فاشل → job أحمر؛ تحذير → فشل build؛ حزمة جديدة بلا تحديث lock → فشل `restore --locked-mode` برسالة واضحة. أهم قرار: خلي الـPR pipeline تحت 5 دقائق و انقل الثقيل لـmain/merge queue.",
+          "resources": [
+            "https://docs.github.com/en/actions/use-cases-and-examples/building-and-testing/building-and-testing-net",
+            "https://github.com/actions/setup-dotnet",
+            "https://learn.microsoft.com/en-us/nuget/consume-packages/package-references-in-project-files",
+            "https://github.com/danielpalme/ReportGenerator",
+            "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches",
+            "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: نشر إلى Azure بـOIDC + environments + digest",
+          "md": "**السياق:** عايز `release.yml` ينشر صورتك إلى Container Apps (أو App Service/Functions) **من غير سر Azure واحد**.\n\n**المطلوب:**\n1. `azure/70-oidc.sh`: app registration + service principal + **دور محدود على مجموعة موارد واحدة** + **federated credentials منفصلة** لـ`environment:staging` و`environment:production`.\n2. GitHub Environments: `staging` (بلا مراجعين) و`production` (**required reviewers** + deployment branches = main).\n3. `AZURE_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID` كـ**variables** على مستوى البيئة (مش secrets).\n4. `release.yml`: job `package` بيبني الصورة وينشرها بـdigest + SBOM + provenance + توقيع cosign + attestation، و`outputs.digest`؛ job `deploy-staging` ينشر بالـdigest ويعمل smoke test؛ job `deploy-production` بـ`needs` و`environment: production` ويعمل canary 90/10.\n5. **أدلة**: لقطة من سجل التشغيل تُظهر (أ) الـjob واقف في انتظار الموافقة (ب) نجاح `az account show` بعد الموافقة (ج) الـdigest المنشور مطابق لما اختُبر في staging.\n6. **تجربة فشل متعمدة**: غيّر الـsubject في الـfederated credential (أو شغّل من فرع غير مصرح له) ووثّق رسالة الخطأ وإزاي شخّصتها.\n7. اكتب `docs/deploy-runbook.md`: إزاي أنشر · إزاي أرجع (أمر واحد) · مين يوافق · إيه اللي أتأكد منه بعد النشر · وإيه اللي أعمل لو الموافقة اتأخرت.\n8. pin كل الـactions الخارجية بـ**commit SHA** (واكتب سكربت `scripts/pin-actions.sh` أو جدول في الوثيقة بالمراجعات الحالية).",
+          "criteria": [
+            "مفيش `AZURE_CREDENTIALS` ولا client secret في المستودع (يُتحقق بـgrep) — والنشر بـOIDC فقط.",
+            "دور Azure محدود بمجموعة موارد (مش Contributor على الاشتراك) وموثق بالأمر.",
+            "federated credentials منفصلة لكل بيئة بالـsubject الصحيح (`environment:…`).",
+            "المعرّفات في **variables** والأسرار الحقيقية (لو فيه) في **secrets** على مستوى البيئة.",
+            "النشر بـ**digest** من `outputs` (مش tag) — ومُثبت إن staging وproduction نزلوا نفس الـdigest.",
+            "smoke test بعد النشر بـretry/timeout وفشل صريح لو التطبيق مش صحي.",
+            "canary 90/10 في الإنتاج + أمر الترقية لـ100% + أمر الرجوع في الـrunbook.",
+            "دليل الانتظار للموافقة + تجربة فشل مصادقة موثقة بالتشخيص.",
+            "pin بـSHA لكل الـactions الخارجية."
+          ],
+          "hint": "أشهر ثلاث رسائل خطأ: `AADSTS700016` (التطبيق مش موجود في الـtenant) · `AADSTS700021`/`700022` (الـsubject/الثقة مش مطابقة) · `403 Forbidden` على `az containerapp update` (الدور ناقص أو على نطاق غلط). وللاختبار السريع من غير ما تنشر: job فيه `azure/login` + `az account show` + `az ad sp show --id $OBJ_ID` — لو نجح، السلسلة كلها سليمة.",
+          "solution": "الترتيب العملي: (1) نفّذ `azure/70-oidc.sh` (2) أنشئ البيئتين في GitHub وضيف الـvariables (3) شغّل workflow صغير فيه `azure/login` + `az account show` للتأكد (4) ضيف `package` job واستخرج الـdigest كـoutput (5) `deploy-staging` بالـdigest + smoke test (6) `deploy-production` بـ`needs: [package, deploy-staging]` و`environment: production` (7) جرّب الانتظار للموافقة (8) جرّب الفشل المتعمد بتغيير الـsubject ووثّق الرسالة (9) اكتب الـrunbook: النشر = tag جديد أو `workflow_dispatch`؛ الرجوع = `az containerapp revision set-mode/ingress set --traffic-split orders--current=100` أو إعادة نشر digest سابق؛ التحقق بعد النشر = `/health` + p95 + معدل الأخطاء 15 دقيقة. النتيجة الأهم: **سلسلة ثقة بلا أسرار**: GitHub environment ← موافقة بشرية ← توكن OIDC قصير العمر ← دور محدود على مجموعة موارد.",
+          "resources": [
+            "https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-azure",
+            "https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation",
+            "https://learn.microsoft.com/en-us/azure/container-apps/github-actions",
+            "https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment",
+            "https://docs.sigstore.dev/cosign/overview/",
+            "https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "GitHub Actions: بناء واختبار .NET",
+          "url": "https://docs.github.com/en/actions/use-cases-and-examples/building-and-testing/building-and-testing-net"
+        },
+        {
+          "label": "actions/setup-dotnet (المدخلات والكاش)",
+          "url": "https://github.com/actions/setup-dotnet"
+        },
+        {
+          "label": "تأمين النشر: OIDC مع Azure",
+          "url": "https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-azure"
+        },
+        {
+          "label": "Workload Identity federation في Entra",
+          "url": "https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation"
+        },
+        {
+          "label": "GitHub Environments وقواعد الحماية",
+          "url": "https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment"
+        },
+        {
+          "label": "أفضل ممارسات أمان GitHub Actions",
+          "url": "https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions"
+        },
+        {
+          "label": "النشر إلى Container Apps بـGitHub Actions",
+          "url": "https://learn.microsoft.com/en-us/azure/container-apps/github-actions"
+        },
+        {
+          "label": "merge queue",
+          "url": "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue"
+        }
+      ]
+    }
+  ]
+}

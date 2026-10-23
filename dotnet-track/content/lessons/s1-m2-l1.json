@@ -1,0 +1,247 @@
+{
+  "id": "s1-m2-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nأكتر غلطتين في الاختبارات: **(1)** كتابة 300 اختبار Unit كلها بتعيد اختبار الـframework، و**(2)** مفيش ولا اختبار\nIntegration واحد — فأول باج حقيقي يظهر بعد النشر. الاختبارات مش «عدد»، دي **توزيع مخاطر**: كل مستوى بيجاوب\nعلى سؤال مختلف، وبتكلفة مختلفة.\n\nفي الدرس ده هنبني الخريطة: إيه اللي يُختبر فين، إزاي توزّع مجهودك على مشروع .NET حقيقي، وإمتى الاختبار\nبيبقى **كاذب** (ناجح دايمًا ومش بيكشف حاجة).\n"
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "Unit test",
+          "def": "بيختبر وحدة واحدة (دالة/كلاس) بمعزل عن التبعيات — ملي ثانية، وآلاف منه مقبول."
+        },
+        {
+          "term": "Integration test",
+          "def": "بيختبر تعاون مكونات حقيقية معًا (HTTP pipeline + EF + قاعدة بيانات) — ثواني، وعشرات منه كافية."
+        },
+        {
+          "term": "Contract test",
+          "def": "بيأكد إن مزوّد الخدمة والمستهلك متفقين على الشكل — مهم بين الميكروسيرفيسز."
+        },
+        {
+          "term": "E2E test",
+          "def": "سيناريو كامل من الواجهة لقاعدة البيانات — بطيء وهش، استخدمه لأهم 3-5 مسارات فقط."
+        },
+        {
+          "term": "Determinism",
+          "def": "نفس المدخلات → نفس النتيجة دائمًا. أي اعتماد على الوقت/الشبكة/الترتيب = اختبار flaky."
+        },
+        {
+          "term": "Test doubles",
+          "def": "بدائل التبعيات: Fake (تنفيذ مبسّط حقيقي)، Stub (قيم جاهزة)، Spy/Mock (يراقب التفاعل)."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "المستوى",
+        "بياكد إيه",
+        "السرعة",
+        "التكلفة",
+        "مثال في مشروع .NET",
+        "العدد المعقول"
+      ],
+      "rows": [
+        [
+          "Unit",
+          "منطق العمل والقواعد",
+          "ملي ثانية",
+          "منخفضة",
+          "حساب إجمالي الطلب، سياسة الضريبة، validator",
+          "70-80% من الاختبارات"
+        ],
+        [
+          "Integration",
+          "التعاون الحقيقي + العقد",
+          "ثواني",
+          "متوسطة",
+          "`POST /api/orders` بـWebApplicationFactory + Postgres حقيقي",
+          "15-25%"
+        ],
+        [
+          "Contract",
+          "توافق الخدمات",
+          "ثواني",
+          "متوسطة",
+          "مستهلك RabbitMQ يتفق مع شكل الحدث المنشور",
+          "لكل حد بين خدمتين"
+        ],
+        [
+          "E2E",
+          "تجربة المستخدم الكاملة",
+          "دقائق",
+          "عالية",
+          "سيناريو Playwright: تسجيل → طلب → دفع",
+          "3-5 مسارات حرجة"
+        ]
+      ],
+      "caption": "التوزيع ده تقريبي — المهم إن كل مستوى موجود، مش النسبة نفسها."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "نفس القاعدة تُختبر في مستويين مختلفين"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Unit: OrderTests.cs",
+      "title": "Unit — منطق الـDomain بمعزل عن كل حاجة",
+      "code": "\npublic sealed class OrderTotalTests\n{\n    [Theory]\n    [InlineData(\"EG\", 200, 228)]     // 14% VAT\n    [InlineData(\"SA\", 200, 230)]     // 15% VAT\n    [InlineData(\"US\", 200, 200)]     // لا ضريبة\n    public void ApplyTax_uses_country_policy(string country, decimal subTotal, decimal expected)\n    {\n        var order = AnOrder.WithCountry(country).WithLines(1, subTotal);\n\n        order.ApplyTax(TaxPolicyResolver.Resolve(country));\n\n        order.Total.Should().Be(expected);\n    }\n\n    [Fact]\n    public void Cancelled_order_cannot_be_modified()\n    {\n        var order = AnOrder.Cancelled();\n\n        var act = () => order.AddLine(new OrderLine(Guid.NewGuid(), 1, 10m));\n\n        act.Should().Throw<OrderAlreadyCancelledException>();\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Integration: OrdersApiTests.cs",
+      "title": "Integration — نفس القاعدة عبر الـpipeline الحقيقي",
+      "code": "\npublic sealed class OrdersApiTests(CustomWebApplicationFactory factory)\n    : IClassFixture<CustomWebApplicationFactory>\n{\n    [Fact]\n    public async Task Create_order_returns_201_and_persists_it()\n    {\n        var client = factory.CreateClient();\n\n        var response = await client.PostAsJsonAsync(\"/api/orders\", new\n        {\n            customerId = factory.SeededCustomer.Id,\n            lines = new[] { new { productId = factory.SeededProduct.Id, quantity = 2, unitPrice = 100m } },\n        });\n\n        response.StatusCode.Should().Be(HttpStatusCode.Created);\n\n        var created = await response.Content.ReadFromJsonAsync<OrderCreatedResponse>();\n        created!.Id.Should().NotBeEmpty();\n\n        // التحقق من الأثر الحقيقي — مش من الاستجابة فقط\n        var stored = await factory.GetOrderAsync(created.Id);\n        stored.Total.Should().Be(228m);\n        stored.Lines.Should().HaveCount(1);\n    }\n\n    [Fact]\n    public async Task Create_order_with_zero_quantity_returns_400_problem_json()\n    {\n        var client = factory.CreateClient();\n\n        var response = await client.PostAsJsonAsync(\"/api/orders\", new\n        {\n            customerId = factory.SeededCustomer.Id,\n            lines = new[] { new { productId = factory.SeededProduct.Id, quantity = 0, unitPrice = 100m } },\n        });\n\n        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);\n        response.Content.Headers.ContentType?.MediaType.Should().Be(\"application/problem+json\");\n\n        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n        problem!.Errors.Keys.Should().Contain(k => k.Contains(\"Quantity\"));\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "اختبارات كاذبة — أخطر من مفيش اختبارات",
+      "md": "\n- **`InMemory` provider بدل قاعدة حقيقية**: بيختلف عن SQL Server/Postgres في الـtransactions، والـraw SQL،\n  والـconstraints، والـclient-evaluation. اختبارك هينجح والإنتاج هيفشل.\n- **Mock لكل حاجة بما فيها الكلاس المُختبَر نفسه**: بتختبر إعدادات الـmock مش الكود.\n- **Assertion على رسالة اللوج أو على ترتيب نداءات داخلية**: أي refactor بريء يكسره (brittle).\n- **اختبار بلا assert**: بينفّذ الكود بس — التغطية بتزيد والثقة صفر.\n- **Ice-cream cone**: 500 اختبار E2E و20 Unit — بطء، هشاشة، وتكلفة تشغيل عالية.\n"
+    },
+    {
+      "type": "steps",
+      "title": "إزاي توزّع مجهودك على مشروعك (خطة 5 خطوات)",
+      "items": [
+        {
+          "title": "ابدأ من المخاطر مش من الملفات",
+          "md": "اكتب قائمة بـ5 قواعد عمل لو اتكسرت هتكلّف فلوس/ثقة (ضريبة، خصم، منع تجاوز المخزون، صلاحيات، حساب الفاتورة). دي أول ما يُختبر Unit."
+        },
+        {
+          "title": "غطّ كل endpoint باختبار Integration واحد على الأقل",
+          "md": "مسار نجاح + مسار فشل لكل endpoint عام. ده بيختبر routing وauth وvalidation وserialization وEF دفعة واحدة."
+        },
+        {
+          "title": "اعزل الاختبارات البطيئة بـTraits",
+          "md": "`[Trait(\"Category\",\"Integration\")]` وشغّل الـUnit في كل commit والـIntegration في كل PR — سرعة استجابة في التطوير وأمان قبل الدمج."
+        },
+        {
+          "title": "ثبّت الحدود بين الخدمات بـContract tests",
+          "md": "لو فيه رسالة/حدث بين خدمتين، اختبر شكله من الطرفين. أرخص بكتير من اكتشاف الكسر في الإنتاج."
+        },
+        {
+          "title": "قِس واحذف",
+          "md": "شوف التغطية **على الـDomain** (مش المشروع كله)، واحذف أي اختبار مش بيكشف عطل حقيقي. الاختبار السيئ له تكلفة صيانة دائمة."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قاعدة عملية للاختيار",
+      "md": "\nاسأل: **«لو غيّرت تنفيذ التفاصيل دي، الاختبار ده لازم يفشل؟»**\nلو الإجابة لأ → الاختبار بيقيّد التصميم من غير فايدة (احذفه أو أعد كتابته على السلوك).\nولو السلوك اللي بتختبره ممكن يتكسر بتغيير في قاعدة البيانات → مكانه Integration مش Unit.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أصنّف أي اختبار عندي على المستوى الصحيح وأبرر السبب.",
+        "أحدّد المخاطر الخمس الأهم في مشروعي وأتأكد إنها مغطاة Unit.",
+        "أكتب اختبار Integration لكل endpoint يغطي نجاح وفشل.",
+        "أكتشف الاختبار الكاذب/الهش وأعيد كتابته على السلوك."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "قاعدتك «لا يمكن إلغاء طلب تم شحنه». أنهي توزيع اختبار صحيح؟",
+          "options": [
+            "اختبار Unit على الكيان + اختبار Integration على endpoint الإلغاء",
+            "اختبار E2E بـPlaywright فقط",
+            "50 اختبار Unit يغطوا كل فروع الكود",
+            "مفيش اختبار — القاعدة واضحة في الكود"
+          ],
+          "answer": 0,
+          "explain": "القاعدة نفسها Unit (سريعة وشاملة للحالات)، وطريقها عبر الـAPI Integration (بيأكد إن الحد بيستخدم القاعدة فعلًا وإن الرد 409)."
+        },
+        {
+          "q": "ليه `InMemory` provider في اختبار EF Core خطر؟",
+          "options": [
+            "بطيء",
+            "بيتصرف differently عن مزوّد SQL حقيقي (transactions/constraints/raw SQL) فبيدي ثقة كاذبة",
+            "مش مدعوم من Microsoft",
+            "محتاج Docker"
+          ],
+          "answer": 1,
+          "explain": "الاختبار بيعدي والإنتاج بيفشل. البديل: SQLite في ملف/ذاكرة بحذر، أو الأفضل Testcontainers بقاعدة حقيقية."
+        },
+        {
+          "q": "أي تغيير يحوّل الاختبار لـ«هش» (brittle)؟",
+          "options": [
+            "التحقق من إن `POST /api/orders` بيرجع 201 والطلب اتخزن",
+            "التحقق من إن `_store.SaveAsync` اتنادت مرة بالظبط بترتيب محدد",
+            "التحقق من إن إجمالي الطلب = 228",
+            "التحقق من إن الاستجابة 400 فيها خطأ على Quantity"
+          ],
+          "answer": 1,
+          "explain": "التحقق من تفاعل داخلي (مين نده مين وبأي ترتيب) بيكسر مع أي refactor بريء. اختبر الأثر/السلوك الظاهر."
+        },
+        {
+          "q": "عندك 20 دقيقة تضيف فيها اختبارات لمشروع مفيهوش أي اختبار. تبدأ بإيه؟",
+          "options": [
+            "اختبارات E2E لأهم 3 سيناريوهات",
+            "Unit لأهم قاعدة عمل + Integration لمسار نجاح واحد على أهم endpoint",
+            "تغطية 100% للـControllers",
+            "اختبارات للـDTOs والـmappers"
+          ],
+          "answer": 1,
+          "explain": "أعلى عائد/دقيقة: قاعدة عمل حرجة + مسار حقيقي واحد يثبت إن الـpipeline شغال. الباقي يتبني تدريجيًا."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "خريطة اختبار لمشروعك",
+          "md": "اكتب جدول من 3 أعمدة: (1) أهم 5 قواعد عمل عندك، (2) المستوى المناسب لكل واحدة، (3) هل مغطاة حاليًا؟ وبعدين اكتب الاختبارات الناقصة للأولوية الأولى.",
+          "criteria": [
+            "5 قواعد عمل محددة بالاسم (مش «الـCRUD»)",
+            "لكل قاعدة مستوى مبرر (Unit/Integration/Contract)",
+            "3 اختبارات جديدة مكتوبة وناجحة على الأقل",
+            "كل اختبار جديد بيكشف عطل حقيقي (جرّب تكسر الكود وتأكد إنه fail)"
+          ],
+          "hint": "اختبار ما بيفشلش لما تكسر الكود = اختبار بلا قيمة. ده أهم فحص جودة للاختبارات نفسها."
+        },
+        {
+          "id": "t2",
+          "title": "تصنيف ما هو موجود",
+          "md": "لو عندك اختبارات بالفعل: صنّفها (Unit/Integration/E2E) واحسب النسب، وحدد أيها هش وأيها كاذب، واحذف أو أعد كتابة أسوأ 3.",
+          "criteria": [
+            "جدول بالنسب الحالية مقابل الهدف",
+            "قائمة بالاختبارات الهشة مع سبب الهشاشة",
+            "حذف/إعادة كتابة 3 اختبارات على الأقل"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Testing in .NET (Microsoft Learn)",
+          "url": "https://learn.microsoft.com/dotnet/core/testing/"
+        },
+        {
+          "label": "Integration tests in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/test/integration-tests"
+        },
+        {
+          "label": "EF Core testing providers",
+          "url": "https://learn.microsoft.com/ef/core/testing/"
+        }
+      ]
+    }
+  ]
+}

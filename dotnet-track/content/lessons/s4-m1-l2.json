@@ -1,0 +1,287 @@
+{
+  "id": "s4-m1-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nفي الطبقات الأفقية (الدرس السابق)، إضافة ميزة «إلغاء طلب» بتلمس: `Domain/Order.cs`،\n`Application/Orders/CancelOrder.cs`، `Application/IOrderRepository.cs`، `Infrastructure/EfOrderRepository.cs`،\n`Api/OrdersEndpoints.cs`، و3 ملفات اختبارات في 3 مشاريع. **6 ملفات في 4 مشاريع** عشان ميزة واحدة.\n\nالـ**Vertical Slice** بيعكس التنظيم: بدل ما تنظّم بالتقنية (Controllers/Services/Repositories)،\nنظّم **بالميزة** — كل slice فيها كل ما يخص حالة استخدام واحدة، غالبًا في ملف واحد.\nده مش بديل عن الـDomain؛ ده تنظيم **طبقة التطبيق والتسليم**.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Vertical Slice",
+          "def": "شريحة رأسية = حالة استخدام كاملة (endpoint + handler + DTO + validation + tests) في مكان واحد."
+        },
+        {
+          "term": "Feature Folder",
+          "def": "مجلد لكل ميزة (`Features/Orders/Cancel/`) بدل مجلد لكل تقنية (`Controllers/`, `Services/`)."
+        },
+        {
+          "term": "Cohesion by feature",
+          "def": "الأشياء اللي بتتغير معًا تقع معًا — تغيير ميزة = تعديل ملف واحد غالبًا."
+        },
+        {
+          "term": "Endpoint Filter / Group",
+          "def": "آلية Minimal APIs لربط slice بمسار وسياسات (auth، validation، cache) — درس 2.1.x."
+        },
+        {
+          "term": "Mediator (MediatR)",
+          "def": "وسيط يفصل المُرسِل عن المعالج: `ISender.Send(command)`. اختياري في الـslices — أحيانًا handler مباشر أوضح."
+        },
+        {
+          "term": "Shared Kernel",
+          "def": "الحد الأدنى المشترك بين الشرائح (Domain، value objects، helpers). لازم يبقى صغير ومراقب."
+        },
+        {
+          "term": "Feature Envy / Duplication",
+          "def": "أكبر مخاطر الـslices: نفس القاعدة تظهر في 3 شرائح. الحل: انقلها لـDomain أو shared kernel."
+        },
+        {
+          "term": "Contract Test",
+          "def": "اختبار يثبت إن الشرائح المختلفة بتتفق على نفس السلوك لقاعدة مشتركة (يمنع التفرّق الصامت)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) slice كامل في ملف واحد"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Api/Features/Orders/CancelOrder.cs",
+      "title": "endpoint + command + handler + validator + response — كلها معًا",
+      "code": "\nusing Shop.Domain.Orders;\nusing Shop.Domain.Shared;\n\nnamespace Shop.Api.Features.Orders.CancelOrder;\n\n// ═════════════ ① العقد (Contract) ═════════════\npublic sealed record Request(Guid OrderId, string Reason);\npublic sealed record Response(Guid OrderId, string Status, DateTimeOffset CancelledAt);\n\n// ═════════════ ② الـEndpoint (التسليم) ═════════════\npublic static class Endpoint\n{\n    public static void Map(IEndpointRouteBuilder app) =>\n        app.MapPost(\"/orders/{orderId:guid}/cancel\", Handle)\n           .WithName(\"CancelOrder\")\n           .WithTags(\"Orders\")\n           .WithSummary(\"يلغي طلبًا بحسب قواعد المجال\")\n           .RequireAuthorization(\"Orders.Write\")\n           .Produces<Response>(StatusCodes.Status200OK)\n           .ProducesProblem(StatusCodes.Status404NotFound)\n           .ProducesProblem(StatusCodes.Status409Conflict)\n           .AddEndpointFilter(async (ctx, next) =>            // ★ validation محلي للـslice\n           {\n               var request = ctx.Arguments.OfType<Request>().FirstOrDefault();\n               if (request is null) return await next(ctx);\n\n               var result = await new Validator().ValidateAsync(request, ctx.HttpContext.RequestAborted);\n               return result.IsValid ? await next(ctx)\n                                     : Results.ValidationProblem(result.ToDictionary());\n           });\n\n    private static async Task<IResult> Handle(\n        Request request, Guid orderId, ISender sender, CancellationToken ct)\n    {\n        if (request.OrderId != orderId)\n            return Results.Problem(statusCode: 400, detail: \"عدم تطابق بين المسار والجسم\");\n\n        var result = await sender.Send(request with { OrderId = orderId }, ct);\n        return Results.Ok(result);\n    }\n}\n\n// ═════════════ ③ التحقق من المدخلات ═════════════\npublic sealed class Validator : AbstractValidator<Request>\n{\n    public Validator()\n    {\n        RuleFor(x => x.OrderId).NotEmpty();\n        RuleFor(x => x.Reason).NotEmpty().MaximumLength(500)\n            .WithMessage(\"سبب الإلغاء مطلوب (500 حرف كحد أقصى)\");\n    }\n}\n\n// ═════════════ ④ حالة الاستخدام (Application) ═════════════\npublic sealed class Handler(\n    AppDbContext db, IClock clock, ILogger<Handler> log) : IRequestHandler<Request, Response>\n{\n    public async Task<Response> Handle(Request request, CancellationToken ct)\n    {\n        var order = await db.Orders\n            .Include(o => o.Lines)\n            .FirstOrDefaultAsync(o => o.Id == request.OrderId, ct)\n            ?? throw new OrderNotFoundException(request.OrderId);\n\n        order.Cancel(request.Reason, clock);          // ★ القاعدة لسه في Domain — مش هنا\n\n        await db.SaveChangesAsync(ct);                // يحفظ + يكتب أحداث الـoutbox\n\n        log.LogInformation(\"order {OrderId} cancelled\", order.Id);\n        return new Response(order.Id, order.Status.ToString(), order.CancelledAt!.Value);\n    }\n}\n\n// ═════════════ ⑤ أخطاء الـslice (تُترجم مركزياً) ═════════════\npublic sealed class OrderNotFoundException(Guid id) : Exception($\"الطلب {id} غير موجود\");\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Api/Program.cs",
+      "title": "التسجيل: خريطة الشرائح + اكتشاف تلقائي",
+      "code": "\nvar builder = WebApplication.CreateBuilder(args);\n\n// البنية التحتية المشتركة (Domain/Infrastructure لسه مشاريع منفصلة)\nbuilder.Services.AddShopPersistence(builder.Configuration);\nbuilder.Services.AddShopMessaging(builder.Configuration);\nbuilder.Services.AddProblemDetails().AddExceptionHandler<GlobalExceptionHandler>();\n\n// ★ MediatR: يفحص التجميعات ويسجل كل الـhandlers/validators\nbuilder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblyContaining<Program>());\nbuilder.Services.AddValidatorsFromAssemblyContaining<Program>();\n\nvar app = builder.Build();\napp.UseExceptionHandler();\n\n// الخيار أ: تسجيل صريح (واضح، سهل التتبع، بلا سحر)\nvar orders = app.MapGroup(\"/api\").RequireAuthorization();\nShop.Api.Features.Orders.CancelOrder.Endpoint.Map(orders);\nShop.Api.Features.Orders.PlaceOrder.Endpoint.Map(orders);\nShop.Api.Features.Orders.ListOrders.Endpoint.Map(orders);\nShop.Api.Features.Catalog.SearchProducts.Endpoint.Map(orders);\n\n// الخيار ب: اكتشاف تلقائي (أقل boilerplate، أقل وضوحًا)\n// app.MapSlicesFromAssembly(typeof(Program).Assembly);   // عبر reflection على أنواع IEndpointFeature\n\napp.Run();\n\n/// <summary>عقد موحّد لو اخترت الاكتشاف التلقائي.</summary>\npublic interface IEndpointFeature\n{\n    static abstract void Map(IEndpointRouteBuilder app);\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) المقارنة الصريحة"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "طبقات أفقية (Clean)",
+        "Vertical Slice"
+      ],
+      "rows": [
+        [
+          "تغيير ميزة واحدة",
+          "6+ ملفات في 3-4 مشاريع",
+          "**ملف 1-2** في مجلد الميزة"
+        ],
+        [
+          "اكتشاف الكود",
+          "«فين منطق الإلغاء؟» → تدور في الطبقات",
+          "«Features/Orders/Cancel» → كل شيء هنا"
+        ],
+        [
+          "فرض الحدود",
+          "**قوي** (مشاريع منفصلة + اختبارات معمارية)",
+          "أضعف (كل شيء في نفس التجميع) — يحتاج اختبارات/اتفاقيات"
+        ],
+        [
+          "إعادة الاستخدام",
+          "طبيعي عبر الطبقات المشتركة",
+          "خطر التكرار → يحتاج shared kernel منضبط"
+        ],
+        [
+          "قواعد العمل المعقدة (مجال غني)",
+          "**مناسبة** (Domain واضح ومحمي)",
+          "ممكنة لكن أسهل إنها تتسرب للـhandlers"
+        ],
+        [
+          "اختبار الوحدة",
+          "مباشر لكل طبقة",
+          "للـhandler (مع DbContext حقيقي) — أقل عزلًا"
+        ],
+        [
+          "onboarding مطور جديد",
+          "يحتاج فهم الطبقات والاتجاه",
+          "**أسرع**: يقرأ slice كامل ويفهم النمط"
+        ],
+        [
+          "فرق كبيرة (5+ فرق)",
+          "**أفضل** (حدود مشاريع + CI)",
+          "يحتاج انضباطًا ومراجعة أقوى"
+        ],
+        [
+          "التحول لميكروسيرفيسز",
+          "أسهل (الطبقات واضحة)",
+          "أسهل **كمان** لو الـslices مجمّعة كموديولات (درس 4.1.3)"
+        ],
+        [
+          "مناسب أكتر لـ",
+          "أنظمة بمجال معقد وعمر طويل",
+          "APIs بميزات مستقلة وفرق صغيرة/متوسطة"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "أكبر خطر في Vertical Slice: تكرار قواعد المجال",
+      "md": "\nلما كل slice بيكتب منطقها الخاص، القاعدة الواحدة بتظهر في 3 نسخ **بسلوك مختلف**:\n`CancelOrder` بيرفض الإلغاء بعد الشحن، و`RefundOrder` ما بيفحصش، و`UpdateOrder` بيتجاهل الحالة خالص.\n\n**الحماية (3 آليات معًا):**\n1. **Domain project حقيقي** بكيانات غنية (الدرس السابق) — الـslice بينسّق، والقاعدة في الكيان.\n   الـslice بلا Domain = نموذج مجال فقير (anemic) مضروب في عدد الشرائح.\n2. **اختبار معماري** يمنع منطق المجال في الـhandlers: مثلًا رفض `if (x.Status == ...)` أو نداء\n   أكثر من aggregate داخل handler واحد.\n3. **Contract tests** لأي قاعدة مشتركة: اختبار واحد يمر على كل المسارات اللي بتعدل الطلب ويثبت نفس النتيجة.\n\nالقاعدة العملية: **slice = تنسيق وتسليم. Domain = قواعد.** لو handler فيه أكتر من `if` يخص حالة كيان → انقله للـDomain.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) التواصل بين الشرائح"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "لا نداء مباشر بين الشرائح — استخدم الأحداث أو Domain",
+      "code": "\n// ═══ ✗ slice بيتصل بـslice تاني مباشرة ═══\npublic sealed class BadHandler(CancelOrder.Handler cancelHandler, Notifications.Handler notify)\n{\n    public async Task Handle(Request r, CancellationToken ct)\n    {\n        var result = await cancelHandler.Handle(new CancelOrder.Request(r.OrderId, r.Reason), ct);\n        await notify.Handle(new Notifications.Request(result.OrderId, \"cancelled\"), ct);\n        // ← اقتران صريح: أي تغيير في slice تاني بيكسر ده، والاختبار بقى معقد\n    }\n}\n\n// ═══ ✓ الطريقة 1: حدث مجال (مفضل — نفس المعاملة عبر outbox) ═══\npublic sealed class OrderCancelledHandler(AppDbContext db, IEmailSender email, ILogger<OrderCancelledHandler> log)\n    : INotificationHandler<OrderCancelled>\n{\n    public async Task Handle(OrderCancelled notification, CancellationToken ct)\n    {\n        log.LogInformation(\"notify customer for {OrderId}\", notification.OrderId);\n        await email.SendOrderCancelledAsync(notification.OrderId, ct);\n    }\n}\n// الشريحة اللي بتلغي الطلب ما تعرفش حاجة عن الإشعارات — الـoutbox يضمن التسليم (درس 4.2.3)\n\n// ═══ ✓ الطريقة 2: استعلام مشترك في Application (للقراءة فقط) ═══\npublic sealed record GetOrderSummaryQuery(Guid OrderId) : IRequest<OrderSummary>;\n// slice العرض بينادي الاستعلام (مش handler شريحة تانية) — الاستعلامات عامة بطبيعتها\n\n// ═══ ✓ الطريقة 3: shared kernel للأنواع والـhelpers ═══\n// src/Shop.Domain/Shared/Money.cs, IClock.cs, Pagination.cs\n// ★ قاعدة: shared kernel يبقى **صغيرًا**؛ كل إضافة له تحتاج مراجعة (وإلا بقى طبقة مخفية)\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.Tests/Features/Orders/CancelOrderTests.cs",
+      "title": "اختبار الـslice: من HTTP للقاعدة في اختبار واحد",
+      "code": "\npublic class CancelOrderSliceTests(PostgresFixture db) : IClassFixture<PostgresFixture>\n{\n    [Fact]\n    public async Task Cancel_shipped_order_returns_409_and_does_not_change_state()\n    {\n        // Arrange: حالة واقعية كاملة (بلا mocks للـhandler)\n        var order = Order.Place(TestData.CustomerId, TestData.Lines(2), new FixedClock());\n        order.Ship(new FixedClock());\n        await db.SeedAsync(order);\n\n        await using var app = db.CreateWebApplication();          // WebApplicationFactory على قاعدة حقيقية\n        var client = app.CreateClient();\n\n        // Act\n        var response = await client.PostAsJsonAsync(\n            $\"/api/orders/{order.Id}/cancel\", new { orderId = order.Id, reason = \"customer request\" });\n\n        // Assert: العقد + الحالة\n        response.StatusCode.Should().Be(HttpStatusCode.Conflict);\n        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();\n        problem!.Title.Should().Be(\"OrderCannotBeCancelled\");\n\n        var stored = await db.GetOrderAsync(order.Id);\n        stored.Status.Should().Be(OrderStatus.Shipped, \"الإلغاء المرفوض ما يغيّرش الحالة\");\n        stored.CancelledAt.Should().BeNull();\n    }\n\n    [Fact]\n    public async Task Cancel_placed_order_persists_state_and_writes_outbox_event()\n    {\n        var order = Order.Place(TestData.CustomerId, TestData.Lines(1), new FixedClock());\n        await db.SeedAsync(order);\n        await using var app = db.CreateWebApplication();\n\n        var response = await app.CreateClient().PostAsJsonAsync(\n            $\"/api/orders/{order.Id}/cancel\", new { orderId = order.Id, reason = \"out of stock\" });\n\n        response.StatusCode.Should().Be(HttpStatusCode.OK);\n        var body = await response.Content.ReadFromJsonAsync<Response>();\n        body!.Status.Should().Be(\"Cancelled\");\n\n        // ★ الذرّية: الحدث في outbox في نفس المعاملة (بلا فقد)\n        var outbox = await db.GetOutboxAsync(order.Id);\n        outbox.Should().ContainSingle(m => m.Type == \"order.cancelled\");\n        outbox.Single().SentAt.Should().BeNull(\"المرسل لسه ما اشتغلش\");\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "متى تختار Vertical Slice؟",
+      "md": "\n**اختاره لو:**\n- API بميزات مستقلة نسبيًا (CRUD + عمليات واضحة) وفريق 1-6 مطورين.\n- سرعة التسليم ووضوح «فين كود الميزة» أهم من الحدود الصارمة.\n- عندك **Domain project غني** تحمي القواعد (شرط، مش رفاهية).\n\n**ابقَ على الطبقات (أو استخدم Modular Monolith) لو:**\n- مجال معقد بقواعد متشابكة عبر aggregates كثيرة (تأمين، محاسبة، تسعير متقدم).\n- فرق متعددة (5+) بتشتغل على نفس الكود ولازم حدود مفروضة بالـcompiler.\n- عندك متطلبات امتثال/مراجعة تفصل المسؤوليات تقنيًا.\n\n**الحل الوسط الشائع والأفضل في مشاريع كتير:** Domain + Application كمشاريع (حدود مفروضة)،\nوطبقة التسليم منظمة بـslices داخل مشروع الـAPI. ده بيجمع حماية القواعد وسرعة الميزات.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أنظّم الكود بالميزة (slice) وأجمع endpoint/handler/DTO/validator في مكان واحد.",
+        "أحافظ على Domain غني وأمنع تسرب قواعد العمل للـhandlers (اختبارات معمارية + contract tests).",
+        "أوصل بين الشرائح بالأحداث (outbox) أو الاستعلامات المشتركة، لا بنداء handler مباشر.",
+        "أختبر الـslice من HTTP للقاعدة على قاعدة بيانات حقيقية."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "الميزة الأساسية لـVertical Slice؟",
+          "options": [
+            "أداء أعلى",
+            "تماسك أعلى: الأشياء التي تتغير معًا تقع معًا → تغيير ميزة = تعديل ملف/ملفين بدل 6 في 4 مشاريع",
+            "بلا اختبارات",
+            "فرض حدود أقوى من الطبقات"
+          ],
+          "answer": 1,
+          "explain": "التكلفة: حدود أضعف (نفس التجميع) وخطر تكرار القواعد. الحدود الأقوى لسه من نصيب مشاريع منفصلة + اختبارات معمارية."
+        },
+        {
+          "q": "slice بيحتوي `if (order.Status == OrderStatus.Placed) { ... }` لتحديد هل يُسمح بالخصم. الحكم؟",
+          "options": [
+            "عادي — ده مكانه",
+            "قاعدة مجال تسربت للـhandler: انقلها لـ`Order` كـmethod (مثل `CanDiscount()`) واختبرها هناك",
+            "حوّلها لـvalidator",
+            "احذفها"
+          ],
+          "answer": 1,
+          "explain": "لو القاعدة دي مستخدمة في slice تاني كمان، هتتكرر بسلوك مختلف — وده أسوأ سيناريو في الـslices."
+        },
+        {
+          "q": "slice للإلغاء محتاج يبعت إيميل. أفضل توصيل؟",
+          "options": [
+            "ينادي handler شريحة الإشعارات مباشرة",
+            "يرفع `OrderCancelled` (يُكتب في outbox في نفس المعاملة) ومستهلك مستقل يبعت الإيميل",
+            "يكتب الإيميل داخل نفس الـhandler",
+            "يستخدم event bus خارجي مباشرة بلا outbox"
+          ],
+          "answer": 1,
+          "explain": "الحدث بيفصل الشرائح، والـoutbox بيضمن عدم الفقد لو سقطت العملية بعد الالتزام. النشر المباشر بلا outbox = رسائل ضائعة عند الفشل."
+        },
+        {
+          "q": "MediatR في الـslices — لازم؟",
+          "options": [
+            "نعم دائمًا",
+            "لا: مفيد لفصل المرسل عن المعالج ولـpipelines (validation/logging/transactions)، لكن handler مباشر + interface ضيق أوضح في حالات كتير",
+            "ممنوع",
+            "يحل محل Domain"
+          ],
+          "answer": 1,
+          "explain": "التكلفة: سحر (reflection/IL emit)، stack traces أطول، وindirection. قيمته الحقيقية في الـbehaviors المشتركة (validation, transactions, logging) — استخدمه لما تحتاجها."
+        },
+        {
+          "q": "Shared Kernel (المشترك بين الشرائح) — القاعدة الصحيحة؟",
+          "options": [
+            "حط فيه كل ما يتكرر",
+            "يبقى صغيرًا ومراجعًا: أنواع مجال نقية وhelpers ثابتة؛ أي منطق عمل يدخله يحتاج مراجعة لأنه بيبقى طبقة مخفية",
+            "احذفه بالكامل",
+            "اجعله مشروع Infrastructure"
+          ],
+          "answer": 1,
+          "explain": "shared kernel ضخم = طبقة «Common» اللي الكل بيعتمد عليها وكل تغيير فيها بيكسر كل حاجة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "حوّل ميزتين إلى slices",
+          "md": "اختار ميزتين موجودتين (واحدة كتابة وواحدة قراءة) وأعد تنظيمهما كـslices كاملة (endpoint + handler + DTO + validator + tests في مجلد الميزة). قارن عدد الملفات المعدّلة قبل/بعد في تقرير قصير.",
+          "criteria": [
+            "كل slice في مجلد/ملف واحد مع عقد واضح (Request/Response records)",
+            "validation مربوط بالـslice (endpoint filter) ويرجع 400 بشكل متسق",
+            "OpenAPI يعرض الميزتين بشكل صحيح (tags/summaries/Produces)",
+            "قواعد العمل لسه في Domain (اختبار معماري يثبت إن الـhandler بلا منطق حالة)",
+            "اختبار slice واحد على الأقل من HTTP للقاعدة على Postgres حقيقي",
+            "تقرير: عدد الملفات المعدّلة لإضافة حقل جديد قبل/بعد"
+          ],
+          "hint": "لو الميزة القراءة معقدة (تقارير/joins): اعمل slice بيستخدم read-model منفذ (Dapper من درس 3.1.3) بدل ما تحشر الاستعلام في الـhandler."
+        },
+        {
+          "id": "t2",
+          "title": "حارس ضد تكرار القواعد",
+          "md": "أضف اختبار contract يثبت إن كل المسارات اللي بتعدّل حالة الطلب بتطبق نفس القاعدة (مثلًا: لا يمكن تعديل/إلغاء/خصم بعد الشحن)، واختبار معماري يمنع منطق الحالة في الـhandlers.",
+          "criteria": [
+            "اختبار `[Theory]` يمر على كل endpoints تعديل الطلب ويثبت نفس الاستجابة (409) للحالة الممنوعة",
+            "اختبار معماري يفشل لو handler فيه مقارنة حالة (`Status ==`) أو تعديل مباشر لخصائص aggregate",
+            "الاختباران في CI",
+            "ملاحظة في README: «القواعد في Domain، الشرائح تنسّق» + مثال صحيح/خاطئ"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Vertical Slice Architecture (Jimmy Bogard)",
+          "url": "https://www.jimmybogard.com/vertical-slice-architecture/"
+        },
+        {
+          "label": "Minimal APIs — Endpoint filters & groups",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis"
+        },
+        {
+          "label": "MediatR",
+          "url": "https://github.com/jbogard/MediatR"
+        },
+        {
+          "label": "FluentValidation",
+          "url": "https://docs.fluentvalidation.net/"
+        },
+        {
+          "label": "Feature Folders discussion",
+          "url": "https://learn.microsoft.com/dotnet/architecture/modern-web-apps-azure/architectural-principles"
+        }
+      ]
+    }
+  ]
+}

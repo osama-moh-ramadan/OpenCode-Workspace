@@ -1,0 +1,398 @@
+{
+  "id": "s4-m3-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "callout",
+      "kind": "goal",
+      "title": "مشروع المرحلة 4",
+      "md": "\nحوّل مشروعك (أو ابنِ واحدًا) إلى **Modular Monolith كامل**: 4 موديولات بحدود مفروضة آليًا،\nكل واحد بـ`Contracts`/`Internal` و**schema بيانات خاص**، تواصل عبر عقد مباشر للقراءات\nو**أحداث outbox** للآثار الجانبية، و**CQRS** بمستوى 1 على الأقل (ومستوى 2 لمسار قراءة ثقيل واحد).\n\n**المدة المتوقعة: 24-30 ساعة عمل موزعة على 6 جلسات.**\n\nالمعيار مش «المشروع بيشتغل» — ده الحد الأدنى. المعيار إن **الحدود حقيقية ومثبتة**:\nاختبار معماري يفشل لو حد كسرها، استعلام على القاعدة يثبت صفر FK متقاطع،\nواختبار يثبت إن الرسالة لا تُفقد ولا تتكرر أثرًا.\n"
+    },
+    {
+      "type": "text",
+      "md": "\n**الأهم: طوّر المشروع الموجود، لا تبدأ من الصفر.** عندك بالفعل (من المراحل السابقة):\nكيانات Domain، endpoints، اختبارات تكامل بـTestcontainers، outbox، كاش، قياس أداء، وسجل قرارات.\nالمشروع ده بيضيف **الحدود** فوق كل ده — ولو بدأت من جديد، هتقضي الوقت في boilerplate بدل المعمارية.\n\nالقاعدة الحاكمة للجلسات الست: **كل جلسة تنتهي بدليل** (اختبار أخضر، قياس محفوظ، أو وثيقة).\nجلسة بلا دليل = جلسة ماحصلتش.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الحدود: إيه اللي داخل المشروع وإيه اللي بره"
+    },
+    {
+      "type": "table",
+      "head": [
+        "داخل النطاق (مطلوب)",
+        "بره النطاق (مرفوض في المشروع ده)"
+      ],
+      "rows": [
+        [
+          "4 موديولات (Catalog، Orders، Shipping، Notifications/Payments)",
+          "ميكروسيرفيسز/خدمات منفصلة (ده مشروع المرحلة 5)"
+        ],
+        [
+          "`Contracts`/`Internal` لكل موديول + اختبارات حدود",
+          "Event Sourcing كامل (درس 4.2.4 — قرار ADR يكفي)"
+        ],
+        [
+          "schema بيانات لكل موديول وصفر FK متقاطع",
+          "Kubernetes/Helm/Terraform (المرحلة 6)"
+        ],
+        [
+          "Outbox + مُرسِل + DLQ + مستهلك idempotent",
+          "Kafka/EventStoreDB (المرحلة 5)"
+        ],
+        [
+          "CQRS مستوى 1 (commands/queries منفصلة) + مستوى 2 لمسار واحد",
+          "واجهة أمامية كاملة (المرحلة 8)"
+        ],
+        [
+          "مراقبة لكل موديول (metrics/logs/health) مع وسم `module`",
+          "مراقبة موزعة كاملة بـGrafana stack (المرحلة 7)"
+        ],
+        [
+          "Docker + CI يشغّل 4 أنواع اختبارات",
+          "Load testing بحجم إنتاجي (اتعمل في 3.4.1)"
+        ],
+        [
+          "5+ ADRs وREADME يشرح الحدود",
+          "توثيق شامل لكل نوع (الحد الأدنى: العقود والحدود)"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الجلسات الست (كل واحدة بدليل)"
+    },
+    {
+      "type": "steps",
+      "title": "خطة العمل",
+      "items": [
+        {
+          "title": "① الحدود والقياس (4 ساعات)",
+          "md": "ارسم الموديولات بالقدرة العمل (مش بالطبقة). قِس الاقتران الحالي: سكربت يعدّ المراجع المتقاطعة بين المجلدات + churn من git. اختار أول موديول (الأقل اقترانًا). اكتب ADR-000X بالحدود ومبررها.",
+          "code": {
+            "lang": "bash",
+            "title": "قياس قبل البدء (احفظ المخرجات)",
+            "code": "# الاقتران الحالي: كام نوع في مجلد بينادي نوع في مجلد تاني؟\ngrep -rn \"using Shop\\.\" src/ --include=*.cs | awk -F: '{print $1, $3}' | sort | uniq -c | sort -rn | head -20\n\n# churn: أنهي ملفات بتتغير أكتر (مرشّح للحدود أو للخطر)\ngit log --since='6 months ago' --numstat --pretty=format: -- 'src/**/*.cs' \\\n  | awk 'NF==3 {c[$3]++} END {for (f in c) print c[f], f}' | sort -rn | head -20\n\n# الاستعلامات اللي بتلمس أكتر من مجال (دليل على حدود غلط)\npsql \"$DATABASE_URL\" -c \"SELECT calls, left(query,120) FROM pg_stat_statements\n  WHERE query ~* 'join' AND query ~* 'orders' AND query ~* 'catalog' ORDER BY calls DESC LIMIT 10;\""
+          }
+        },
+        {
+          "title": "② عزل أول موديول (5 ساعات)",
+          "md": "حرّك أنواع Catalog إلى `Shop.Catalog.Contracts` + `Shop.Catalog` (Internal). أنشئ `catalog` schema وانقل الجداول (`ALTER TABLE … SET SCHEMA`). أضف اختبارات حدود (حمراء في الأول). حدّث كل المستهلكين للعقد.",
+          "code": {
+            "lang": "csharp",
+            "title": "اختبار الحدود — لازم يفشل لو حد كسرها",
+            "code": "[Fact]\npublic void Catalog_does_not_depend_on_any_module_internals()\n{\n    var result = Types.InAssembly(typeof(CatalogModuleFacade).Assembly)\n        .ShouldNot()\n        .HaveDependencyOnAny(\"Shop.Orders.Internal\", \"Shop.Shipping.Internal\",\n                             \"Shop.Notifications.Internal\", \"Shop.Orders\", \"Shop.Shipping\")\n        .GetResult();\n\n    result.IsSuccessful.Should().BeTrue(\n        \"الاعتماد المسموح على العقود فقط: \" + string.Join(\", \", result.FailingTypeNames ?? []));\n}"
+          }
+        },
+        {
+          "title": "③ موديول Orders + الأحداث (5 ساعات)",
+          "md": "كرر العزل لـOrders، وعرّف أحداثه العامة (`OrderPlaced`/`OrderCancelled`/`OrderShipped`) في `Contracts`. اكتب الأحداث في outbox داخل معاملة الحفظ. اختبر الذرّية والـrollback.",
+          "code": {
+            "lang": "text",
+            "title": "دليل الجلسة ③",
+            "code": "✓ اختبار: البيانات والرسالة يُحفظان معًا أو لا يُحفظان\n✓ اختبار: rollback يزيل الاثنين (لا رسالة شبحية)\n✓ اختبار: المُرسِل ينشر بالترتيب ولا يكرر بين نسختين (SKIP LOCKED)\n✓ استعلام: صفر FK بين orders.* وcatalog.* (محفوظ في results/)\n✓ مقياس: outbox.oldest_age_seconds < 1s تحت حمل 50 RPS"
+          }
+        },
+        {
+          "title": "④ المستهلكون: Shipping وNotifications (5 ساعات)",
+          "md": "ابنِ الموديولين كمستهلكين للأحداث: inbox/idempotency طبيعية، معالجة في معاملة واحدة، تجاهل الأنواع غير المعروفة، DLQ بعد حد المحاولات. اختبر إعادة التسليم 3 مرات.",
+          "code": {
+            "lang": "text",
+            "title": "دليل الجلسة ④",
+            "code": "✓ اختبار: تسليم مكرر ×3 → أثر واحد (شحنة واحدة / إشعار واحد)\n✓ اختبار: فشل متكرر → DLQ مع رسالة خطأ محفوظة وتنبيه\n✓ اختبار: نوع حدث غير معروف → تجاهل + سجل debug (لا فشل)\n✓ اختبار: ترتيب معكوس (حدث قديم بعد أحدث) لا يُفسد الحالة\n✓ كل مستهلك له schema وجداول خاصة (لا قراءة من جداول موديول تاني)"
+          }
+        },
+        {
+          "title": "⑤ CQRS ومسارات القراءة (5 ساعات)",
+          "md": "افصل الأوامر (عبر Domain + معاملة + outbox) عن الاستعلامات (DTO للشاشة عبر Dapper). ابنِ projection واحدة (مستوى 2) لمسار قراءة ثقيل مع نقطة تفتيش وقابلية إعادة بناء. قِس الفرق.",
+          "code": {
+            "lang": "text",
+            "title": "دليل الجلسة ⑤",
+            "code": "✓ 3 pipeline behaviors بترتيب موثق (validation قبل المعاملة)\n✓ الاستعلامات لا تفتح معاملات (اختبار)\n✓ مسار قراءة ثقيل: p95 وعدد الاستعلامات قبل/بعد (جدول في results/)\n✓ projection: lag مقيس + إعادة بناء من الصفر (truncate + replay) ناجحة\n✓ القراءة بعد الكتابة مباشرة من مصدر الكتابة (لا انتظار للـprojection)"
+          }
+        },
+        {
+          "title": "⑥ التشغيل والتوثيق (4 ساعات)",
+          "md": "Dockerfile متعدد المراحل + compose (api + postgres + redis)، health checks لكل موديول، metrics بوسم `module`، logs بحقل `module`، CI بـ4 أنواع اختبارات، README فيه خريطة الموديولات، و5+ ADRs.",
+          "code": {
+            "lang": "yaml",
+            "title": "CI: 4 أنواع اختبارات (كل واحدة job)",
+            "code": "jobs:\n  unit:        { runs-on: ubuntu-latest, steps: [ { run: dotnet test --filter Category=Unit } ] }\n  arch:        { runs-on: ubuntu-latest, steps: [ { run: dotnet test --filter Category=Architecture } ] }\n  integration: { runs-on: ubuntu-latest, services: { postgres: {...} },\n                 steps: [ { run: dotnet test --filter Category=Integration } ] }\n  e2e:         { runs-on: ubuntu-latest, steps: [ { run: docker compose -f compose.test.yml up -d && dotnet test --filter Category=E2E } ] }"
+          }
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "تعريف «خلصت» — 20 بندًا بدليل"
+    },
+    {
+      "type": "table",
+      "head": [
+        "#",
+        "البند",
+        "الدليل المطلوب"
+      ],
+      "rows": [
+        [
+          "1",
+          "4 موديولات بمشروعَي Contracts/Internal",
+          "مخرجات `dotnet sln list` + شجرة الحل في README"
+        ],
+        [
+          "2",
+          "مراجع المشاريع بالاتجاه الصحيح فقط",
+          "اختبار معماري (فشل مفتعل مثبت في الـPR)"
+        ],
+        [
+          "3",
+          "العقود بلا EF/JSON/ASP.NET",
+          "اختبار `Contracts_contain_no_infrastructure_types`"
+        ],
+        [
+          "4",
+          "سياق EF واحد لكل موديول",
+          "اختبار `Each_module_has_exactly_one_DbContext`"
+        ],
+        [
+          "5",
+          "schema بيانات لكل موديول",
+          "مخرجات `\\dn` + ملف migrations لكل موديول"
+        ],
+        [
+          "6",
+          "صفر FK متقاطع",
+          "استعلام `pg_constraint` (نتيجة محفوظة في results/)"
+        ],
+        [
+          "7",
+          "لا join عبر الـschemas في كود التطبيق",
+          "grep على SQL + مراجعة PRs"
+        ],
+        [
+          "8",
+          "أحداث عامة في Contracts، ماضية، sealed، غير قابلة للتعديل",
+          "اختبار `Integration_events_are_records_and_immutable`"
+        ],
+        [
+          "9",
+          "Outbox ذرّي مع البيانات",
+          "اختبار rollback + اختبار الحفظ معًا"
+        ],
+        [
+          "10",
+          "مُرسِل آمن مع عدة نسخ",
+          "اختبار عاملَين متوازيَين (لا تكرار)"
+        ],
+        [
+          "11",
+          "Backoff + حد محاولات + DLQ",
+          "اختبار فشل متكرر → DLQ"
+        ],
+        [
+          "12",
+          "مستهلكون idempotent",
+          "اختبار تسليم مكرر ×3 → أثر واحد"
+        ],
+        [
+          "13",
+          "CQRS مستوى 1 (أوامر/استعلامات منفصلة)",
+          "ملف لكل حالة استخدام + DTOs للقراءة"
+        ],
+        [
+          "14",
+          "مسار قراءة ثقيل محسّن (مستوى 1 أو 2)",
+          "جدول p95/عدد الاستعلامات قبل/بعد"
+        ],
+        [
+          "15",
+          "projection قابلة لإعادة البناء (لو مستوى 2)",
+          "سجل تشغيل truncate + replay + قياس الـlag"
+        ],
+        [
+          "16",
+          "3+ pipeline behaviors بترتيب موثق",
+          "كود التسجيل + اختبار (validation قبل معاملة)"
+        ],
+        [
+          "17",
+          "metrics/logs/health بوسم `module`",
+          "لقطة من /metrics و/health/sample فيها 4 موديولات"
+        ],
+        [
+          "18",
+          "CI بـ4 أنواع اختبارات",
+          "رابط تشغيل ناجح + وقت كل job"
+        ],
+        [
+          "19",
+          "5+ ADRs (واحد one-way، واحد مرفوض)",
+          "مجلد docs/adr/ + فهرس"
+        ],
+        [
+          "20",
+          "README فيه خريطة الموديولات وقواعد الحدود",
+          "جدول الموديولات + «إزاي تضيف ميزة» بخطوات"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "9 طرق بتفشل بيها المشاريع دي",
+      "md": "\n1. **التقسيم بالطبقة لا بالقدرة** (`Shop.Services`, `Shop.Data`) → حدود وهمية، واقتران زي ما كان.\n2. **مشاركة `DbContext` بين موديولين** → أقسى أشكال كسر الحدود (وشائع لأن «أسرع»).\n3. **معاملة عبر موديولين** → مستحيلة تقنيًا أو كارثية معماريًا. البديل: outbox + اتساق eventual.\n4. **الأحداث تحمل كيانات EF** (`OrderPlaced(Order Order)`) → تسريب التنفيذ + مشاكل تسلسل واقتران.\n   الأحداث تحمل **بيانات** (معرّفات وقيم)، لا كائنات حية.\n5. **بلا idempotency في المستهلكين** → أول إعادة تسليم تعمل شحنتين/إشعارين.\n6. **اختبارات الحدود مش في CI** → أول deadline يكسرها، وماحدش يلاحظ.\n7. **Kernel بيكبر** (منطق تسعير، helpers لكل حاجة) → طبقة مخفية الكل مقترن بها.\n8. **إعادة كتابة من الصفر** → شهرين بلا ميزة واحدة. استخدم المسار التدريجي (Strangler، درس 4.1.3).\n9. **ما تقيسش** → بلا أرقام (اقتران قبل/بعد، p95، زمن CI) المشروع «شكّل جميل» وبلا حجة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "التقييم الذاتي (سجّل درجتك)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "1 (بداية)",
+        "2",
+        "3",
+        "4 (مرجعي)"
+      ],
+      "rows": [
+        [
+          "الحدود",
+          "مجلدات فقط",
+          "مشاريع منفصلة",
+          "+ اختبارات معمارية في CI",
+          "+ فرض على مستوى البيانات (schemas، صفر FK)"
+        ],
+        [
+          "التواصل",
+          "نداء مباشر",
+          "عبر عقود",
+          "+ أحداث outbox ذرّية",
+          "+ DLQ ومقاييس وتأخير مُراقب"
+        ],
+        [
+          "الموثوقية",
+          "بلا اختبارات فشل",
+          "اختبار ذرّية",
+          "+ تكرار تسليم وفشل",
+          "+ ترتيب معكوس وانهيار في المنتصف"
+        ],
+        [
+          "CQRS",
+          "CRUD",
+          "أوامر/استعلامات منفصلة",
+          "+ DTOs للشاشة وDapper",
+          "+ projection بـlag مقاس وإعادة بناء"
+        ],
+        [
+          "المراقبة",
+          "Console.WriteLine",
+          "Serilog",
+          "+ metrics بوسم module",
+          "+ health لكل موديول ولوحة محلية"
+        ],
+        [
+          "القرارات",
+          "بلا توثيق",
+          "README",
+          "+ 3 ADRs",
+          "+ 5 ADRs فيها مرفوض/one-way وشروط إعادة نظر"
+        ],
+        [
+          "التسليم",
+          "يعمل محليًا",
+          "Dockerfile",
+          "+ compose كامل",
+          "+ CI بـ4 أنواع اختبارات ونشر قابل للتكرار"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "filename": "CAPSTONE.md",
+      "title": "ملف التسليم (انسخ الهيكل واملأه)",
+      "code": "\n# Capstone المرحلة 4 — Modular Monolith بـCQRS وOutbox\n\n## 1. الملخص (5 أسطر)\nالنظام، الموديولات الأربعة، وأهم 3 أرقام (اقتران قبل/بعد، p95 مسار القراءة، زمن CI).\n\n## 2. خريطة الموديولات\n| الموديول | المسؤولية | الجدول (schema) | العقود العامة | الأحداث المنشورة | الأحداث المستهلكة |\n|---|---|---|---|---|---|\n| Catalog | المنتجات والفئات والمخزون | catalog.products, catalog.stock | ICatalogModule | product.price_changed | — |\n| Orders  | دورة حياة الطلب        | orders.orders, orders.order_lines, orders.outbox | IOrdersModule | order.placed/cancelled/shipped | product.price_changed |\n| Shipping| الشحن والتتبع          | shipping.shipments, shipping.inbox | IShippingModule | shipment.dispatched | order.placed, order.cancelled |\n| Notifications | الإشعارات        | notifications.outbox_log, notifications.inbox | INotificationsModule | — | order.*, shipment.* |\n\n## 3. قواعد الحدود (للإضافة الجديدة)\n1. أي كود جديد يروح في موديول حسب **القدرة العمل**، مش حسب الطبقة.\n2. الوصول لموديول تاني: عبر `Contracts` فقط (قراءة مباشرة) أو حدث (أثر جانبي).\n3. لا معاملة تعدّل موديولين. لا قراءة من جداول موديول تاني.\n4. كل أثر جانبي عبر حدث + outbox، والمستهلك idempotent.\n5. أي إضافة للـKernel تحتاج مراجعة (السبب مكتوب في الـPR).\n\n## 4. الأدلة\n| البند | الدليل | الرابط/المسار |\n|---|---|---|\n| صفر FK متقاطع | استعلام pg_constraint | results/boundaries/fk-check.txt |\n| ذرّية outbox | اختبار rollback | tests/…/OutboxReliabilityTests.cs |\n| idempotency | تسليم ×3 → أثر واحد | tests/…/InboxConsumerTests.cs |\n| مسار قراءة | p95 214ms → 61ms | results/read-model/before-after.md |\n| CI | 4 jobs خضراء (3m 40s) | <رابط التشغيل> |\n\n## 5. القرارات (ADRs)\nADR-0007 modular monolith · ADR-0012 outbox · ADR-0013 حدود الموديولات ·\nADR-0014 CQRS مستوى 1 + projection للتقارير · ADR-0009 event sourcing مرفوض.\n\n## 6. ما لم أنجزه وليه (مهم)\nمثال: «لم أفصل Notifications لموديول مستقل بالكامل لأن اقترانه بالـemail provider أعلى من قيمته حاليًا».\n\n## 7. الخطوة التالية (لو عندي أسبوع آخر)\nقياس الاقتران دوريًا في CI، tracing عبر الموديولات (correlation_id)، وإعادة بناء projection بشكل متوازي.\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "إزاي تحكي المشروع ده في مقابلة (3 دقائق)",
+      "md": "\n**البنية (20 ثانية):** «بنيت النظام كـmodular monolith: 4 موديولات، كل واحد بـschema بيانات خاص\nوعقد عام، والتواصل عبر أحداث outbox. اخترت ده بدل الميكروسيرفيسز لأن فريقنا 4 أشخاص\nوالحمل كان 19% من السعة المقاسة — ووثقت القرار في ADR بشروط إعادة نظر.»\n\n**أصعب مشكلة (60 ثانية):** «مشكلة الكتابة المزدوجة: الالتزام في القاعدة ثم النشر.\nحلّيتها بـoutbox في نفس المعاملة + مُرسِل بـ`SKIP LOCKED` عشان يشتغل بأمان مع عدة نسخ +\nbackoff وDLQ. وعلى جانب المستهلك inbox مع idempotency طبيعية.\nوكتبت 5 اختبارات للحالات اللي بتكسر الإنتاج: rollback، عاملان متوازيان، تسليم مكرر، فشل متكرر، ترتيب معكوس.»\n\n**النتيجة بالأرقام (30 ثانية):** «مسار القراءة الثقيل نزل p95 من 214ms إلى 61ms،\nوصفر FK متقاطع بين الموديولات (مُثبت باستعلام على `pg_constraint`)،\nواختبارات الحدود في CI منعت 3 محاولات كسر حدود فعلية في شهرين.»\n\n**اللي تعلمته (30 ثانية):** «أصعب جزء كان رسم الحدود صح — أول تقسيم عملته كان بالطبقة لا بالقدرة،\nواضطررت أعيد. دلوقتي أقيس churn والاقتران بالأدوات قبل ما أرسم.»\n\nجهّز الأرقام دي من مشروعك **الحقيقي** — مش أرقام مثال. أي رقم مش قادر تدافع عنه، احذفه.\n"
+    },
+    {
+      "type": "tasks",
+      "title": "تسليم المشروع",
+      "items": [
+        {
+          "id": "t1",
+          "title": "البناء الكامل (6 جلسات)",
+          "md": "نفّذ الجلسات الست بالترتيب، وكل جلسة تنتهي بدليل محفوظ في `results/` أو اختبار أخضر. لا تنتقل لجلسة قبل إتمام دليل السابقة.",
+          "criteria": [
+            "20 بندًا من جدول «تعريف خلصت» محققة بدليل (جدول في CAPSTONE.md بروابط/مسارات)",
+            "4 موديولات × (Contracts + Internal + schema) مع صفر FK متقاطع (مخرجات استعلام محفوظة)",
+            "outbox + مُرسِل + DLQ + inbox/idempotency — مع ≥ 8 اختبارات موثوقية خضراء",
+            "CQRS مستوى 1 + مسار قراءة ثقيل محسّن بجدول قبل/بعد",
+            "CI بـ4 أنواع اختبارات (unit/arch/integration/e2e) وتشغيل ناجح موثق",
+            "Dockerfile + compose يعملان من clone نظيف"
+          ],
+          "hint": "لو الوقت ضيق: قلّل عدد الموديولات إلى 3 بدل ما تقلّل عمق الحدود. حدود حقيقية في 3 موديولات أفضل من 5 موديولات شكلية."
+        },
+        {
+          "id": "t2",
+          "title": "التوثيق والقرارات",
+          "md": "اكتب `CAPSTONE.md` بالهيكل أعلاه، و`docs/adr/` بـ5 قرارات على الأقل (واحد one-way، واحد مرفوض)، وREADME فيه خريطة الموديولات و«إزاي تضيف ميزة جديدة» بخطوات.",
+          "criteria": [
+            "CAPSTONE.md فيه: الملخص، خريطة الموديولات، قواعد الحدود، جدول الأدلة، ADRs، «ما لم أنجزه»، والخطوة التالية",
+            "5 ADRs بالقالب الكامل (سياق بأرقام، بدائل، تبعات سلبية، شروط إعادة نظر)",
+            "README فيه خطوات «إضافة ميزة جديدة» (7 خطوات) و«إضافة موديول جديد» (5 خطوات)",
+            "قواعد الحدود مكتوبة بشكل يفهمه مطور جديد في 5 دقائق"
+          ]
+        },
+        {
+          "id": "t3",
+          "title": "اختبار الحدود تحت الضغط (الأهم)",
+          "md": "حاول تكسر حدودك بنفسك بطرق واقعية وأثبت إن الحماية اشتغلت: أضف اعتمادًا ممنوعًا، اكتب استعلامًا بـjoin عبر موديولين، أضف FK متقاطعًا، وانشر حدثًا من غير outbox. كل محاولة لازم تفشل في CI أو في القاعدة.",
+          "criteria": [
+            "4 محاولات كسر موثقة (الـdiff + مخرجات الفشل) في `results/boundary-violations.md`",
+            "كل محاولة تُكتشف آليًا (اختبار معماري، أو قيد في القاعدة، أو مراجعة CI)",
+            "لو فيه محاولة ما اتكشفش: أضفت الحارس الناقص (موثق)",
+            "ملاحظة عن الحراس اللي لسه ناقصة وخطة إضافتها"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Modular Monolith with DDD (Kamil Grzybek)",
+          "url": "https://github.com/kgrzybek/modular-monolith-with-ddd"
+        },
+        {
+          "label": ".NET architecture guides",
+          "url": "https://learn.microsoft.com/dotnet/architecture/"
+        },
+        {
+          "label": "eShop reference sample",
+          "url": "https://github.com/dotnet-architecture/eShop"
+        },
+        {
+          "label": "Outbox pattern",
+          "url": "https://microservices.io/patterns/data/transactional-outbox.html"
+        },
+        {
+          "label": "CQRS pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/cqrs"
+        },
+        {
+          "label": "ArchUnitNET",
+          "url": "https://github.com/TNG/ArchUnitNET"
+        }
+      ]
+    }
+  ]
+}

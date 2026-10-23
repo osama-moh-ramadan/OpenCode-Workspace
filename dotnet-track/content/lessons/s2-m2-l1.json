@@ -1,0 +1,253 @@
+{
+  "id": "s2-m2-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nأكتر خطأ بيتكرر في مشاريع .NET إن الناس بتبدأ بالكود (JWT، Identity) قبل المفاهيم. النتيجة:\n`[Authorize(Roles=\"admin\")]` متناثرة في كل ملف، فحص ملكية المورد منسي (BOLA)، و401/403 مش متسقة.\n\nالدرس ده **مفاهيم أولًا**: أنهي حاجة المصادقة وأنهي التفويض، إزاي ASP.NET Core بيمثّل الهوية\n(`ClaimsPrincipal`)، وإزاي تبني **Policies** مركزية بدل فحوصات الأدوار المتناثرة — وبعدين فحص ملكية\nالمورد، وهو أكتر ثغرة عملية هتقابلك.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Authentication",
+          "def": "مين إنت؟ إثبات الهوية (توكن، كوكي، مفتاح) وإنتاج `ClaimsPrincipal`."
+        },
+        {
+          "term": "Authorization",
+          "def": "ينفع تعمل كده؟ قرار مبني على الهوية + المورد + السياسة."
+        },
+        {
+          "term": "Authentication Scheme",
+          "def": "اسم آلية مصادقة (`Bearer`, `Cookies`, `Test`) وكل آلية لها Handler بيترجم الطلب لهوية."
+        },
+        {
+          "term": "Claim",
+          "def": "زوج (نوع، قيمة) عن المستخدم: `sub`, `email`, `role`, `country`."
+        },
+        {
+          "term": "ClaimsPrincipal / ClaimsIdentity",
+          "def": "الهوية النهائية على `HttpContext.User`. `Principal` ممكن يحتوي أكثر من `Identity`."
+        },
+        {
+          "term": "Policy",
+          "def": "قاعدة تفويض مسماة (`RequireRole`, `RequireClaim`, `RequireAssertion`, requirements مخصصة)."
+        },
+        {
+          "term": "Resource-based authorization",
+          "def": "قرار يعتمد على **المورد نفسه** (هل ده طلبي أنا؟) — مش بس على المستخدم."
+        },
+        {
+          "term": "401 مقابل 403",
+          "def": "401 = الهوية ناقصة/باطلة. 403 = الهوية معروفة لكن مفيش صلاحية."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الـpipeline: الترتيب مش تفصيلة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Program.cs",
+      "title": "الترتيب الصحيح — وأي خطأ فيه يسبب سلوكًا غامضًا",
+      "code": "\nvar builder = WebApplication.CreateBuilder(args);\n\n// 1) المصادقة: تسجيل الـhandlers\nbuilder.Services\n    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)\n    .AddJwtBearer();                                   // التفاصيل في الدرس الجاي\n\n// 2) التفويض: سياسات مركزية (مش فحوصات متناثرة)\nbuilder.Services.AddAuthorizationBuilder()\n    .AddPolicy(Policies.CustomerOrAdmin, p => p.RequireRole(Roles.Customer, Roles.Admin))\n    .AddPolicy(Policies.AdminOnly,     p => p.RequireRole(Roles.Admin))\n    .AddPolicy(Policies.SameCountry,   p => p.RequireClaim(\"country\").RequireAuthenticatedUser())\n    .AddPolicy(Policies.Support,       p => p.RequireAssertion(ctx =>\n        ctx.User.HasClaim(\"department\", \"support\") || ctx.User.IsInRole(Roles.Admin)));\n\nbuilder.Services.AddHttpContextAccessor();             // لو محتاج CurrentUser abstraction\nbuilder.Services.AddScoped<IAuthorizationHandler, OrderOwnerHandler>();\n\nvar app = builder.Build();\n\napp.UseExceptionHandler(string.Empty);\napp.UseSerilogRequestLogging();\n\napp.UseAuthentication();      // ← يبني HttpContext.User من التوكن\napp.UseAuthorization();       // ← يقيّم السياسات على الـendpoint المختار\n// (في Minimal APIs التوجيه ضمني ويُستدعى أولًا تلقائيًا؛ لو استخدمت Controllers\n//  فاكتب UseRouting() قبل الاثنين.)\n\napp.MapOrdersApi();\n\napp.Run();\n\npublic static class Policies\n{\n    public const string CustomerOrAdmin = \"CustomerOrAdmin\";\n    public const string AdminOnly = \"AdminOnly\";\n    public const string SameCountry = \"SameCountry\";\n    public const string Support = \"Support\";\n}\n\npublic static class Roles\n{\n    public const string Admin = \"admin\";\n    public const string Customer = \"customer\";\n    public const string Support = \"support\";\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أخطاء الترتيب الشائعة",
+      "md": "\n- `UseAuthorization()` **قبل** `UseAuthentication()` → كل الطلبات بتبقى مجهولة والسياسات تفشل بشكل محيّر.\n- نسيان `UseAuthorization()` خالص → `[Authorize]` و`RequireAuthorization()` **ما بتتنفذش** (مفيش خطأ، مفيش حماية).\n- استخدام `[Authorize(Roles = \"admin\")]` متناثر → تغيير دور واحد يتطلب بحث في كل الـrepo. السياسة المركزية اسم واحد.\n- فحص الصلاحية **قبل** معرفة المورد (مثال: السماح بالقراءة ثم اكتشاف إن الطلب لعميل تاني) → BOLA.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "قراءة ClaimsPrincipal بشكل صحيح"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Auth/CurrentUser.cs",
+      "title": "تجريد واحد للهوية — الـDomain ما يعرفش Claims",
+      "code": "\nusing System.Security.Claims;\n\n/// <summary>اللي الـApplication layer محتاج معرفته عن المستخدم الحالي.</summary>\npublic interface ICurrentUser\n{\n    bool IsAuthenticated { get; }\n    Guid? UserId { get; }\n    string? Email { get; }\n    string? Country { get; }\n    IReadOnlyList<string> Roles { get; }\n    bool HasPermission(string permission);\n}\n\npublic sealed class CurrentUser(IHttpContextAccessor accessor) : ICurrentUser\n{\n    private ClaimsPrincipal User => accessor.HttpContext?.User ?? new ClaimsPrincipal();\n\n    public bool IsAuthenticated => User.Identity?.IsAuthenticated == true;\n\n    // ✗ الخطأ الشائع: ClaimTypes.NameIdentifier ثابتًا — الـIdP قد يرجّع \"sub\"\n    // ✓ الحل: جرّب النوعين، وفشل بوضوح لو الاتنين غايبين\n    public Guid? UserId =>\n        TryGuid(JwtRegisteredClaimNames.Sub) ?? TryGuid(ClaimTypes.NameIdentifier);\n\n    public string? Email => User.FindFirstValue(JwtRegisteredClaimNames.Email)\n                         ?? User.FindFirstValue(ClaimTypes.Email);\n\n    public string? Country => User.FindFirstValue(\"country\");\n\n    public IReadOnlyList<string> Roles =>\n        User.FindAll(ClaimTypes.Role).Select(c => c.Value)\n            .Concat(User.FindAll(\"role\").Select(c => c.Value))\n            .Distinct().ToArray();\n\n    public bool HasPermission(string permission) =>\n        User.HasClaim(\"permissions\", permission);\n\n    private Guid? TryGuid(string type) =>\n        Guid.TryParse(User.FindFirstValue(type), out var id) ? id : null;\n}\n\n// الاستخدام في handler — نظيف، قابل للاختبار، بلا اعتماد على Claims في الـDomain\npublic sealed class OrderService(ICurrentUser user, IOrderRepository orders)\n{\n    public async Task<Order> GetAsync(Guid id, CancellationToken ct)\n    {\n        var order = await orders.GetAsync(id, ct) ?? throw new NotFoundException(\"Order\", id);\n\n        // ✓ فحص الملكية في مكان واحد، مش في كل endpoint\n        if (order.CustomerId != user.UserId && !user.Roles.Contains(Roles.Admin))\n            throw new ForbiddenException(\"Order\", id);\n\n        return order;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Resource-based authorization: سد ثغرة BOLA"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Auth/OrderOwnerHandler.cs",
+      "title": "سياسة بتفهم المورد نفسه",
+      "code": "\nusing Microsoft.AspNetCore.Authorization;\n\npublic sealed record OrderOwnershipRequirement : IAuthorizationRequirement;\n\npublic sealed class OrderOwnerHandler(ICurrentUser user)\n    : AuthorizationHandler<OrderOwnershipRequirement, Order>\n{\n    protected override Task HandleRequirementAsync(\n        AuthorizationHandlerContext context, OrderOwnershipRequirement requirement, Order order)\n    {\n        if (user.Roles.Contains(Roles.Admin))\n        {\n            context.Succeed(requirement);\n            return Task.CompletedTask;\n        }\n\n        if (order.CustomerId == user.UserId)\n            context.Succeed(requirement);\n        else\n            context.Fail();            // ✓ Fail صريح: يمنع handlers تانية من النجاح بالغلط\n\n        return Task.CompletedTask;\n    }\n}\n\n// في الـendpoint: الـresource authorization ما بيحصلش تلقائيًا في Minimal APIs\ngroup.MapGet(\"/{id:guid}\", async (Guid id, AppDbContext db, IAuthorizationService auth,\n                                  HttpContext http, CancellationToken ct) =>\n{\n    var order = await db.Orders.AsNoTracking().SingleOrDefaultAsync(o => o.Id == id, ct);\n    if (order is null) return TypedResults.NotFound(ProblemDetailsFactory.ForNotFound(id));\n\n    // ← المورد نفسه بيدخل في القرار (مش بس الـclaims)\n    var decision = await auth.AuthorizeAsync(http.User, order, \"OrderOwner\");\n    if (!decision.Succeeded)\n        return TypedResults.Json(ProblemDetailsFactory.ForForbidden(id), statusCode: 403);\n\n    return TypedResults.Ok(OrderResponse.From(order));\n}).RequireAuthorization(Policies.CustomerOrAdmin);   // الطبقة الأولى: دور صالح\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "BOLA: الثغرة رقم 1 في APIs",
+      "md": "\n`GET /api/orders/123` بترجع الطلب 123 لأي مستخدم مسجّل — لأن الكود فحص **إن فيه مستخدم**،\nمش **إن المورد بتاعه**. الاسم الرسمي: Broken Object Level Authorization.\n\nالقاعدة: **المعرّف اللي في الـbody أو الـquery ما يحددش الصلاحية**. هوية المستخدم من التوكن،\nوفحص الملكية على **المورد المحمّل من قاعدة البيانات** (زي المثال أعلاه).\nولو عندك `customerId` في الطلب، تجاهله واعتمد على `user.UserId` — أو ارفض لو اختلفوا.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "إثراء الـClaims (بحدود)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "IClaimsTransformation — بيشتغل على كل طلب، فالكاش مش رفاهية",
+      "code": "\npublic sealed class PermissionsClaimsTransformation(\n    IPermissionStore permissions, TimeProvider time, IMemoryCache cache) : IClaimsTransformation\n{\n    public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)\n    {\n        var id = principal.FindFirstValue(JwtRegisteredClaimNames.Sub);\n        if (id is null) return principal;\n\n        // ✓ بدوّن كاش: استعلام قاعدة بيانات لكل طلب (بما فيها الصور والـhealth checks)\n        var list = await cache.GetOrCreateAsync($\"perms:{id}\", async entry =>\n        {\n            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5);\n            return await permissions.GetForUserAsync(Guid.Parse(id));\n        }) ?? [];\n\n        var identity = new ClaimsIdentity(list.Select(p => new Claim(\"permissions\", p)), \"Permissions\");\n        principal.AddIdentity(identity);\n        return principal;\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الطريقة",
+        "الميزة",
+        "التكلفة"
+      ],
+      "rows": [
+        [
+          "Permissions داخل التوكن",
+          "بلا استعلام وقت الطلب",
+          "التوكن يكبر، والتغيير يتأخر لحد انتهاء صلاحيته"
+        ],
+        [
+          "`IClaimsTransformation` + كاش",
+          "تحديث أسرع، توكن صغير",
+          "استعلام/كاش لكل طلب — لازم تضبط الكاش"
+        ],
+        [
+          "فحص في الـservice من القاعدة مباشرة",
+          "أدق وأحدث",
+          "استعلام لكل عملية، وصعب توحيده"
+        ],
+        [
+          "نظام خارجي (OPA/Cerbos)",
+          "سياسات مركزية عبر الخدمات",
+          "تعقيد تشغيلي — للمشاريع الكبيرة فقط"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "401/403 بصيغة problem+json بدل الاستجابة الفاضية",
+      "code": "\nbuilder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)\n    .AddJwtBearer(options =>\n    {\n        // ... إعدادات التحقق في الدرس القادم\n        options.Events = new JwtBearerEvents\n        {\n            OnChallenge = ctx =>\n            {\n                ctx.HandleResponse();                       // أوقف الاستجابة الافتراضية الفاضية\n                ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;\n                ctx.Response.ContentType = \"application/problem+json\";\n                return ctx.Response.WriteAsJsonAsync(new ProblemDetails\n                {\n                    Status = 401,\n                    Title = \"غير مُصادَق\",\n                    Detail = string.IsNullOrEmpty(ctx.Error) ? \"توكن ناقص أو منتهي أو غير صالح\"\n                                                             : $\"{ctx.Error}: {ctx.ErrorDescription}\",\n                    Extensions = { [\"traceId\"] = ctx.HttpContext.TraceIdentifier },\n                });\n            },\n            OnForbidden = ctx =>\n            {\n                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;\n                ctx.Response.ContentType = \"application/problem+json\";\n                return ctx.Response.WriteAsJsonAsync(new ProblemDetails\n                {\n                    Status = 403,\n                    Title = \"ممنوع\",\n                    Detail = \"هويتك معروفة، لكن الصلاحية غير كافية لهذا المورد.\",\n                    Extensions = { [\"traceId\"] = ctx.HttpContext.TraceIdentifier },\n                });\n            },\n        };\n    });\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أفرّق بين المصادقة والتفويض وأعرف مكان كل واحدة في الـpipeline.",
+        "أقرأ `ClaimsPrincipal` عبر تجريد (`ICurrentUser`) وأتعامل مع اختلاف أنواع الـclaims.",
+        "أعرّف سياسات مركزية بأسماء ثابتة بدل فحوصات أدوار متناثرة.",
+        "أطبّق resource-based authorization لسد BOLA وأرجّع 401/403 بصيغة problem+json."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "إيه الفرق الجوهري بين المصادقة والتفويض؟",
+          "options": [
+            "المصادقة للـAPIs والتفويض للويب",
+            "المصادقة تثبت الهوية، والتفويض يقرر الصلاحية بناءً عليها وعلى المورد",
+            "المصادقة أسرع",
+            "التفويض يحتاج قاعدة بيانات"
+          ],
+          "answer": 1,
+          "explain": "ترتيبهم ثابت: مصادقة أولًا (مين إنت؟) ثم تفويض (ينفع؟). الخلط بينهم هو سبب أغلب فحوصات الصلاحية الناقصة."
+        },
+        {
+          "q": "`UseAuthorization()` من غير `UseAuthentication()` — إيه النتيجة؟",
+          "options": [
+            "خطأ ترجمة",
+            "كل الطلبات تُعامَل كمجهولة والسياسات تفشل (401) حتى بتوكن صالح",
+            "الـAPI يشتغل بلا حماية",
+            "لا شيء"
+          ],
+          "answer": 1,
+          "explain": "من غير handler يبني `HttpContext.User`، التفويض ما يلاقيش هوية. والعكس (بلا `UseAuthorization`) أخطر: الحماية ما بتتنفذش أصلًا."
+        },
+        {
+          "q": "ليه `customerId` في جسم الطلب مصدر خطر؟",
+          "options": [
+            "بيكبر حجم الطلب",
+            "العميل يقدر يغيّره → BOLA؛ الصلاحية لازم تُشتق من التوكن وفحص ملكية المورد",
+            "بيبطئ الـbinding",
+            "بيكسر OpenAPI"
+          ],
+          "answer": 1,
+          "explain": "أي بيانات صلاحية بيجيبها العميل قابلة للتزوير. اعتمد على `sub` في التوكن + فحص على المورد المحمّل."
+        },
+        {
+          "q": "إمتى تستخدم `context.Fail()` بدل ترك القرار فاضي؟",
+          "options": [
+            "دائمًا",
+            "لما handler عندك متأكد من الرفض — عشان يمنع handlers تانية في نفس السياسة من النجاح",
+            "لما المستخدم admin",
+            "في الـmiddleware"
+          ],
+          "answer": 1,
+          "explain": "`Fail()` قرار قاطع. من غيره، لو فيه أكثر من handler، واحد ممكن ينجح الطلب رغم رفضك."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "سياسات مركزية",
+          "md": "استبدل كل `[Authorize(Roles=…)]` / `RequireAuthorization(\"admin\")` المتناثرة بسياسات مسماة في `AddAuthorizationBuilder`، وطبّقها على الـendpoints. اكتب اختبار integration يثبت 401 (مجهول) و403 (دور ناقص) و200 (دور صالح) لكل endpoint محمي.",
+          "criteria": [
+            "لا يوجد فحص أدوار حرفي (`\"admin\"`) خارج ملف السياسات",
+            "3 اختبارات على الأقل (401/403/200) ناجحة لكل endpoint محمي رئيسي",
+            "الاستجابات بصيغة `application/problem+json` مع `traceId`"
+          ],
+          "hint": "لو الاختبارات بترجع 200 بدل 403: تأكد من `UseAuthorization()` موجود، ومن إن `TestAuthHandler` بيضيف الأدوار بـ`ClaimTypes.Role` **و**نفس الاسم اللي السياسة بتطلبه."
+        },
+        {
+          "id": "t2",
+          "title": "سد BOLA في مسار واحد",
+          "md": "اختار endpoint بيرجّع موردًا مملوكًا لمستخدم، وأضف فحص ملكية (resource-based). أثبت باختبار إن مستخدم A لا يقرأ مورد مستخدم B (403)، بينما admin يقرأه.",
+          "criteria": [
+            "الفحص على المورد المحمّل من القاعدة، مش على معرّف من الطلب",
+            "اختبار 403 لمستخدم تاني + اختبار 200 لـadmin",
+            "لا تسريب لوجود المورد: قرّر عمدًا بين 403 و404 ووثّق القرار"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Overview of ASP.NET Core authentication",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authentication/"
+        },
+        {
+          "label": "Authorization in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authorization/introduction"
+        },
+        {
+          "label": "Resource-based authorization",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authorization/resourcebased"
+        },
+        {
+          "label": "Custom authorization handler",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authorization/policies"
+        },
+        {
+          "label": "OWASP API Security Top 10",
+          "url": "https://owasp.org/www-project-api-security/"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,381 @@
+{
+  "id": "s3-m1-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nلما اتنين من المستخدمين بيشتروا **آخر قطعة** من نفس المنتج في نفس اللحظة — مين يكسب؟\nالإجابة بتحددها: مستوى العزل، ونوع القفل، وتصميم المعاملة. والغلط هنا بيبان كباجات «نادرة»:\nرصيد سالب، طلب مدفوع مرتين، أو deadlock بيقفل الطلبات.\n\nالدرس ده: مستويات العزل والأنومالي المرتبطة بيها، القفل المتشائم مقابل التفاؤلي (مع كود EF Core)،\nتشخيص الـdeadlock من الـtrace، وتصميم معاملات قصيرة وقابلة لإعادة المحاولة.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "ACID",
+          "def": "Atomicity (كله أو ولا حاجة) · Consistency · Isolation (المعاملات لا تتداخل) · Durability (الالتزام دائم)."
+        },
+        {
+          "term": "Dirty Read",
+          "def": "قراءة بيانات معاملة لم تلتزم بعد (ممكن تتراجع). يحدث عند Read Uncommitted."
+        },
+        {
+          "term": "Non-repeatable Read",
+          "def": "قراءة نفس الصف مرتين في معاملة واحدة بقيمتين مختلفتين (حد تاني عدّل والتزم)."
+        },
+        {
+          "term": "Phantom Read",
+          "def": "صفوف **جديدة** تظهر في نفس النطاق داخل المعاملة (حد تاني أدرج)."
+        },
+        {
+          "term": "Write Skew",
+          "def": "أنومالي أخطر: معاملتان تقرآن نفس البيانات وتكتبان نتائج متعارضة — Snapshot Isolation لا يمنعها."
+        },
+        {
+          "term": "Read Committed",
+          "def": "الافتراضي في Postgres/SQL Server: لا dirty reads، لكن non-repeatable وphantom ممكنة."
+        },
+        {
+          "term": "Repeatable Read / Snapshot",
+          "def": "لقطة ثابتة للقراءات داخل المعاملة. في Postgres = snapshot isolation (يمنع phantom)."
+        },
+        {
+          "term": "Serializable",
+          "def": "أقوى مستوى: كأن المعاملات تعمل بالترتيب. في Postgres عبر SSI ويرمي `40001` يطلب إعادة محاولة."
+        },
+        {
+          "term": "RCSI",
+          "def": "(SQL Server) Read Committed Snapshot Isolation: القراءات من نسخة دون قفل — تقليل التعارض."
+        },
+        {
+          "term": "Optimistic Concurrency",
+          "def": "بلا قفل: تحقق عند الحفظ إن الصف ما اتغيرش (`xmin`/`RowVersion`) → `DbUpdateConcurrencyException`."
+        },
+        {
+          "term": "Pessimistic Concurrency",
+          "def": "قفل مسبق: `SELECT … FOR UPDATE` يمنع التعديل المتزامن حتى نهاية المعاملة."
+        },
+        {
+          "term": "Deadlock",
+          "def": "معاملة أ تستنى قفل بتمسكه ب، وب تستنى قفل بتمسكه أ. القاعدة بتكتشفه وتلغي واحدة."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "المستوى",
+        "Dirty",
+        "Non-repeatable",
+        "Phantom",
+        "Write Skew",
+        "التكلفة"
+      ],
+      "rows": [
+        [
+          "Read Uncommitted",
+          "✗ ممكن",
+          "✗ ممكن",
+          "✗ ممكن",
+          "✗ ممكن",
+          "الأقل (لا تستخدمه عمليًا)"
+        ],
+        [
+          "Read Committed (الافتراضي)",
+          "✓ ممنوع",
+          "✗ ممكن",
+          "✗ ممكن",
+          "✗ ممكن",
+          "منخفضة"
+        ],
+        [
+          "Repeatable Read",
+          "✓",
+          "✓",
+          "PG: ✓ / SQL Server: ✗",
+          "✗ ممكن",
+          "متوسطة (أقفال/تراجع أكثر)"
+        ],
+        [
+          "Snapshot (RCSI)",
+          "✓",
+          "✓",
+          "✓",
+          "✗ ممكن",
+          "متوسطة + tempdb/version store"
+        ],
+        [
+          "Serializable",
+          "✓",
+          "✓",
+          "✓",
+          "✓ ممنوع",
+          "الأعلى + إعادة محاولات (40001)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "قاعدة عملية: المستوى الافتراضي + حماية صريحة للنقاط الحرجة",
+      "md": "\nلا ترفع مستوى العزل لكل المعاملات (تكلفة وتراجعات كتير). الصحيح:\n**Read Committed افتراضيًا**، ومعاملات قصيرة، و**حماية صريحة** للنقاط الحساسة (مخزون، رصيد، كوبونات):\nقفل متشائم `FOR UPDATE` **أو** تفاؤلي بـ`xmin`/`RowVersion` + إعادة محاولة — أو Serializable لمعاملات منطقية معقدة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) المخزون: الحل الصحيح لحالة «آخر قطعة»"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Orders/StockService.cs",
+      "title": "قفل متشائم (pessimistic) — للعمليات القصيرة والحرجة",
+      "code": "\npublic sealed class StockService(AppDbContext db, ILogger<StockService> log)\n{\n    /// <summary>\n    /// SELECT … FOR UPDATE: يقفل صف المنتج حتى نهاية المعاملة.\n    /// ★ المعاملة قصيرة ولا تحتوي أي I/O خارجي (لا HTTP ولا إرسال بريد).\n    /// </summary>\n    public async Task ReserveAsync(Guid productId, int quantity, CancellationToken ct)\n    {\n        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);\n        try\n        {\n            // EF Core لا يولّد FOR UPDATE → SQL خام مقصود ومعامل (parameterized)\n            var row = await db.Database\n                .SqlQueryRaw<StockRow>(\n                    \"SELECT id, stock, reserved FROM products WHERE id = {0} FOR UPDATE\", productId)\n                .SingleOrDefaultAsync(ct);\n\n            if (row is null) throw new NotFoundException(\"Product\", productId);\n\n            var available = row.Stock - row.Reserved;\n            if (available < quantity)\n                throw new InsufficientStockException(productId, requested: quantity, available);\n\n            await db.Products\n                .Where(p => p.Id == productId)\n                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Reserved, p => p.Reserved + quantity), ct);\n\n            await tx.CommitAsync(ct);\n        }\n        catch\n        {\n            await tx.RollbackAsync(CancellationToken.None);   // ✓ rollback بلا token ملغى\n            throw;\n        }\n    }\n\n    public sealed record StockRow(Guid Id, int Stock, int Reserved);\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Orders/OptimisticStockService.cs",
+      "title": "قفل تفاؤلي (optimistic) — الأفضل تحت تعارض منخفض",
+      "code": "\npublic sealed class OptimisticStockService(AppDbContext db, ILogger<OptimisticStockService> log)\n{\n    /// <summary>\n    /// بلا أقفال: نقرأ، نحسب، ونحفظ مع تحقق من الإصدار.\n    /// Postgres: `xmin` يعمل كـconcurrency token تلقائي (في التكوين: UseXminAsConcurrencyToken).\n    /// </summary>\n    public async Task ReserveAsync(Guid productId, int quantity, CancellationToken ct)\n    {\n        const int maxAttempts = 4;\n\n        for (var attempt = 1; ; attempt++)\n        {\n            var product = await db.Products.AsTracking().SingleOrDefaultAsync(p => p.Id == productId, ct)\n                          ?? throw new NotFoundException(\"Product\", productId);\n\n            if (product.Stock - product.Reserved < quantity)\n                throw new InsufficientStockException(productId, quantity, product.Stock - product.Reserved);\n\n            product.Reserved += quantity;\n\n            try\n            {\n                await db.SaveChangesAsync(ct);\n                return;                                   // ✓ نجح: الإصدار ما اتغيرش\n            }\n            catch (DbUpdateConcurrencyException ex)\n            {\n                db.ChangeTracker.Clear();                 // ★ افصل الكيانات القديمة قبل إعادة المحاولة\n\n                if (attempt == maxAttempts)\n                {\n                    log.LogWarning(\"optimistic concurrency exhausted product={ProductId} attempts={Attempts}\",\n                        productId, attempt);\n                    throw new ConflictException(\"Product\", productId, \"تعارض متكرر؛ أعد المحاولة\");\n                }\n\n                // backoff أسي + jitter عشان المحاولات ما تصطدمش في نفس اللحظة\n                var delay = TimeSpan.FromMilliseconds(20 * Math.Pow(2, attempt))\n                          + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 30));\n                await Task.Delay(delay, ct);\n            }\n        }\n    }\n}\n\n// التكوين (Postgres): xmin كـconcurrency token\npublic sealed class ProductConfiguration : IEntityTypeConfiguration<Product>\n{\n    public void Configure(EntityTypeBuilder<Product> b)\n    {\n        b.ToTable(\"products\");\n        b.UseXminAsConcurrencyToken();          // Npgsql: إصدار صف تلقائي بلا عمود إضافي\n        b.Property(p => p.Stock).HasColumnName(\"stock\");\n    }\n}\n\n// SQL Server المقابل:\n// b.Property(p => p.RowVersion).IsRowVersion();   // byte[] + [Timestamp]\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "Pessimistic (`FOR UPDATE`)",
+        "Optimistic (`xmin`/`RowVersion`)"
+      ],
+      "rows": [
+        [
+          "التعارض المتوقع",
+          "عالي (صف ساخن، منافسة شديدة)",
+          "منخفض/متوسط"
+        ],
+        [
+          "السلوك عند التعارض",
+          "انتظار (قد يصل لـdeadlock)",
+          "فشل الحفظ + إعادة محاولة"
+        ],
+        [
+          "زمن استجابة متوقع",
+          "متقلب (انتظار القفل)",
+          "ثابت غالبًا، وذيل عند التعارض"
+        ],
+        [
+          "خطر",
+          "قفل محتجز + اتصال مشغول + deadlock",
+          "livelock لو التعارض عالي جدًا"
+        ],
+        [
+          "مناسب لـ",
+          "حجز مخزون، تحويل رصيد، عدّادات",
+          "تعديل كيانات (طلب، عميل، منتج)"
+        ],
+        [
+          "شرط",
+          "معاملة قصيرة بلا I/O خارجي",
+          "منطق إعادة محاولة + فصل ChangeTracker"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "3 أخطاء بتحوّل المعاملات لكوارث",
+      "md": "\n**① I/O خارجي داخل المعاملة** (HTTP لمزوّد دفع، إرسال بريد، نداء خدمة):\nالقفل محتجز طول زمن الشبكة → اتصالات القاعدة بتتنفذ → انهيار تحت الحمل.\nالحل: **خارج** المعاملة، أو استخدم outbox (اكتب الرسالة في نفس الـtransaction وخلي worker يبعتها).\n\n**② `EnableRetryOnFailure` مع معاملة يدوية**: EF بيرمي إن استراتيجية التنفيذ ما تدعمش معاملات يبدأها المستخدم.\nالحل: لفّ المعاملة في استراتيجية التنفيذ:\n```csharp\nvar strategy = db.Database.CreateExecutionStrategy();\nawait strategy.ExecuteAsync(async () =>\n{\n    await using var tx = await db.Database.BeginTransactionAsync(ct);\n    /* ... */\n    await tx.CommitAsync(ct);\n});\n```\n\n**③ إعادة محاولة بلا فصل الكيانات**: بعد `DbUpdateConcurrencyException`، الكيانات في الـChangeTracker لسه قديمة؛\n`SaveChanges` التالي يفشل تاني. `db.ChangeTracker.Clear()` (أو scope جديد) قبل إعادة القراءة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) Deadlock: التشخيص من الـtrace"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "diagnostics/deadlocks.sql",
+      "title": "اللي بتدور عليه في اللوجات + الحالة الحالية",
+      "code": "\n-- ★ فعّل تسجيل الـdeadlocks (الافتراضي: مسجّل بالفعل عند حدوثه)\nSHOW log_lock_waits;                 -- off افتراضيًا\nALTER SYSTEM SET log_lock_waits = on;         -- يسجّل الانتظارات > deadlock_timeout\nALTER SYSTEM SET deadlock_timeout = '1s';\nSELECT pg_reload_conf();\n\n-- شكل الرسالة في اللوج (Postgres):\n--   ERROR:  deadlock detected\n--   DETAIL: Process 1234 waits for ShareLock on transaction 567; blocked by process 890.\n--           Process 890 waits for ShareLock on transaction 1234; blocked by process 1234.\n--   HINT:   See server log for query details.\n--   CONTEXT: while locking tuple (3,17) in relation \"orders\"\n-- ★ الـCONTEXT بيقولك **الجدول والصف** — ده المفتاح للتشخيص\n\n-- ماذا يُقفل الآن ومن ينتظر؟\nSELECT blocked.pid       AS blocked_pid,\n       blocked.usename   AS blocked_user,\n       left(blocked.query, 80)  AS blocked_query,\n       blocking.pid      AS blocking_pid,\n       left(blocking.query, 80) AS blocking_query,\n       now() - blocked.query_start AS waiting_for\nFROM pg_stat_activity blocked\nJOIN pg_stat_activity blocking\n  ON blocking.pid = ANY (pg_blocking_pids(blocked.pid))\nWHERE cardinality(pg_blocking_pids(blocked.pid)) > 0\nORDER BY waiting_for DESC;\n\n-- معاملات مفتوحة من زمان (قاتل صامت: قفل محتجز من اتصال منسي)\nSELECT pid, usename, state, xact_start, now() - xact_start AS tx_age, left(query, 90)\nFROM pg_stat_activity\nWHERE state <> 'idle' AND xact_start IS NOT NULL\nORDER BY tx_age DESC LIMIT 20;\n\n-- حواجز الأمان: لا تترك معاملة مفتوحة للأبد\nALTER SYSTEM SET lock_timeout = '5s';\nALTER SYSTEM SET statement_timeout = '30s';\nALTER SYSTEM SET idle_in_transaction_session_timeout = '60s';\nSELECT pg_reload_conf();\n\n-- SELECT … FOR UPDATE بطرق أنضف للطوابير\nSELECT id FROM jobs WHERE status = 'pending'\nORDER BY scheduled_at\nFOR UPDATE SKIP LOCKED          -- ✓ يتخطى الصفوف المقفولة: بلا انتظار وبلا deadlock\nLIMIT 10;\n\nSELECT id FROM orders WHERE id = '…' FOR UPDATE NOWAIT;   -- يفشل فورًا بدل الانتظار\n"
+    },
+    {
+      "type": "steps",
+      "title": "منهجية منع الـdeadlock (أرخص من تشخيصه)",
+      "items": [
+        {
+          "title": "رتّب الوصول للموارد بترتيب ثابت",
+          "md": "لو معاملة بتعدّل الطلب ثم المنتج، خلي **كل** الكود يعمل نفس الترتيب. أغلب الـdeadlocks سببها ترتيب معكوس في مسارين."
+        },
+        {
+          "title": "قلّل حجم ومدة المعاملة",
+          "md": "احسب خارج المعاملة، وافتحها قبل الكتابة مباشرة، والتزم فورًا. لا HTTP ولا بريد ولا حسابات طويلة جواها."
+        },
+        {
+          "title": "استخدم `SKIP LOCKED`/`NOWAIT` للطوابير",
+          "md": "نمط الـqueue على جدول: `FOR UPDATE SKIP LOCKED` بيمنع الانتظار والتعارض خالص."
+        },
+        {
+          "title": "اعمل batches صغيرة وبترتيب ثابت",
+          "md": "تحديث 10 آلاف صف في معاملة واحدة = قفلات كتير ومدة طويلة. دفعات بـ`ORDER BY id` تقلل التعارض."
+        },
+        {
+          "title": "ضع حواجز زمنية وأعد المحاولة",
+          "md": "`lock_timeout` و`statement_timeout` و`idle_in_transaction_session_timeout` + إعادة محاولة على `40001`/`40P01` بـbackoff وjitter."
+        },
+        {
+          "title": "سجّل واعرض القياسات",
+          "md": "عدّاد للـdeadlocks وإعادة المحاولات (بوسم العملية). ارتفاع الرقم = تصميم فيه صفوف ساخنة، مش «حظ وحش»."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "إعادة محاولة موحّدة على أخطاء التعارض",
+      "code": "\n/// <summary>\n/// Postgres: 40001 serialization_failure و 40P01 deadlock_detected — الاثنان قابلان لإعادة المحاولة.\n/// SQL Server: 1205 deadlock victim.\n/// </summary>\npublic static class TransactionRetry\n{\n    private static readonly string[] RetryableSqlStates = [\"40001\", \"40P01\"];\n\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Api.db\", \"1.0.0\");\n    private static readonly Counter<long> ConflictRetries =\n        Meter.CreateCounter<long>(\"db.conflict.retries\", description: \"إعادة محاولات بسبب تعارض\");\n\n    public static async Task<T> RunAsync<T>(\n        Func<CancellationToken, Task<T>> action,\n        ILogger log, string operation,\n        int maxAttempts = 3, CancellationToken ct = default)\n    {\n        for (var attempt = 1; ; attempt++)\n        {\n            try { return await action(ct); }\n            catch (Exception ex) when (attempt < maxAttempts && IsRetryable(ex))\n            {\n                var delay = TimeSpan.FromMilliseconds(30 * Math.Pow(2, attempt))\n                          + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 50));\n                log.LogWarning(\"retryable conflict on {Operation} (attempt {Attempt}), retrying in {Delay}\",\n                    operation, attempt, delay);\n                ConflictRetries.Add(1, new(\"operation\", operation));\n                await Task.Delay(delay, ct);\n            }\n        }\n    }\n\n    /// <summary>التعارض ممكن يظهر من SaveChanges (DbUpdateException) أو من SQL خام مباشرة.</summary>\n    private static bool IsRetryable(Exception ex) =>\n        FindPostgresError(ex) is { } pg && RetryableSqlStates.Contains(pg.SqlState);\n\n    private static PostgresException? FindPostgresError(Exception? ex)\n    {\n        while (ex is not null)\n        {\n            if (ex is PostgresException pg) return pg;\n            ex = ex.InnerException;\n        }\n        return null;\n    }\n}\n\n// الاستخدام: العملية كلها (قراءة + كتابة) داخل إعادة المحاولة\nawait TransactionRetry.RunAsync(async ct =>\n{\n    await using var scope = scopeFactory.CreateAsyncScope();\n    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();\n    await stock.ReserveAsync(productId, quantity, ct);\n    return true;\n}, log, \"reserve-stock\", ct: stoppingToken);\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Serializable وإمتى تستحقه"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "مثال write skew: اللي Repeatable Read ما بيمنعوش",
+      "code": "\n// السيناريو: طبيبَان على استدعاء (on-call) — والقاعدة: واحد على الأقل لازم يفضل.\n// معاملتان متزامنتان: كل واحدة تقرأ \"فيه 2 على الاستدعاء\" فتُلغي نفسها → النتيجة: صفر.\n// Read Committed و Repeatable Read (snapshot) يسمحان بها. Serializable يمنعها.\n\nawait using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);\ntry\n{\n    var onCall = await db.Doctors.CountAsync(d => d.IsOnCall, ct);\n    if (onCall <= 1) throw new ConflictException(\"Schedule\", shiftId, \"لا يمكن إلغاء آخر طبيب على الاستدعاء\");\n\n    await db.Doctors.Where(d => d.Id == doctorId)\n        .ExecuteUpdateAsync(s => s.SetProperty(d => d.IsOnCall, false), ct);\n\n    await tx.CommitAsync(ct);\n}\ncatch (DbUpdateException ex) when ((ex.InnerException as PostgresException)?.SqlState == \"40001\")\n{\n    await tx.RollbackAsync(CancellationToken.None);\n    throw new ConflictException(\"Schedule\", shiftId, \"تعارض مع عملية أخرى؛ أعد المحاولة\");\n}\n// ★ Serializable في Postgres = إعادة محاولات جزء من التصميم، مش خطأ. اجعل العملية idempotent وقابلة للإعادة.\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "حدود ومستويات العزل في EF Core",
+      "md": "\n- **المستوى على المعاملة، مش على الاستعلام**: `BeginTransactionAsync(IsolationLevel.Serializable)` بيأثر على كل الاستعلامات جواها.\n- **Postgres**: Repeatable Read = snapshot isolation → **write skew ممكن**؛ Serializable (SSI) هو اللي بيمنعه (ويرمي 40001).\n- **SQL Server**: RCSI بيقلل التعارض (القراءات ما بتقفلش) لكنه snapshot isolation برضه → write skew ممكن.\n- **MySQL/InnoDB**: الافتراضي Repeatable Read مع next-key locks (سلوك مختلف تمامًا — لا تفترض خبرتك مع Postgres).\n- **لا تخلط مستويات مختلفة في مسار عمل واحد** بدون فهم: معاملة داخلية بمستوى مختلف بتتجاهل غالبًا (nested transactions).\n- `SaveChangesAsync` لوحدها = معاملة ضمنية واحدة لكل التغييرات (atomic) — مش محتاج transaction يدوي إلا لو فيه أكثر من خطوة.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أختار مستوى العزل بحسب الأنومالي المسموح بها والتكلفة، وأحمي النقاط الحرجة صراحة.",
+        "أطبّق pessimistic (`FOR UPDATE`) أو optimistic (`xmin`/`RowVersion`) بحسب معدل التعارض.",
+        "أشخّص deadlock من الـtrace (`CONTEXT` بالجدول والصف) وأمنعه بترتيب موارد ثابت ومعاملات قصيرة.",
+        "أعيد المحاولة بأمان على 40001/40P01 مع backoff وjitter وفصل الـChangeTracker."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه ممنوع نداء HTTP لمزوّد الدفع داخل معاملة القاعدة؟",
+          "options": [
+            "بطء الشبكة فقط",
+            "القفل يظل محتجزًا زمن الشبكة → استنزاف الاتصالات وانهيار تحت الحمل؛ الحل: خارج المعاملة أو outbox",
+            "يسبب deadlock دائمًا",
+            "EF Core يمنعه"
+          ],
+          "answer": 1,
+          "explain": "قاعدة ذهبية: المعاملة تفتح قبل الكتابة مباشرة وتلتزم فورًا. أي I/O خارجي يبقى بره أو عبر outbox."
+        },
+        {
+          "q": "`DbUpdateConcurrencyException` حصل — أول خطوة قبل إعادة المحاولة؟",
+          "options": [
+            "إعادة SaveChanges فورًا",
+            "`db.ChangeTracker.Clear()` (أو scope جديد) ثم إعادة القراءة والحساب",
+            "رفع مستوى العزل",
+            "إضافة فهرس"
+          ],
+          "answer": 1,
+          "explain": "الكيانات المتتبَّعة لسه قديمة؛ إعادة المحاولة عليها تفشل تاني (livelock). افصل ثم اقرأ من جديد."
+        },
+        {
+          "q": "منع write skew (آخر طبيب على الاستدعاء) يحتاج إيه؟",
+          "options": [
+            "Read Committed كافٍ",
+            "Serializable (أو قفل صريح على مجموعة الصفوف/الجدول)",
+            "Repeatable Read",
+            "فهرس مركّب"
+          ],
+          "answer": 1,
+          "explain": "write skew بينجو في مستويات snapshot لأن كل معاملة تقرأ لقطة صالحة. Serializable في Postgres (SSI) بيكتشفه ويرمي 40001."
+        },
+        {
+          "q": "`FOR UPDATE SKIP LOCKED` بيحل إيه؟",
+          "options": [
+            "يسرّع الفهرس",
+            "نمط الطابور على جدول: كل عامل ياخد صفوفًا غير مقفولة → بلا انتظار وبلا deadlock",
+            "يمنع القراءة",
+            "يرفع مستوى العزل"
+          ],
+          "answer": 1,
+          "explain": "ده الأساس في job queues المبنية على قاعدة البيانات. `NOWAIT` بديل لو عايز تفشل فورًا بدل التخطي."
+        },
+        {
+          "q": "إيه فايدة `idle_in_transaction_session_timeout`؟",
+          "options": [
+            "تسريع الاستعلامات",
+            "قتل الاتصالات اللي سايبه معاملة مفتوحة (قفل محتجز بلا سبب) — أشهر سبب لتوقف مفاجئ في النظام",
+            "منع deadlock",
+            "تقليل حجم اللوجات"
+          ],
+          "answer": 1,
+          "explain": "معاملة مفتوحة منسية = أقفال متراكمة + منع VACUUM + تضخم الجداول. حد زمني واضح أفضل من تحقيق يدوي."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "احجز المخزون بشكل صحيح",
+          "md": "نفّذ حجز مخزون بطريقتين (pessimistic وoptimistic) واكتب اختبار تعارض حقيقي: 20 طلبًا متزامنًا على منتج بمخزون 5 → لازم ينجح 5 فقط والمخزون ما يصبحش سالبًا.",
+          "criteria": [
+            "اختبار التزامن ناجح: 5 نجاحات و15 رفضًا (لا رصيد سالب، لا تجاوز)",
+            "المعاملة لا تحتوي أي I/O خارجي (راجع الكود ووثّق)",
+            "إعادة المحاولة مع backoff وjitter و`ChangeTracker.Clear()`",
+            "قياس: عدد إعادة المحاولات/التعارضات metric منشور",
+            "قرار مكتوب: أنهي طريقة اخترت للإنتاج وليه"
+          ],
+          "hint": "لعمل تعارض حقيقي في اختبار: استخدم Testcontainers (Postgres فعلي) و`Task.WhenAll` على 20 مهمة، كل واحدة بـscope/DbContext خاص. على InMemory أو SQLite الاختبار مش هيكشف المشكلة."
+        },
+        {
+          "id": "t2",
+          "title": "تشخيص قفلات",
+          "md": "أضف حواجز زمنية (`lock_timeout`, `statement_timeout`, `idle_in_transaction_session_timeout`) واستعلامات مراقبة (من يقفل من؟ معاملات مفتوحة قديمة). نفّذ سيناريو deadlock متعمدًا في بيئة تطوير وسجّل الرسالة من اللوج مع تحليلها.",
+          "criteria": [
+            "الحواجز مطبقة عبر migration/إعداد موثق (مش تعديل يدوي)",
+            "سيناريو deadlock مُنتَج عمدًا + الرسالة الكاملة محفوظة + تفسير من السطر `CONTEXT`",
+            "استعلام مراقبة جاهز في `diagnostics/` يُظهر من يقفل من",
+            "خطة إصلاح مكتوبة: تغيير ترتيب الموارد أو تقصير المعاملة أو SKIP LOCKED"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "PostgreSQL — Transaction Isolation",
+          "url": "https://www.postgresql.org/docs/current/transaction-iso.html"
+        },
+        {
+          "label": "PostgreSQL — Explicit Locking",
+          "url": "https://www.postgresql.org/docs/current/explicit-locking.html"
+        },
+        {
+          "label": "EF Core — Transactions & concurrency",
+          "url": "https://learn.microsoft.com/ef/core/saving/transactions"
+        },
+        {
+          "label": "EF Core — Concurrency tokens",
+          "url": "https://learn.microsoft.com/ef/core/saving/concurrency"
+        },
+        {
+          "label": "SQL Server — Isolation levels & RCSI",
+          "url": "https://learn.microsoft.com/sql/t-sql/statements/set-transaction-isolation-level-transact-sql"
+        },
+        {
+          "label": "Designing Data-Intensive Applications (ch. 7-9)",
+          "url": "https://dataintensive.net/"
+        }
+      ]
+    }
+  ]
+}

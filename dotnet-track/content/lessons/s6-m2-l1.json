@@ -1,0 +1,464 @@
+{
+  "id": "s6-m2-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "عندك صورة Docker جاهزة من المرحلة اللي فاتت. السؤال دلوقتي: **تشغّلها فين على Azure؟** الإجابة الغلط بتكلّف فلوس كل شهر وإجابة صح بتوفرلك ساعات تشغيل. في الدرس ده هتقارن 4 خدمات (App Service · Container Apps · AKS · Container Instances) بمعايير حقيقية: **العبء التشغيلي · scale-to-zero · cold start · التحكم في الشبكة · طريقة النشر والإصدارات · الحد الأقصى للتوسع · نموذج الفوترة** — وهتخرج بقرار مكتوب (ADR) مش بإحساس."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "App Service",
+          "def": "PaaS كلاسيكي للويب: تنشر كود (zip) أو صورة حاوية، وخطة (Plan) بتدفع مقابلها سواء فيه حمل أو لا. فيه **Deployment slots** للنشر الآمن."
+        },
+        {
+          "term": "Container Apps (ACA)",
+          "def": "حاويات مُدارة مبنية على Kubernetes **من غير ما تشوف الـAPI**: revisions، ingress مبني على Envoy، **scale-to-zero**، وقواعد توسع مبنية على KEDA، وDapr مدمج."
+        },
+        {
+          "term": "AKS",
+          "def": "Kubernetes مُدار: بتاخد الـ**control plane** مُدار وبتدير **node pools** بنفسك. كل حاجة في المرحلة اللي فاتت (kubectl/HPA/Ingress) بتشتغل هنا."
+        },
+        {
+          "term": "Container Instances (ACI)",
+          "def": "حاوية واحدة أو مجموعة من غير orchestration: مهام قصيرة، CI runners، batch. ملهاش ingress أو scaling تلقائي."
+        },
+        {
+          "term": "Scale-to-zero",
+          "def": "الخدمة تنزّل عدد النسخ لصفر لما مفيش حمل، **فماتدفعش حاجة** — وتدفع أول ما يوصل طلب (بس بتستنى cold start)."
+        },
+        {
+          "term": "Cold start",
+          "def": "زمن أول طلب بعد فترة سكون: إقلاع الحاوية + إقلاع الـruntime + تحميل الـassembly. في .NET بيتراوح بين أجزاء من الثانية وثوانٍ حسب الحجم والخطة."
+        },
+        {
+          "term": "Revision (في ACA)",
+          "def": "نسخة غير قابلة للتغيير من تعريف التطبيق. كل نشر بيعمل revision جديدة، وبتقدر **تقسم الـtraffic** بينها (canary) أو ترجع لأي واحدة."
+        },
+        {
+          "term": "Deployment slot (في App Service)",
+          "def": "بيئة مطابقة للإنتاج على نفس الخطة؛ تنشر فيها، تختبر، وبعدين **swap** فوري.Slots مدفوعة حسب الخطة (Premium عادةً)."
+        },
+        {
+          "term": "Consumption / Dedicated",
+          "def": "في ACA: **Consumption** = فوترة على vCPU-second وذاكرة-second مع منحة مجانية شهرية، و**Dedicated** = على node pool ثابت (لأحمال مستمرة أو متطلبات خاصة)."
+        },
+        {
+          "term": "Resource group",
+          "def": "حاوية إدارية لكل موارد البيئة. حدود الصلاحيات والـtags وحذف البيئة كلها بتتم على مستوى المجموعة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① الخدمات الأربعة في جملة واحدة — ثم الجدول اللي بيحسم"
+    },
+    {
+      "type": "text",
+      "md": "**App Service**: «عايز موقع/API واحد يشتغل دايمًا بأقل إدارة». **Container Apps**: «عايز حاويات microservices بتتوسع بالأحداث وبتنزل لصفر من غير ما أدير cluster». **AKS**: «محتاج Kubernetes نفسه: CRDs/operators/StatefulSets/DaemonSets/service mesh مخصص/GPU/تحكم كامل في الشبكة». **ACI**: «عايز أشغّل حاوية مرة واحدة وأخلص»."
+    },
+    {
+      "type": "table",
+      "caption": "مقارنة 2026 — الأرقام التقريبية من توثيق Azure ومقارنات منشورة؛ تحقق من صفحة التسعير لمنطقتك",
+      "head": [
+        "المعيار",
+        "App Service",
+        "Container Apps",
+        "AKS",
+        "Container Instances"
+      ],
+      "rows": [
+        [
+          "التجريد",
+          "PaaS (كود أو حاوية)",
+          "حاويات مُدارة على K8s مخفي",
+          "Kubernetes مُدار",
+          "حاوية واحدة"
+        ],
+        [
+          "العبء التشغيلي",
+          "**منخفض**",
+          "**منخفض–متوسط**",
+          "**مرتفع** (nodes/tr upgrades/networking)",
+          "منخفض"
+        ],
+        [
+          "Scale-to-zero",
+          "✗ (دايمًا ≥1 instance)",
+          "✓ **أصلي**",
+          "△ (محتاج KEDA بنفسك)",
+          "✗ (تشغيل لمرة واحدة)"
+        ],
+        [
+          "Cold start",
+          "مفيش (دايمًا دافئ)",
+          "ثوانٍ من الصفر؛ <~1 ثانية مع minReplicas",
+          "مفيش عادةً (pods على nodes دافئة)",
+          "ثوانٍ"
+        ],
+        [
+          "التوسع بالأحداث (KEDA)",
+          "✗",
+          "✓ **مدمج** (Service Bus/Kafka/HTTP backlog…)",
+          "△ يدوي (تثبّت KEDA)",
+          "✗"
+        ],
+        [
+          "حد التوسع (توثيق Microsoft)",
+          "30 instances في Premium · 200 في ASE",
+          "**1,000 replica لكل revision** · 15 environment لكل region",
+          "**5,000 nodes** في Standard/Premium",
+          "حسب الكوتا"
+        ],
+        [
+          "canary / blue-green",
+          "**Slots** + توزيع traffic",
+          "**Revisions** + توزيع traffic",
+          "أي ingress controller / mesh",
+          "✗"
+        ],
+        [
+          "التحكم في الشبكة",
+          "محدود (VNet integration للتصدير)",
+          "VNet injection + ingress داخلي/خارجي",
+          "**كامل** (CNI/NSG/policies)",
+          "أساسي"
+        ],
+        [
+          "Service mesh / Dapr",
+          "✗",
+          "**Dapr مدمج** + Envoy مُدار",
+          "Istio/Linkerd يدوي",
+          "✗"
+        ],
+        [
+          "نموذج الفوترة",
+          "لكل instance-hour في الخطة (حتى مع صفر حمل)",
+          "**vCPU-second + GiB-second** + طلبات، مع منحة مجانية",
+          "VMs للـnodes (دايمًا) + control plane حسب الـtier",
+          "لكل ثانية تشغيل"
+        ],
+        [
+          "Windows containers",
+          "✓ (Premium)",
+          "✗ (Linux فقط)",
+          "✓",
+          "✓"
+        ],
+        [
+          "إمتى تختاره",
+          "موقع/API واحد، حمل ثابت، أقل إدارة",
+          "**الافتراضي لمعظم أحمال .NET الحاوية الجديدة**",
+          "لما تحتاج Kubernetes فعلًا",
+          "مهام قصيرة/batch"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "إرشاد Microsoft نفسه (Azure Architecture Center)",
+      "md": "**ابدأ بـContainer Apps** لما عايز مبادئ microservices مدمجة (service discovery · Dapr · توسع لكل تطبيق مع scale-to-zero) من غير إدارة cluster. **اختار AKS** لما تحتاج وصول مباشر لـKubernetes API أو service mesh مخصص أو تحكم دقيق في الـnodes والشبكة. **استخدم Functions** للأحمال الحدثية المتقطعة اللي بتستفيد من الفوترة بالثانية. وApp Service للويب التقليدي/الـlift-and-shift."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② مسار القرار: 5 أسئلة بالترتيب (مش «أيهم أحسن»)"
+    },
+    {
+      "type": "steps",
+      "title": "اسأل بالترتيب — أول «آه» بيحسم",
+      "items": [
+        {
+          "title": "1) محتاج Kubernetes API نفسه؟",
+          "md": "CRDs/operators مخصصة · StatefulSet · DaemonSet · service mesh محدد (Istio) · node pools خاصة (GPU/Spot) · سياسات admission · شبكة CNI معقدة. لو آه → **AKS** (ومفيش بديل بينهم). ووقتها خليك مستعد لتكلفة تشغيل حقيقية: **نصف وقت شخص على الأقل بخبرة Kubernetes** — دي نصيحة عملية مش مبالغة.",
+          "code": ""
+        },
+        {
+          "title": "2) الحمل «موقع/API واحد» مش سرب خدمات؟",
+          "md": "تطبيق واحد، حمل ثابت ومتوقع، وفريق بيحب النشر بالكود (مش بالصور)، ومحتاج slots جاهزة وcustom domain وشهادات مُدارة → **App Service**. ملحوظة مهمة: لو الحمل ثابت ودايمًا فوق الصفر، **App Service غالبًا أرخص** من ACA Consumption (خطة Standard بتُدفع شهريًا مقابل vCPU-seconds مستمرة).",
+          "code": ""
+        },
+        {
+          "title": "3) النموذج «دالة بتتفعّل بحدث»؟",
+          "md": "Webhook · رسالة على طابور · ملف وصل Blob · مؤقت · حدث من Event Grid — وشغل قصير (دقائق) → **Azure Functions** (الدرس الجاي). ولو الشغل ده نفسه جزء من نظام أكبر، ممكن تشغّل Functions **على Container Apps** وتفضل في منصة واحدة.",
+          "code": ""
+        },
+        {
+          "title": "4) مهمة قصيرة/مرة واحدة؟",
+          "md": "Batch · تشغيل migration · CI runner · تجربة سريعة → **ACI** (أو **Container Apps Jobs** لو عايز جدولة وإعادة محاولة مُدارة).",
+          "code": ""
+        },
+        {
+          "title": "5) غير كده؟",
+          "md": "→ **Container Apps**: حاويات، microservices، شغل خلفي على طوابير، توسع بالأحداث، scale-to-zero للتوفير، revisions للـcanary، وDapr لو محتاج. ده **الافتراضي** لمشاريع .NET الحاوية الجديدة في 2026.",
+          "code": ""
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "القاعدة الاقتصادية اللي بتغيّر القرار",
+      "md": "**ACA Consumption بتكسب لما الخدمة بتقضي وقت تحت ~40% استخدام في الشهر** (أو بتنزل لصفر بالليل/الويكند). **ولما الحمل مستمر 24/7**، الحساب بينعكس: vCPU-seconds المستمرة بتبقى أغلى من خطة App Service أو من nodes محفوظة بـreservation. يعني: مشروع شخصي بزيارات متقطعة → ACA. خدمة داخلية تحت ضغط دائم → قارن بالأرقام قبل ما تقرر."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ التنفيذ: نفس الصورة على المنصات الثلاثة بـAzure CLI"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "azure/00-shared.sh",
+      "filename": "azure/00-shared.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\n\n# ═══ متغيرات واحدة لكل المنصات (لازم كل حاجة في نفس الـregion لتقليل latency وegress) ═══\nexport LOC=westeurope                 # أقرب منطقة لمصر: westeurope أو northeurope\nexport RG=rg-shop-dev\nexport ACR=acrshopdev                 # أسماء ACR عالمية: حروف وأرقام فقط\nexport IMAGE=shop/orders\nexport TAG=1.4.0                      # أو digest من CI (الدرس 6.1.3)\n\n# ═══ 1) مجموعة موارد + سجل صور ═══\naz group create --name \"$RG\" --location \"$LOC\" --tags \"env=dev\" \"project=shop\" \"owner=you\"\naz acr create --resource-group \"$RG\" --name \"$ACR\" --sku Basic --admin-enabled false\n\n# بناء الصورة في السحابة من غير Docker محلي (مفيد لو جهازك ضعيف):\naz acr build --registry \"$ACR\" --image \"$IMAGE:$TAG\" --platform linux/amd64 ./src/Orders.Api\n\n# ═══ 2) هوية واحدة تُستخدم في المنصات الثلاثة: Managed Identity (الدرس 6.2.3) ═══\n# المبدأ: مفيش كلمة سر ولا connection string فيها سر في أي manifest أو إعداد.\n# كل منصة بتدي الخدمة هوية، والهوية تاخد صلاحيات بأقل امتياز:\n#   ACR  → دور AcrPull (لقراءة الصور)\n#   Key Vault → دور \"Key Vault Secrets User\" (للقراءة فقط)\n#   SQL/PostgreSQL → Entra ID authentication (مفيش password خالص)\n\necho \"الخطوة الجاية: اختار منصة من الملفات الثلاثة اللي بعد ده.\"\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "azure/10-container-apps.sh — الخيار الافتراضي",
+      "filename": "azure/10-container-apps.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\nsource ./azure/00-shared.sh\n\n# ═══ 1) بيئة Container Apps (البيئة = الحدود المشتركة للشبكة/السجلات/Dapr) ═══\naz containerapp env create \\\n  --name env-shop-dev --resource-group \"$RG\" --location \"$LOC\"\n\n# ═══ 2) هوية للتطبيق + صلاحية سحب الصور من ACR ═══\naz containerapp create --name orders --resource-group \"$RG\" \\\n  --environment env-shop-dev --image \"$ACR.azurecr.io/$IMAGE:$TAG\" \\\n  --registry-server \"$ACR.azurecr.io\" --registry-identity system \\\n  --cpu 0.5 --memory 1Gi --min-replicas 1 --max-replicas 10 \\\n  --ingress external --target-port 8080 --transport auto \\\n  --scale-rule-name http --scale-rule-type http \\\n  --scale-rule-metadata concurrent-requests=10 \\\n  --env-vars \"ASPNETCORE_ENVIRONMENT=Production\"\n\n# الأسرار تُضبط بأمر مستقل (قيمها من CI/Key Vault — الدرس 6.2.3)، وتُستدعى بـsecretRef:\naz containerapp secret set --name orders --resource-group \"$RG\" \\\n  --secrets rabbitmq-conn=\"$RABBITMQ_CONNECTION\"\n\nPRINCIPAL=$(az containerapp identity show --name orders --resource-group \"$RG\" \\\n  --query principalId --output tsv)\naz role assignment create --role AcrPull \\\n  --assignee-object-id \"$PRINCIPAL\" --assignee-principal-type ServicePrincipal \\\n  --scope \"$(az acr show --name \"$ACR\" --resource-group \"$RG\" --query id --output tsv)\"\n\n# ═══ 3) فحص: العنوان، النسخ، السجلات، الأحداث ═══\naz containerapp show --name orders --resource-group \"$RG\" \\\n  --query \"properties.configuration.ingress.fqdn\" --output tsv\naz containerapp replica list --name orders --resource-group \"$RG\" --output table\naz containerapp logs show --name orders --resource-group \"$RG\" --follow\naz containerapp revision list --name orders --resource-group \"$RG\" --output table\n\n# ═══ 4) canary حقيقي: نسخة جديدة تاخد 10% من الـtraffic ═══\naz containerapp revision copy --name orders --resource-group \"$RG\" \\\n  --revision orders--rev2 --image \"$ACR.azurecr.io/$IMAGE:1.5.0\"\naz containerapp ingress set --name orders --resource-group \"$RG\" \\\n  --traffic-split orders--rev1=90 --traffic-split orders--rev2=10\n# لو المؤشرات ساءت → رجّع كل الحركة للنسخة القديمة في أمر واحد:\naz containerapp ingress set --name orders --resource-group \"$RG\" \\\n  --traffic-split orders--rev1=100\n\n# ═══ 5) توسع بطول طابور RabbitMQ (بديل KEDA ScaledObject في 6.1.5) ═══\n# أسماء أنواع القواعد وحقول الـmetadata بتتغير بين الإصدارات:\n#   az containerapp scale-rule-type show  / أو التوثيق — تحقق قبل ما تعتمد عليها.\naz containerapp update --name orders --resource-group \"$RG\" \\\n  --scale-rule-name queue --scale-rule-type rabbitmq \\\n  --scale-rule-metadata queueName=orders-queue queueLength=50 \\\n  --scale-rule-auth connectionString-secret-ref=rabbitmq-conn\n\n# ═══ 6) التصريح الكامل كتعريف (أفضل من الأوامر: يُراجع ويُخزّن في Git) ═══\n#   az containerapp create --name orders --resource-group $RG --yaml containerapp.yaml\n#   az containerapp update --name orders --resource-group $RG --yaml containerapp.yaml\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": "azure/containerapp.yaml — ACA تصريحيًا (قابل للمراجعة في PR)",
+      "filename": "azure/containerapp.yaml",
+      "code": "# az containerapp create --name orders --resource-group rg-shop-dev --yaml azure/containerapp.yaml\nproperties:\n  managedEnvironmentId: /subscriptions/<SUB_ID>/resourceGroups/rg-shop-dev/providers/Microsoft.App/managedEnvironments/env-shop-dev\n  configuration:\n    activeRevisionsMode: Multiple      # Single = كل الحركة لآخر revision (الأبسط)\n    ingress:\n      external: true\n      targetPort: 8080                 # نفس ASPNETCORE_HTTP_PORTS في الصورة\n      transport: auto\n      allowInsecure: false\n      corsPolicy:\n        allowedOrigins: [\"https://shop.example.com\"]\n    secrets:                           # القيم تُحقن من CI؛ لا تُكتب في Git\n      - name: rabbitmq-conn\n        value: \"\"\n    registries:\n      - server: acrshopdev.azurecr.io\n        identity: system               # سحب الصور بالهوية المُدارة (مفيش admin password)\n  template:\n    revisionSuffix: rev1\n    scale:\n      maxReplicas: 10\n      minReplicas: 1                   # 0 = scale-to-zero (وفّر، واستحمل cold start)\n      rules:\n        - name: http\n          custom:\n            type: http\n            metadata:\n              concurrentRequests: \"10\"  # توسع بعدد الطلبات المتزامنة — أدق من CPU لـI/O\n    containers:\n      - image: acrshopdev.azurecr.io/shop/orders@sha256:<DIGEST>   # digest ثابت (6.1.3)\n        name: orders\n        resources:\n          cpu: 0.5\n          memory: 1Gi\n        env:\n          - name: ASPNETCORE_ENVIRONMENT\n            value: Production\n          - name: ConnectionStrings__RabbitMq\n            secretRef: rabbitmq-conn\n        probes:                         # نفس منطق الـ3 probes من 6.1.5\n          - type: startup\n            tcpSocket: { port: 8080 }\n            initialDelaySeconds: 5\n            periodSeconds: 5\n            failureThreshold: 12\n          - type: readiness\n            httpGet: { path: /health, port: 8080 }\n            periodSeconds: 10\n            failureThreshold: 3\n          - type: liveness\n            httpGet: { path: /alive, port: 8080 }\n            periodSeconds: 20\n            failureThreshold: 3\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "azure/20-app-service.sh + azure/30-aks.sh",
+      "filename": "azure/20-app-service.sh",
+      "code": "#!/usr/bin/env bash\n# ─────────────── App Service (Linux) ───────────────\nset -euo pipefail\nsource ./azure/00-shared.sh\n\naz appservice plan create --name asp-shop --resource-group \"$RG\" \\\n  --is-linux --sku P1v3                 # P1v3: خطة إنتاجية بـslots وتوسع تلقائي\n# سلسلة الـruntime بتتغير بين الإصدارات — اقرأ القائمة بدل ما تخمّن:\naz webapp list-runtimes --linux | grep -i dotnet\n\naz webapp create --name shop-orders --resource-group \"$RG\" --plan asp-shop \\\n  --deployment-container-image-name \"$ACR.azurecr.io/$IMAGE:$TAG\"\n\n# هوية + سحب الصور + إعدادات\naz webapp identity assign --name shop-orders --resource-group \"$RG\"\naz role assignment create --role AcrPull \\\n  --assignee-object-id \"$(az webapp identity show --name shop-orders --resource-group \"$RG\" --query principalId -o tsv)\" \\\n  --assignee-principal-type ServicePrincipal \\\n  --scope \"$(az acr show --name \"$ACR\" --resource-group \"$RG\" --query id -o tsv)\"\naz webapp config appsettings set --name shop-orders --resource-group \"$RG\" \\\n  --settings ASPNETCORE_ENVIRONMENT=Production WEBSITES_PORT=8080\n# سر من Key Vault من غير ما تشوف قيمته (الدرس 6.2.3):\naz webapp config appsettings set --name shop-orders --resource-group \"$RG\" \\\n  --settings 'ConnectionStrings__Default=@Microsoft.KeyVault(SecretUri=https://kv-shop-dev.vault.azure.net/secrets/orders-db/)'\n\n# النشر الآمن: slot → اختبار → swap (توزيع traffic اختياري للـcanary)\naz webapp deployment slot create --name shop-orders --resource-group \"$RG\" --slot staging\naz webapp deploy --name shop-orders --resource-group \"$RG\" --slot staging --type zip --src-path publish.zip\naz webapp deployment slot swap --name shop-orders --resource-group \"$RG\" \\\n  --slot staging --target-slot production\n\n# ─────────────── AKS (لو مسارك رقم 1 في القرار) ───────────────\naz aks create --resource-group \"$RG\" --name aks-shop \\\n  --node-count 3 --node-vm-size Standard_D2s_v5 \\\n  --enable-managed-identity --network-plugin azure \\\n  --tier standard \\\n  --enable-addons monitoring \\\n  --attach-acr \"$ACR\"                   # يمنح kubelet identity دور AcrPull تلقائيًا\n# ملاحظة: --tier standard = control plane مدفوع بالساعة؛ قارنه بـ--tier free قبل ما تختار\n\naz aks get-credentials --resource-group \"$RG\" --name aks-shop\n# ومن هنا: كل ما تعلمته في 6.1.4 و6.1.5 يشتغل كما هو (kustomize/HPA/PDB/Ingress):\nkubectl apply -k k8s/overlays/dev\nkubectl -n shop rollout status deploy/orders\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ إيه اللي بتاخده وإيه اللي بتسيبه في كل اختيار"
+    },
+    {
+      "type": "table",
+      "caption": "المقايضات الصريحة — اقرأ عمود «بتسيب» قبل ما توقع",
+      "head": [
+        "المنصة",
+        "بتاخد",
+        "بتسيب / بتخاطر بـ",
+        "إشارة إنك لازم تنقل"
+      ],
+      "rows": [
+        [
+          "App Service",
+          "أقل إدارة · slots · شهادات وdomains مُدارة · مراقبة جاهزة · أسعار متوقعة",
+          "مفيش scale-to-zero · مفيش توسع بالأحداث · تحكم شبكة محدود · Windows/Linux حسب الخطة · تكلفة ثابتة حتى مع صفر حمل",
+          "الحمل بقى متقطع جدًا (بتدفع مقابل سكون) أو محتاج توسع بطول طابور"
+        ],
+        [
+          "Container Apps",
+          "حاويات + scale-to-zero + KEDA + revisions/canary + Dapr + ingress وشهادات مُدارة · فوترة بالثانية",
+          "**مفيش Kubernetes API**: لا kubectl ولا CRDs ولا operators · تحكم أقل في الشبكة والجدولة · Linux فقط · cold start من الصفر · حدود (1000 replica/revision)",
+          "محتاج operator مخصص/StatefulSet/mesh محدد/GPU أو تحكم كامل في الشبكة"
+        ],
+        [
+          "AKS",
+          "كل Kubernetes: تحكم كامل · CRDs · mesh · node pools خاصة · قابلية نقل لأي سحابة · 5,000 nodes",
+          "**إدارة حقيقية**: ترقيات nodes، networking، ingress controller، مراقبة cluster، أمان، وتكلفة nodes دايمًا شغالة + control plane",
+          "— (انت بالفعل في أقصى تحكم)"
+        ],
+        [
+          "ACI / ACA Jobs",
+          "تشغيل فوري لحاوية واحدة · فوترة بالثانية · مثالي لمهام قصيرة",
+          "لا ingress ولا service discovery ولا scaling تلقائي · إعادة المحاولة والجدولة محدودة",
+          "المهمة بقت خدمة مستمرة أو محتاجة توسع"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "ثلاثة قرارات بتبقى غالية لو اتأخرت",
+      "md": "**① المنطقة (Region)**: كل مواردك لازم في منطقة واحدة قريبة من مستخدميك (westeurope/northeurope لمصر) — نقل خدمة بين المناطق لاحقًا يعني downtime وegress وتغيير عناوين. **② اسم ACR عالمي ولا بيتغيّر**: اختار اسم من الأول. **③ الـtags والـresource groups**: قسّم حسب بيئة (rg-shop-dev / -stg / -prod) ووسم بـ`env` و`project` و`owner` — ده اللي هيعملك «مين بيدفع كام» في درس 6.2.5. لو عملت ده من أول يوم، الفاتورة هتبقى مقروءة."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أقدر أحسم بين App Service وACA وAKS بخمسة أسئلة مرتبة (K8s API؟ خدمة واحدة؟ حدثية؟ مهمة قصيرة؟ غير كده ACA).",
+        "عارف إن ACA مبنية على Kubernetes لكنها **ما بتديكش الـAPI** — وده مقصود (إدارة أقل) مش نقص.",
+        "أعرف أعمل environment وcontainer app من صورة في ACR بهوية مُدارة (بلا admin password).",
+        "أقدر أعمل canary بـrevisions (تقسيم traffic) أو بـslots (App Service) وأرجع في ثانية.",
+        "فاهم إن **scale-to-zero توفير مش مجاني**: الثمن cold start، والحل `minReplicas` للحساسين للـlatency.",
+        "عارف حدود التوسع المعلنة: 30 instances (App Service Premium) · 1,000 replicas/revision (ACA) · 5,000 nodes (AKS).",
+        "أقدر أكتب ADR من 5 سطور يبرر الاختيار لزميل أو لمقابل عمل."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على القرار والمقايضات.",
+      "questions": [
+        {
+          "q": "خدمة .NET في حاوية، حملها متقطع جدًا (ذروة نهارًا وصفر بالليل)، ومحتاجتها تتوسع بعدد رسائل طابور Service Bus. الأفضل؟",
+          "options": [
+            "App Service P1v3",
+            "Container Apps (Consumption) مع scale rule على الطابور",
+            "AKS بـ3 nodes",
+            "ACI"
+          ],
+          "answer": 1,
+          "explain": "ACA بتوفر scale-to-zero (صفر تكلفة بالليل) وقواعد توسع KEDA مدمجة على Service Bus. App Service مفيهاش scale-to-zero ولا KEDA؛ AKS هيخليك تدفع مقابل nodes دايمًا شغالة + إدارة cluster؛ ACI ملهاش توسع تلقائي."
+        },
+        {
+          "q": "ليه ACA مش «Kubernetes كامل»؟",
+          "options": [
+            "لأنها بتشتغل على VMs مش containers",
+            "لأن Microsoft بتدير الـKubernetes داخليًا وما بتظهرش الـAPI: مفيش kubectl ولا CRDs ولا operators",
+            "لأنها بتدعم Linux بس",
+            "لأنها محدودة بـ1,000 replica"
+          ],
+          "answer": 1,
+          "explain": "ACA مبنية على Kubernetes فعلًا، لكن الـcontrol plane مخفي: انت بتعرّف revisions/scale/ingress، ومش بتقدر تستخدم الموارد الأصلية. ده مقايضة مقصودة: إدارة أقل مقابل تحكم أقل. لو محتاج الـAPI → AKS."
+        },
+        {
+          "q": "حمل **مستمر 24/7** على خدمة واحدة. أي اختيار غالبًا أرخص؟",
+          "options": [
+            "ACA Consumption دايمًا",
+            "App Service خطة مناسبة أو ACA Dedicated/AKS مع reservation — لأن vCPU-seconds المستمرة بتتجمع",
+            "ACI",
+            "Functions Consumption"
+          ],
+          "answer": 1,
+          "explain": "الفوترة بالثانية بتكسب لما فيه سكون. مع حمل مستمر، الحساب بينعكس: خطة ثابتة (App Service) أو nodes محفوظة بـreservation غالبًا أرخص. القاعدة العملية: متوسط استخدام فوق ~40% من الشهر → قارن الالتزامات."
+        },
+        {
+          "q": "إزاي تعمل canary (10% من الحركة للنسخة الجديدة) على ACA؟",
+          "options": [
+            "`kubectl set image`",
+            "revision جديدة + `ingress set --traffic-split` بنسب، والرجوع بتحويل 100% للـrevision القديمة",
+            "إنشاء App Service slot",
+            "تغيير الـDNS يدويًا"
+          ],
+          "answer": 1,
+          "explain": "الـrevisions غير قابلة للتغيير وبتتعايش، وتوزيع الـtraffic بينها مدمج في الـingress. (في App Service المقابل هو slots، وفي AKS هو ingress controller/mesh.)"
+        },
+        {
+          "q": "عندك manifests kustomize + HPA + PDB + Ingress جاهزة من 6.1.4/6.1.5. أي منصة بتشغّلها **كما هي**؟",
+          "options": [
+            "App Service",
+            "Container Apps",
+            "AKS",
+            "ACI"
+          ],
+          "answer": 2,
+          "explain": "AKS هي اللي بتديك Kubernetes API، فملفاتك تشتغل بدون تغيير. ACA ليها نموذجها الخاص (`containerapp.yaml`) ولو فيه تشابه مفاهيمي كبير (probes/scale/ingress). App Service وACI ملهمش علاقة بالـmanifests."
+        },
+        {
+          "q": "أيه القرار اللي بيبقى غالي لو اتأخر؟",
+          "options": [
+            "اسم الـcontainer",
+            "المنطقة (region) وتقسيم الـresource groups والـtags",
+            "عدد الـprobes",
+            "نوع الـshell في الصورة"
+          ],
+          "answer": 1,
+          "explain": "نقل موارد بين المناطق = downtime وegress وتغيير عناوين وDNS. تقسيم الـresource groups حسب البيئة والـtags (env/project/owner) هو اللي بيمكّنك من تحليل التكلفة والصلاحيات لاحقًا (6.2.5) — رخيص دلوقتي وصعب بعدين."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "الاختبار الحقيقي للقرار: تنفّذه وتقيسه بالفلوس.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: قرار مكتوب (ADR) + تقدير تكلفة بثلاثة سيناريوهات",
+          "md": "**السياق:** فريقك عايز ينقل `Orders.Api` (صورة Docker جاهزة) على Azure. الحمل المتوقع: 3 أوقات ذروة يوميًا، صفر تقريبًا بالليل، وطابور RabbitMQ بيوصل لـ5,000 رسالة في الذروة.\n\n**المطلوب:** اكتب `docs/adr/0014-azure-compute.md` فيه: القرار · السياق · **جدول مقارنة بثلاثة خيارات** (ACA / App Service / AKS) بالأرقام · البدائل المرفوضة وسبب الرفض · العواقب (إيجابية وسلبية) · وإشارة الرجوع.\n\n**أضف `docs/azure-cost-estimate.md`** فيه تقدير شهري لثلاثة سيناريوهات (خفيف 2 vCPU·ساعة/يوم · متوسط 10 · مستمر 48) على المنصات الثلاثة، باستخدام [حاسبة التسعير](https://azure.microsoft.com/pricing/calculator/) مع **لقطة شاشة أو أرقام مكتوبة وتاريخ** — وقارن بالنتيجة: عند أي سيناريو بينعكس الترتيب؟",
+          "criteria": [
+            "ADR بصيغة «القرار / السياق / البدائل / العواقب» ومختوم بتاريخ وموقع عليه كقرار (مش تقرير).",
+            "جدول مقارنة فيه على الأقل: scale-to-zero · التوسع بالأحداث · العبء التشغيلي · نموذج الفوترة · حد التوسع · canary.",
+            "استنتاج صريح: ACA للاختيار الحالي، **وسبب** مرتبط بالحمل المتقطع والطابور (مش تفضيل شخصي).",
+            "تقدير التكلفة بثلاثة سيناريوهات من الحاسبة الرسمية، مع ذكر **منحة ACA المجانية** (vCPU-seconds/GiB-seconds/طلبات) وأثرها على السيناريو الخفيف.",
+            "إجابة صريحة على «عند أي حمل بينعكس الترتيب؟» برقم تقريبي (مثال: فوق ~40% استخدام شهري).",
+            "فقرة «إشارة الرجوع»: متى ننقل لـAKS (حاجة لـCRD/operator/GPU/mesh) ومين هيكلف ده إيه."
+          ],
+          "hint": "افتح الحاسبة واختار «Container Apps» وجرّب: 0.5 vCPU / 1 GiB / متوسط 6 ساعات نشاط يوميًا / 300,000 طلب — وقارنها بـApp Service P1v3 (instance واحدة 24×7). الفرق هيكون كبير في السيناريو الخفيف ويقل في المستمر. وثّق الأرقام بتاريخ لأن الأسعار بتتغير.",
+          "solution": "قرار نموذجي: **ACA Consumption** مع `minReplicas: 1` للـAPI (تجنب cold start في الذروة) و`minReplicas: 0` للخدمات الخلفية المستهلكة للطابور، وscale rule على طول الطابور. الأسباب: (1) الحمل متقطع → scale-to-zero يوفر (2) التوسع بالطابور مدمج (KEDA) (3) العبء التشغيلي منخفض لفريق صغير (4) revisions تديني canary وrollback. التقدير: السيناريو الخفيف غالبًا **داخل المنحة المجانية أو بضعة دولارات**، والمتوسط بعشرات الدولارات، والمستمر 24/7 بيقارب أو يزيد عن App Service P1v3 — وعند النقطة دي بنعيد التقييم نحو Dedicated plan + reservation. العواقب السلبية المقرونة بالقرار: مفيش Kubernetes API (يعني مهارات kubectl من 6.1.4 مش هتُستخدم مباشرة)، cold start عند minReplicas=0، وحد 1,000 replica لكل revision.",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/compute-decision-tree",
+            "https://learn.microsoft.com/en-us/azure/container-apps/compare-options",
+            "https://learn.microsoft.com/en-us/azure/architecture/microservices/design/compute-options",
+            "https://azure.microsoft.com/en-us/pricing/calculator/"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: انشر الصورة فعليًا على Container Apps وقِس",
+          "md": "**السياق:** القرار مش نظري — لازم تشوفه شغال وتقيس سلوكه.\n\n**المطلوب:**\n1. `az containerapp env create` ثم انشر `shop/orders` من ACR بـ**هوية مُدارة** (بلا `--admin-enabled true`).\n2. اضبط `minReplicas: 0` و`maxReplicas: 5` وقاعدة توسع HTTP بـ`concurrentRequests: 10`.\n3. قِس **cold start**: اترك التطبيق ساكنًا 10 دقائق، ثم اطلب أول طلب وسجّل الزمن، ثم اطلب 20 طلبًا متتالية وسجّل p50/p95. كرّر بـ`minReplicas: 1` وقارن.\n4. اضرب حملًا بـk6 (`--vus 50 --duration 2m`) وراقب `az containerapp replica list` كل 10 ثوانٍ — وثّق كم نسخة وصلت ومتى نزلت.\n5. اعمل **revision جديدة** بـtag مختلف، قسّم الحركة 90/10، ثم ارجع لـ100% للقديمة — وسجّل الأوامر والوقت المستغرق للرجوع.\n6. اكتب `docs/aca-notes.md` بالأرقام + لقطة من السجلات + استنتاج: هل الاختيار كان صحيحًا لهذا الحمل؟",
+          "criteria": [
+            "النشر تم بهوية مُدارة + دور `AcrPull` (مش admin password) — والأمر موثق.",
+            "قياس cold start برقمين: أول طلب بعد السكون، وp95 بعد الإحماء — **مع `minReplicas: 0` مقابل `1`**.",
+            "ملاحظة عدد النسخ تحت حمل k6 ومتى تصاعدت ومتى نزلت (مع زمن نافذة النزول).",
+            "تعديل revision وتقسيم traffic 90/10 ثم الرجوع — **وزمن الرجوع** مكتوب بالثواني.",
+            "`docs/aca-notes.md` فيه جدول أرقام واستنتاج صريح مرتبط بالحمل (مش «كله تمام»).",
+            "تنظيف: `az group delete` أو إيقاف الموارد بعد التجربة (مع ملاحظة إن ACA Consumption بتنزل لصفر تلقائيًا)."
+          ],
+          "hint": "لقياس cold start استخدم `curl -w '%{time_total}\\n' -o /dev/null -s https://<fqdn>/alive` — أول رقم بعد السكون هو الإقلاع البارد. لو الرقم كبير (ثوانٍ) فده ثمن scale-to-zero، والحل `minReplicas: 1` أو `startup probe` أسرع. وللرجوع السريع احتفظ بالأمر في ملف `scripts/rollback.sh` قبل ما تبدأ التجربة.",
+          "solution": "الأرقام النموذجية اللي هتشوفها: أول طلب بعد 10 دقائق سكون = **2–8 ثوانٍ** (سحب الصورة + إقلاع .NET)، وبعدها p95 يرجع لعشرات المللي ثانية. مع `minReplicas: 1` مفيش cold start لكن فيه تكلفة مستمرة صغيرة. تحت k6 بـ50 VU ومع `concurrentRequests: 10` هتوصل لـ5 نسخ خلال دقيقة تقريبًا، والنزول بيستغرق دقائق (نافذة استقرار). الـrollback بـ`ingress set --traffic-split rev1=100` بيتم في **ثوانٍ** لأن النسخة القديمة لسه موجودة وجاهزة — دي أكبر ميزة عملية لـrevisions مقابل «نشر جديد وانتظار». الاستنتاج الصحيح: للحمل المتقطع الاختيار موفر ومريح؛ لو الخدمة بقت حساسة للـlatency على أول طلب، ارفع `minReplicas` وادفع الفرق.",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/container-apps/quickstart-cli",
+            "https://learn.microsoft.com/en-us/azure/container-apps/revisions",
+            "https://learn.microsoft.com/en-us/azure/container-apps/scale-app",
+            "https://learn.microsoft.com/en-us/azure/container-apps/ingress-overview",
+            "https://learn.microsoft.com/en-us/azure/container-apps/managed-identity-image-pull"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Choose an Azure compute service (قرار رسمي من Microsoft)",
+          "url": "https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/compute-decision-tree"
+        },
+        {
+          "label": "Container Apps مقابل خيارات الحاويات الأخرى",
+          "url": "https://learn.microsoft.com/en-us/azure/container-apps/compare-options"
+        },
+        {
+          "label": "اختيار الحوسبة للـmicroservices (مقارنة قدرات)",
+          "url": "https://learn.microsoft.com/en-us/azure/architecture/microservices/design/compute-options"
+        },
+        {
+          "label": "Container Apps: revisions وتوزيع الحركة",
+          "url": "https://learn.microsoft.com/en-us/azure/container-apps/revisions"
+        },
+        {
+          "label": "Container Apps: قواعد التوسع",
+          "url": "https://learn.microsoft.com/en-us/azure/container-apps/scale-app"
+        },
+        {
+          "label": "App Service: deployment slots",
+          "url": "https://learn.microsoft.com/en-us/azure/app-service/deploy-staging-slots"
+        },
+        {
+          "label": "AKS: مفاهيم ومقارنة الـtiers",
+          "url": "https://learn.microsoft.com/en-us/azure/aks/intro-kubernetes"
+        },
+        {
+          "label": "حاسبة تسعير Azure",
+          "url": "https://azure.microsoft.com/en-us/pricing/calculator/"
+        }
+      ]
+    }
+  ]
+}

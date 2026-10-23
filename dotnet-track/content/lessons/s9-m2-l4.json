@@ -1,0 +1,396 @@
+{
+  "id": "s9-m2-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "الدرس ده **أعلى عائد في المقابلات**: ثلاث عائلات من الأنماط تحل ما لا يقل عن 40% من مسائل المقابلات المتوسطة، وكثير منها يظهر في شغل حقيقي (تحليل سلاسل logs · نوافذ معدلات · تجميعات تقارير).\n\nالدرس: تعرف **علامة المسألة** (إمتى تستخدم أي نمط) → الكود الصحيح → الفخاخ (الحدود، التكرارات، الأرقام السالبة)."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات",
+      "items": [
+        {
+          "term": "Two pointers (opposite)",
+          "def": "مؤشران من الطرفين يقتربان: مصفوفة **مرتّبة**، مجموع هدف، قلب، palindrome. O(n)."
+        },
+        {
+          "term": "Two pointers (same direction)",
+          "def": "مؤشر سريع وبطيء: إزالة تكرارات في المكان · كشف دورة · إيجاد العنصر الأوسط."
+        },
+        {
+          "term": "Sliding window (fixed)",
+          "def": "نافذة بحجم ثابت k تنزلق: مجموع/متوسط كل نافذة بـO(n) بدل O(n·k)."
+        },
+        {
+          "term": "Sliding window (variable)",
+          "def": "نافذة تتمدد وتتقلص حسب شرط (أطول/أقصر نطاق يحقق شرطًا). O(n) — كل عنصر يدخل ويخرج مرة."
+        },
+        {
+          "term": "Prefix sum",
+          "def": "`pre[i] = sum(a[0..i-1])` ⇒ مجموع `[l, r)` = `pre[r] - pre[l]` بـO(1)."
+        },
+        {
+          "term": "Prefix + hashmap",
+          "def": "لعدّ/إيجاد نطاقات مجموعها k: خزّن البادئات السابقة في `Dictionary`. O(n)."
+        },
+        {
+          "term": "Difference array",
+          "def": "لتعديلات نطاقات كثيرة: `diff[l] += v; diff[r+1] -= v` ثم بادئة تراكمية — O(1) لكل تعديل."
+        },
+        {
+          "term": "Monotonic window",
+          "def": "نافذة بقيم رتيبة (deque) لإيجاد الأقصى/الأدنى في كل نافذة بحجم k بـO(n)."
+        },
+        {
+          "term": "Kadane",
+          "def": "أقصى مجموع نطاق متصل: `best = max(x, best + x)` — أقصر sliding window في العالم."
+        },
+        {
+          "term": "Shrink condition",
+          "def": "شرط تقليص النافذة (`while (sum > target) shrink`) — أساس النافذة المتغيرة الصحيحة."
+        },
+        {
+          "term": "Off-by-one في النوافذ",
+          "def": "أشهر خطأ: نافذة `[l, r)` أو `[l, r]`؟ اختر اصطلاحًا واحدًا والتزم به في كل الكود."
+        },
+        {
+          "term": "Signed vs unsigned",
+          "def": "السالبة تكسر بعض الأنماط: النافذة المتغيرة للتقليص تفترض أن التقليص يقلل المجموع — غير صحيح مع أرقام سالبة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① علامة المسألة: كيف تعرف النمط في 10 ثوانٍ"
+    },
+    {
+      "type": "table",
+      "caption": "شجرة قرار سريعة",
+      "head": [
+        "تسمع في السؤال",
+        "النمط",
+        "شرط أساسي",
+        "التعقيد"
+      ],
+      "rows": [
+        [
+          "«مصفوفة **مرتّبة**» + زوج/ثلاثي بمجموع",
+          "Two pointers (طرفان)",
+          "مرتّبة",
+          "O(n)"
+        ],
+        [
+          "«أطول/أقصر نطاق يحقق شرطًا» + أعداد موجبة",
+          "Sliding window متغيرة",
+          "موجبة",
+          "O(n)"
+        ],
+        [
+          "«كل نافذة بحجم k»",
+          "Sliding window ثابتة",
+          "—",
+          "O(n)"
+        ],
+        [
+          "«عدد النطاقات بمجموع = k»",
+          "Prefix + `Dictionary`",
+          "أي أرقام",
+          "O(n)"
+        ],
+        [
+          "«عدّة تحديثات على نطاقات ثم قراءة»",
+          "Difference array",
+          "—",
+          "O(1) للتعديل"
+        ],
+        [
+          "«أقصى مجموع متصل»",
+          "Kadane",
+          "—",
+          "O(n)"
+        ],
+        [
+          "«أقصى في كل نافذة»",
+          "Deque رتيبة",
+          "—",
+          "O(n)"
+        ],
+        [
+          "«احذف التكرارات في المكان»",
+          "Two pointers نفس الاتجاه",
+          "مرتّبة",
+          "O(n) · O(1)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "الشرط اللي بيوقّع الناس",
+      "md": "**Sliding window المتغيرة تحتاج «مونوتونية»**: التقليص لازم **يقلل** المقياس دائمًا. لذلك:\n✅ «أطول نطاق مجموعه ≤ target» مع **أعداد موجبة** — صحيح.\n❌ نفس السؤال مع **أرقام سالبة** — غير صحيح (تقليص النافذة قد يزيد المجموع!). الحل: prefix + hashmap.\n**② «مرتّبة»**: لو السؤال لا يذكر الترتيب، فمؤشرا الطرفين يحتاجان `Sort` — احسب O(n log n) في جوابك.\n**③** اذكر أن التعديل في المكان قد يكون ممنوعًا (API يرجع نسخة) — اسأل."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② Two pointers — ثلاثة أشكال بثلاث حالات"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Patterns/TwoPointers.cs",
+      "filename": "Algorithms/TwoPointers.cs",
+      "code": "public static class TwoPointers\n{\n    // ── ① طرفان: مجموع في مصفوفة مرتّبة ─────────────────────────\n    public static (int, int)? PairSum(int[] sorted, int target)\n    {\n        int l = 0, r = sorted.Length - 1;\n        while (l < r)\n        {\n            var sum = sorted[l] + sorted[r];\n            if (sum == target) return (l, r);\n            if (sum < target) l++;\n            else r--;\n        }\n        return null;                        // ✅ شرط `l < r` يمنع استخدام نفس العنصر\n    }\n\n    // ── ② طرفان: هل السلسلة متناظرة ─────────────────────────────\n    public static bool IsPalindrome(ReadOnlySpan<char> s)\n    {\n        int l = 0, r = s.Length - 1;\n        while (l < r)\n        {\n            if (s[l] != s[r]) return false;\n            l++; r--;\n        }\n        return true;\n    }\n\n    // ── ③ نفس الاتجاه: احذف التكرارات في المكان ─────────────────\n    /// <summary>يعيد الطول الجديد — والعناصر الفريدة في بداية المصفوفة.</summary>\n    public static int RemoveDuplicates(Span<int> sorted)\n    {\n        if (sorted.Length == 0) return 0;\n        var write = 1;                        // أول عنصر فريد دائمًا\n        for (var read = 1; read < sorted.Length; read++)\n        {\n            if (sorted[read] == sorted[write - 1]) continue;\n            sorted[write++] = sorted[read];\n        }\n        return write;\n    }\n\n    // ── ④ نفس الاتجاه: العنصر الأوسط (fast/slow) ─────────────────\n    public static int? MiddleOfList(IReadOnlyList<int> list)\n    {\n        if (list.Count == 0) return null;\n        int slow = 0, fast = 0;\n        while (fast + 1 < list.Count)         // fast يتقدم خطوتين\n        {\n            slow++;\n            fast += 2;\n        }\n        return list[slow];\n    }\n\n    // ── ⑤ ثلاثي مجموعه صفر (3Sum) — O(n²) بعد الفرز ──────────────\n    public static IReadOnlyList<(int, int, int)> ThreeSum(int[] nums)\n    {\n        var result = new List<(int, int, int)>();\n        Array.Sort(nums);\n\n        for (var i = 0; i < nums.Length - 2; i++)\n        {\n            if (i > 0 && nums[i] == nums[i - 1]) continue;      // ✅ تجنّب التكرار\n            int l = i + 1, r = nums.Length - 1;\n            while (l < r)\n            {\n                var sum = nums[i] + nums[l] + nums[r];\n                if (sum == 0)\n                {\n                    result.Add((nums[i], nums[l], nums[r]));\n                    l++; r--;\n                    while (l < r && nums[l] == nums[l - 1]) l++;   // ✅ تجاوز المكرر\n                    while (l < r && nums[r] == nums[r + 1]) r--;\n                }\n                else if (sum < 0) l++;\n                else r--;\n            }\n        }\n        return result;\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "لماذا 3Sum هي «المقابلة الكاملة» في سؤال واحد",
+      "md": "لأنها تجمع: فرز O(n log n) · حلقات متداخلة مع مؤشرين · **تجنّب التكرار** (أصعب جزء) · حدود مصفوفة قصيرة.\n**خطأ شائع**: تخطّي التكرار بمقارنة الإجابة (`HashSet`) بدل تخطّيه في المؤشر — يبطئ ويستهلك ذاكرة، والأسوأ أن يفوّت الحالات.\n**قاعدة:** بعد إيجاد حل، حرّك المؤشرين **ثم** تخطَّ العناصر المكررة — لا العكس."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ Sliding window — النسختان"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Patterns/SlidingWindow.cs",
+      "filename": "Algorithms/SlidingWindow.cs",
+      "code": "public static class SlidingWindow\n{\n    // ── ① ثابتة: أقصى متوسط نافذة بحجم k ─────────────────────────\n    public static double MaxAverage(int[] nums, int k)\n    {\n        if (k <= 0 || nums.Length < k) throw new ArgumentException(\"k غير صالح\");\n\n        double sum = 0;\n        for (var i = 0; i < k; i++) sum += nums[i];      // نافذة أولى\n\n        var best = sum;\n        for (var i = k; i < nums.Length; i++)\n        {\n            sum += nums[i] - nums[i - k];                 // أضف الجديد واخصم الخارج\n            if (sum > best) best = sum;\n        }\n        return best / k;\n    }\n\n    // ── ② متغيرة: أطول نطاق مجموعه ≤ target (أعداد موجبة) ────────\n    public static int LongestAtMost(int[] positives, int target)\n    {\n        int l = 0, sum = 0, best = 0;\n        for (var r = 0; r < positives.Length; r++)\n        {\n            sum += positives[r];\n            while (sum > target && l <= r)                // ✅ تقليص\n            {\n                sum -= positives[l];\n                l++;\n            }\n            best = Math.Max(best, r - l + 1);\n        }\n        return best;\n    }\n\n    // ── ③ متغيرة: أطول سلسلة بلا حروف مكررة ─────────────────────\n    public static int LongestUniqueSubstring(ReadOnlySpan<char> s)\n    {\n        var lastIndex = new Dictionary<char, int>(128);\n        int l = 0, best = 0;\n\n        for (var r = 0; r < s.Length; r++)\n        {\n            if (lastIndex.TryGetValue(s[r], out var prev) && prev >= l)\n                l = prev + 1;                             // ✅ اقفز بعد التكرار السابق\n\n            lastIndex[s[r]] = r;\n            best = Math.Max(best, r - l + 1);\n        }\n        return best;\n    }\n\n    // ── ④ متغيرة: أقصر نطاق مجموعه ≥ target (موجبة) ─────────────\n    public static int MinLengthAtLeast(int[] positives, int target)\n    {\n        int l = 0, sum = 0, best = int.MaxValue;\n        for (var r = 0; r < positives.Length; r++)\n        {\n            sum += positives[r];\n            while (sum >= target)\n            {\n                best = Math.Min(best, r - l + 1);\n                sum -= positives[l++];\n            }\n        }\n        return best == int.MaxValue ? 0 : best;\n    }\n\n    // ── ⑤ Kadane: أقصى مجموع نطاق متصل (يسمح بالسالب) ──────────\n    public static (int Best, int Start, int End) MaxSubArray(int[] nums)\n    {\n        if (nums.Length == 0) throw new ArgumentException(\"مصفوفة فارغة\");\n\n        int best = nums[0], bestStart = 0, bestEnd = 0;\n        int cur = nums[0], curStart = 0;\n\n        for (var i = 1; i < nums.Length; i++)\n        {\n            if (nums[i] > cur + nums[i]) { cur = nums[i]; curStart = i; }\n            else cur += nums[i];\n\n            if (cur > best) { best = cur; bestStart = curStart; bestEnd = i; }\n        }\n        return (best, bestStart, bestEnd);\n    }\n\n    // ── ⑥ أقصى في كل نافذة بحجم k — deque رتيبة O(n) ────────────\n    public static int[] MaxSlidingWindow(int[] nums, int k)\n    {\n        if (k <= 0 || nums.Length < k) return [];\n        var result = new int[nums.Length - k + 1];\n        var deque = new LinkedList<int>();      // تخزين الفهارس، تنازليًا بالقيمة\n\n        for (var i = 0; i < nums.Length; i++)\n        {\n            // ① أخرج الفهارس الخارجة من النافذة\n            if (deque.First is { } first && first.Value <= i - k) deque.RemoveFirst();\n\n            // ② أخرج كل ما هو أصغر — لن يكون أقصى أبدًا\n            while (deque.Last is { } last && nums[last.Value] <= nums[i]) deque.RemoveLast();\n\n            deque.AddLast(i);\n            if (i >= k - 1) result[i - k + 1] = nums[deque.First!.Value];\n        }\n        return result;\n    }\n}"
+    },
+    {
+      "type": "table",
+      "caption": "أخطاء النوافذ الأكثر تكرارًا",
+      "head": [
+        "الخطأ",
+        "الأثر",
+        "الإصلاح"
+      ],
+      "rows": [
+        [
+          "`while (sum >= target)` بدل `>`",
+          "نافذة فارغة أو نتيجة خاطئة",
+          "راجع شرط الحدود في السؤال بالحرف"
+        ],
+        [
+          "نسيان `l <= r`",
+          "`l` يتجاوز `r` ويخصم عناصر خارج النافذة",
+          "أضف الشرط أو استخدم `while (l < r)`"
+        ],
+        [
+          "`best = Math.Max(best, r - l)` بدل `r - l + 1`",
+          "النتيجة أقل بواحد",
+          "الطول = `r - l + 1` لنافذة مغلقة"
+        ],
+        [
+          "عدم تحديث `lastIndex` بعد القفز",
+          "قفزات خاطئة لاحقًا",
+          "حدّث دائمًا بعد المعالجة"
+        ],
+        [
+          "استخدام نافذة متغيرة مع أرقام سالبة",
+          "نتيجة خاطئة صامتة",
+          "prefix + `Dictionary`"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ Prefix sums — الحل اللي بيبدو سحرًا"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Patterns/PrefixSums.cs",
+      "filename": "Algorithms/PrefixSums.cs",
+      "code": "public static class PrefixSums\n{\n    /// <summary>بادئة بطول n+1: pre[0]=0 ⇒ مجموع [l, r) = pre[r] - pre[l].</summary>\n    public static long[] Build(int[] a)\n    {\n        var pre = new long[a.Length + 1];\n        for (var i = 0; i < a.Length; i++) pre[i + 1] = pre[i] + a[i];\n        return pre;\n    }\n\n    public static long Range(long[] pre, int l, int rInclusive) =>\n        pre[rInclusive + 1] - pre[l];          // ✅ اصطلاح واضح: [l, r]\n\n    // ── عدد النطاقات التي مجموعها k (يعمل مع السالب أيضًا) ───────\n    public static int CountSubarraysSumK(int[] nums, int k)\n    {\n        var seen = new Dictionary<long, int> { [0] = 1 };   // نطاق فارغ\n        long sum = 0;\n        var count = 0;\n\n        foreach (var x in nums)\n        {\n            sum += x;\n            // عدد البادئات السابقة التي تساوي sum - k\n            if (seen.TryGetValue(sum - k, out var c)) count += c;\n            seen[sum] = seen.GetValueOrDefault(sum) + 1;\n        }\n        return count;\n    }\n\n    // ── أطول نطاق مجموعه k (بالسالب) ─────────────────────────────\n    public static int LongestSubarraySumK(int[] nums, int k)\n    {\n        var firstSeen = new Dictionary<long, int> { [0] = -1 };   // البادئة ⇒ أول فهرس\n        long sum = 0;\n        var best = 0;\n\n        for (var i = 0; i < nums.Length; i++)\n        {\n            sum += nums[i];\n            if (firstSeen.TryGetValue(sum - k, out var start))\n                best = Math.Max(best, i - start);\n            firstSeen.TryAdd(sum, i);            // ✅ أول ظهور فقط (الأطول)\n        }\n        return best;\n    }\n\n    // ── Difference array: تعديلات نطاقات ثم قراءة الكل ──────────\n    /// <summary>مثال واقعي: 200 ألف عملية «أضف رصيدًا لنطاق مستخدمين» ثم تقرير.</summary>\n    public static long[] ApplyRangeUpdates(int n, IEnumerable<(int L, int R, int V)> updates)\n    {\n        var diff = new long[n + 1];\n        foreach (var (l, r, v) in updates)\n        {\n            diff[l] += v;\n            if (r + 1 < n) diff[r + 1] -= v;\n        }\n\n        for (var i = 1; i < n; i++) diff[i] += diff[i - 1];   // بادئة تراكمية\n        return diff[..n];\n    }\n\n    // ── مصفوفة تراكمية ثنائية الأبعاد (صور/تقارير) ──────────────\n    public static long[][] Build2D(int[][] grid)\n    {\n        var h = grid.Length;\n        var w = h == 0 ? 0 : grid[0].Length;\n        var pre = new long[h + 1][];\n        for (var i = 0; i <= h; i++) pre[i] = new long[w + 1];\n\n        for (var i = 1; i <= h; i++)\n        for (var j = 1; j <= w; j++)\n            pre[i][j] = grid[i - 1][j - 1]\n                      + pre[i - 1][j] + pre[i][j - 1] - pre[i - 1][j - 1];\n\n        return pre;\n    }\n\n    /// <summary>مجموع مستطيل [r1..r2] × [c1..c2] بـO(1).</summary>\n    public static long RectSum(long[][] pre, int r1, int c1, int r2, int c2) =>\n        pre[r2 + 1][c2 + 1] - pre[r1][c2 + 1] - pre[r2 + 1][c1] + pre[r1][c1];\n}"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "لماذا `prefix + Dictionary` يعمل مع السالب",
+      "md": "لأنه لا يعتمد على «التقليص يقلل المجموع». هو يسأل: «هل رأيت بادئة تساوي `sum - k`؟» — سؤال صحيح رياضيًا لأي أرقام.\n**الثمن:** ذاكرة O(n) (قاموس بكل البادئات).\n**متى تختار النافذة بدلًا منه؟** لو الأرقام موجبة والعايز **أطول/أقصر** بمعيار أحادي — النافذة O(1) ذاكرة وأقل تعقيدًا."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "تحدد النمط من صياغة السؤال قبل كتابة أي كود.",
+        "تعرف أن مؤشري الطرفين يحتاجان ترتيبًا وتحسب O(n log n).",
+        "تكتب نافذة ثابتة بحجم k بتحديث O(1) لكل خطوة.",
+        "تكتب نافذة متغيرة بشرط تقليص صحيح وتشرح حدود `l <= r`.",
+        "تعرف أن النافذة المتغيرة تتعطل مع الأرقام السالبة.",
+        "تكتب Kadane مع بداية ونهاية النطاق لا المجموع فقط.",
+        "تنفّذ deque رتيبة للأقصى في نافذة بـO(n).",
+        "تستخدم بادئة بطول n+1 وتستخرج مجموع نطاق بـ`pre[r+1] - pre[l]`.",
+        "تعدّ النطاقات بمجموع k بـ`Dictionary` (يعمل مع السالب).",
+        "تستخدم difference array لتعديلات نطاقات كثيرة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "8 أسئلة.",
+      "questions": [
+        {
+          "q": "أطول نطاق مجموعه ≤ 10 في مصفوفة فيها أرقام سالبة — هل تصلح النافذة المتغيرة؟",
+          "options": [
+            "نعم",
+            "لا — التقليص قد يزيد المجموع؛ استخدم prefix + Dictionary",
+            "نعم لو كان الحجم ثابتًا",
+            "لا يوجد حل"
+          ],
+          "answer": 1,
+          "explain": "النافذة المتغيرة تفترض أن إزالة عنصر تقلل المقياس. مع السالب قد تزيد، فينهار الافتراض ويصبح الحل صامتًا وخاطئًا — وهذا من أخطر الأخطاء لأنه يمر في الاختبارات البسيطة."
+        },
+        {
+          "q": "ما تعقيد `CountSubarraysSumK`؟",
+          "options": [
+            "O(n²)",
+            "O(n) زمن وO(n) مساحة",
+            "O(n log n)",
+            "O(1)"
+          ],
+          "answer": 1,
+          "explain": "تمريرة واحدة مع قاموس للبادئات: O(n) زمن، وقاموس بحجم n. المقايضة: مساحة مقابل تحويل O(n²) إلى O(n)."
+        },
+        {
+          "q": "لماذا `l < r` وليس `l <= r` في PairSum؟",
+          "options": [
+            "لتقليل التكرار",
+            "لمنع استخدام العنصر نفسه مرتين (l == r يعطي مجموع 2× نفس العنصر)",
+            "لتحسين الأداء",
+            "لا فرق"
+          ],
+          "answer": 1,
+          "explain": "`l == r` يعني جمع العنصر مع نفسه، وهذا غالبًا غير مسموح. نفس القاعدة تنطبق في 3Sum: `l < r` بعد أن يكون `i` ثابتًا."
+        },
+        {
+          "q": "في نافذة بحجم k، كيف تجعل التحديث O(1)؟",
+          "options": [
+            "أعد جمع النافذة",
+            "أضف العنصر الداخل واخصم الخارج: `sum += a[i] - a[i-k]`",
+            "استخدم فرزًا",
+            "استخدم Set"
+          ],
+          "answer": 1,
+          "explain": "إعادة الجمع تعني O(n·k). التحديث بفارق واحد O(1) يحول الخوارزمية إلى O(n) كاملة. نفس المبدأ ينطبق على المتوسط والتباين والعدّادات."
+        },
+        {
+          "q": "Kadane — ماذا تفعل عندما يكون `nums[i] > cur + nums[i]`؟",
+          "options": [
+            "أضيف العنصر",
+            "أبدأ نطاقًا جديدًا من هذا العنصر (لأن ما قبله يضرّ)",
+            "أتوقف",
+            "أعيد التعيين لصفر"
+          ],
+          "answer": 1,
+          "explain": "إذا كان ما قبل العنصر يقلل المجموع، فالأفضل بدء نطاق جديد. تتبّع `curStart` يتيح لك إعادة النطاق نفسه لا المجموع فقط — وهذا ما يسأل عنه المحاورون."
+        },
+        {
+          "q": "لماذا `pre` بطول n+1 بدل n؟",
+          "options": [
+            "توفير ذاكرة",
+            "ليكون لدى النطاق الفارغ بادئة (pre[0]=0) وتصبح صيغة `pre[r+1]-pre[l]` موحدة بلا حالات خاصة",
+            "لأن .NET يفرض ذلك",
+            "لتحسين الأداء فقط"
+          ],
+          "answer": 1,
+          "explain": "إضافة عنصر صفري في البداية تلغي الحالات الخاصة عند l = 0. هذا نمط عام في البرمجة: صفّ حارس (sentinel) يبسّط الحدود ويمنع off-by-one."
+        },
+        {
+          "q": "Deque رتيبة — لماذا نزيل من الخلف كل ما هو أصغر؟",
+          "options": [
+            "لتوفير ذاكرة",
+            "لأن أي عنصر أصغر سيخرج قبل الحالي وليس له أمل أن يكون الأقصى — فيمكن الاستغناء عنه",
+            "للترتيب الأبجدي",
+            "لتفادي التكرار"
+          ],
+          "answer": 1,
+          "explain": "إذا دخل عنصر أكبر، فكل عنصر أصغر قبله سيُغطى بهذا الأكبر داخل أي نافذة تحتويه. إبقاؤه بلا فائدة. النتيجة deque تنازلية تعطي الأقصى من الرأس بـO(1)."
+        },
+        {
+          "q": "Difference array تُستخدم عندما:",
+          "options": [
+            "قراءة كثيرة وتعديل قليل",
+            "تعديلات نطاقات كثيرة ثم قراءة — O(1) لكل تعديل وO(n) مرة واحدة للبناء النهائي",
+            "مصفوفة ثابتة",
+            "بيانات نصية"
+          ],
+          "answer": 1,
+          "explain": "بدل O(n) لكل تعديل، نسجّل التغيير عند بداية النطاق وعكسه عند نهايته. ثم تمريرة بادئة تعطي القيم النهائية. مثالي لتقارير «أضف X لكل مستخدم من L إلى R»."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "تطبيق + مقارنة.",
+      "items": [
+        {
+          "id": "s9-m2-l4-t1",
+          "title": "مهمة 1: 6 مسائل بثلاثة أنماط",
+          "md": "حل: PairSum · 3Sum · LongestAtMost · LongestUniqueSubstring · CountSubarraysSumK · MaxSubArray. كل حل: تعقيد + اختبارات + نسخة ساذجة للمقارنة.",
+          "criteria": [
+            "6 حلول تعمل + 5 اختبارات لكل حل (فارغ · عنصر واحد · الكل مكرر · أرقام سالبة حيث ينطبق · حدود).",
+            "تعقيد مكتوب لكل حل (زمن + مساحة) مع التبرير.",
+            "نسخة O(n²) لكل مسألة + اختبار تكافؤ عشوائي 1000 حالة.",
+            "شرح مكتوب: أي مسألة لا تصلح لها النافذة المتغيرة ولماذا.",
+            "حالة أرقام سالبة في CountSubarraysSumK تعمل بشكل صحيح (والنافذة تفشل — موثّق)."
+          ],
+          "hint": "ابدأ بالنسخة الساذجة دائمًا — تعطيك مصدر حقيقة للاختبار العشوائي. وللـ3Sum: اختبر مصفوفة كلها أصفار `[0,0,0,0]` — يجب أن تُرجع ثلاثية واحدة فقط (وهو ما يكشف أخطاء تجاوز التكرار).",
+          "solution": "النتيجة النموذجية: الحلول الخطية تمر على 1000 حالة عشوائية مقارنة بالساذجة. أكثر خطأ يظهر: نسيان `+1` في الطول أو فشل تخطي التكرار في 3Sum. الاختبار العشوائي هو ما يكشفها فورًا.",
+          "resources": [
+            "https://learn.microsoft.com/dotnet/api/system.collections.generic.dictionary-2",
+            "https://learn.microsoft.com/dotnet/api/system.array.sort"
+          ]
+        },
+        {
+          "id": "s9-m2-l4-t2",
+          "title": "مهمة 2: عدّاد معدل حقيقي (Rate limiter) بالنافذة",
+          "md": "نفّذ عدّاد معدل لطلبات API بنافذة زمنية منزلقة: 100 طلب/دقيقة لكل مستخدم. ثم نسخة ثابتة النافذة، وقارن السلوك عند الحدود.",
+          "criteria": [
+            "نافذة منزلقة دقيقة (deque بزمن الطلبات) — تسمح 100 في أي 60 ثانية متحركة.",
+            "نافذة ثابتة (عدّاد كل دقيقة) — وأظهر حالتي الحدود (burst) بالأرقام.",
+            "متعدد الخيوط: 20 خيطًا لا يحققون أكثر من 100 نجاح (`Interlocked` أو lock).",
+            "اختبار بالزمن المُزيف (`TimeProvider`) بلا انتظار حقيقي.",
+            "جدول مقارنة: عدد الطلبات المسموح بها في سيناريو ذروة على الحد الفاصل."
+          ],
+          "hint": "استخدم `TimeProvider.GetUtcNow()` بدل `DateTime.UtcNow` لتتمكن من اختبار الزمن. النافذة المنزلقة: `Deque<(timestamp)>` — عند كل طلب أزل كل ما هو أقدم من `now - 60s` ثم افحص الطول. لا تسجّل كل الطلبات في Redis للتجربة المحلية؛ يكفي في الذاكرة.",
+          "solution": "النتيجة: النافذة المنزلقة أكثر دقة لكنها تخزّن 100 طابع زمني/مستخدم؛ الثابتة أرخص لكنها تسمح بانفجار حتى 200 طلب في ثانيتين على الحد. وهذا قرار حقيقي في الإنتاج: دقة مقابل ذاكرة. النسخة الإنتاجية غالبًا token bucket بـ`Redis` scripts.",
+          "resources": [
+            "https://learn.microsoft.com/dotnet/api/system.threading.interlocked",
+            "https://learn.microsoft.com/dotnet/api/system.timeprovider",
+            "https://learn.microsoft.com/aspnet/core/performance/rate-limit"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Rate limiting في ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/performance/rate-limit"
+        },
+        {
+          "label": "Dictionary<TKey,TValue>",
+          "url": "https://learn.microsoft.com/dotnet/api/system.collections.generic.dictionary-2"
+        },
+        {
+          "label": "TimeProvider (اختبار الزمن)",
+          "url": "https://learn.microsoft.com/dotnet/api/system.timeprovider"
+        },
+        {
+          "label": "Span<T> وReadOnlySpan<T>",
+          "url": "https://learn.microsoft.com/dotnet/standard/memory-and-spans/"
+        }
+      ]
+    }
+  ]
+}

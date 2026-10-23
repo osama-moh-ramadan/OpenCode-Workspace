@@ -1,0 +1,516 @@
+{
+  "id": "s10-m3-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "الـ60 سؤالًا هذه ليست للحفظ؛ هي **قائمة تحقق** للعمق. لكل سؤال إجابة مختصرة تصلح في 30 ثانية، ثم مثال من مشروعك يضيف 20 ثانية. المحاور لا يريد التعريف الكامل — يريد أن يسمع أنك **استخدمت** المفهوم وواجهت حدوده.\n\nقاعدة الإجابة: **تعريف سطر + سبب وجوده + مثال منك**. ومن يجيب بالتعريف فقط يبدو كتابًا؛ ومن يجيب بمثال فقط يبدو تجريبيًا بلا أساس."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① C# واللغة (8)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "السؤال",
+        "الإجابة النموذجية (20–30 ثانية)"
+      ],
+      "rows": [
+        [
+          "`class` vs `struct`",
+          "class مرجع على الـheap ويدعم الوراثة؛ struct قيمة تُخصَّص inline وتُنسخ بالكامل. أستخدم struct لبيانات صغيرة (<24 بايت) غير قابلة للتغيير مثل `Money` أو `Point`."
+        ],
+        [
+          "`==` vs `Equals` vs `ReferenceEquals`",
+          "`==` قد يكون مُحمَّلًا (string يقارن المحتوى)؛ `Equals` افتراضيًا مقارنة مرجع ويمكن تجاوزه؛ `ReferenceEquals` مرجع دائمًا. في `record` كلاهما قيمة."
+        ],
+        [
+          "`record` vs `class`",
+          "record: مساواة قيمة + `with` + ToString مفيد + خصائص init. مناسب لـDTO/رسائل؛ class للكيانات ذات هوية وسلوك متغير."
+        ],
+        [
+          "`interface` vs `abstract class`",
+          "interface عقد يمكن تنفيذه عدة مرات وبلا حالة؛ abstract class يحمل تنفيذًا وحقولًا ومُنشئًا لكن وراثة واحدة. الافتراضي: interface للحدود، abstract للتشابه."
+        ],
+        [
+          "`string` vs `StringBuilder`",
+          "string غير قابل للتغيير، فكل `+=` في حلقة ينشئ كائنًا جديدًا (O(n²)). أستخدم StringBuilder أو `string.Create` للتجميع."
+        ],
+        [
+          "`var` vs `dynamic`",
+          "`var` استنتاج نوع وقت الترجمة (لا أثر أداء)؛ `dynamic` حل وقت التشغيل (أبطأ وأقل أمانًا). لا أستخدم dynamic إلا في حدود COM/JSON ديناميكي."
+        ],
+        [
+          "`IDisposable` و`using`",
+          "Dispose يحرّر موارد غير مُدارة حتميًا (اتصال، ملف، مقبض). `using` يضمن الاستدعاء حتى مع استثناء؛ و`await using` لـIAsyncDisposable."
+        ],
+        [
+          "تنفيذ LINQ المؤجل",
+          "`Where/Select` لا تُنفَّذ حتى التعداد؛ لذلك `ToList()` عند حدود الاستخدام، والحذر من تعداد نفس الـquery مرتين أو من إغلاق اتصال قبل التعداد."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② async/await والتزامن (8)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "السؤال",
+        "الإجابة النموذجية (20–30 ثانية)"
+      ],
+      "rows": [
+        [
+          "`Task` vs `Thread`",
+          "Task تجريد لعمل غير متزامن؛ عملية I/O لا تشغل خيطًا إطلاقًا. Thread خيط نظام تشغيل مكلف. لا أستخدم `new Thread` في خدمات ويب."
+        ],
+        [
+          "متى `ConfigureAwait(false)`؟",
+          "في المكتبات المشتركة لتجنّب العودة للـSynchronizationContext. في ASP.NET Core لا يوجد context، فالفائدة الأدائية مهملة."
+        ],
+        [
+          "لماذا `async void` خطر؟",
+          "لا يمكن انتظاره ولا التقاط استثنائه — يذهب للـUnhandledException ويُسقط العملية. مسموح فقط في event handler."
+        ],
+        [
+          "الـdeadlock الكلاسيكي",
+          "`.Result` أو `.Wait()` داخل context بخيط واحد (UI/قديم ASP.NET) مع حجب الخيط → لا يجد الـcontinuation خيطًا. الحل: async all the way."
+        ],
+        [
+          "`Task.WhenAll` vs انتظار متتالٍ",
+          "WhenAll يوازي المهام ويستغرق زمن الأطول؛ مع الاستثناءات يرمي الأول فقط، لذا أفحص `task.Exception` للكل."
+        ],
+        [
+          "`CancellationToken`",
+          "إلغاء تعاوني: يُمرَّر في كل الطبقات ويُفحص بـ`ThrowIfCancellationRequested`؛ لا يقطع العمل من الخارج قسرًا."
+        ],
+        [
+          "`ValueTask` متى؟",
+          "لعمليات تُكمل تزامنيًا غالبًا (cache hit) لتقليل التخصيص. ممنوع انتظارها مرتين أو استخدامها في WhenAll."
+        ],
+        [
+          "`lock` vs `SemaphoreSlim`",
+          "lock تزامني ولا يقبل await؛ SemaphoreSlim(async) للتحكم بعدد عمليات غير متزامنة (throttling) مثل حد 10 طلبات خارجية."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ الـGC والذاكرة (7)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "السؤال",
+        "الإجابة النموذجية (20–30 ثانية)"
+      ],
+      "rows": [
+        [
+          "أجيال GC",
+          "Gen0 للكائنات قصيرة العمر (رخيص)، Gen1 وسيط، Gen2 طويل العمر (مكلف). الـGC يعمل غالبًا على Gen0 فقط."
+        ],
+        [
+          "متى يعمل الـGC؟",
+          "عندما يتجاوز التخصيص ميزانية الجيل (allocation budget). ليس على مؤقت ولا على «امتلاء ذاكرة» بالضرورة."
+        ],
+        [
+          "LOH",
+          "كائنات ≥85KB تذهب لـLarge Object Heap وتُجمع مع Gen2؛ التجزئة تسبب تفتتًا. الحل: `ArrayPool<T>` أو تصميم يقلل التخصيصات الكبيرة."
+        ],
+        [
+          "`Dispose` vs finalizer",
+          "Dispose حتمي عند معرفتك بالنهاية؛ finalizer غير حتمي ويعمل على خيط GC — يُستخدم فقط لتحرير مقبض غير مُدار مباشر، ومعه `GC.SuppressFinalize`."
+        ],
+        [
+          "تسريب ذاكرة في C#؟",
+          "نعم: اشتراك حدث غير مفصول، `static` cache بلا حدود أو TTL، `HttpClient` جديد لكل طلب، `Task` غير مراقبة، closures تحتفظ بكائنات كبيرة."
+        ],
+        [
+          "Server GC vs Workstation GC",
+          "Server: كومة لكل نواة ومصمم لعرض عالٍ (خوادم)؛ Workstation: كومة واحدة وزمن توقف أقل (سطح مكتب/حاويات صغيرة)."
+        ],
+        [
+          "`Span<T>` / `Memory<T>`",
+          "عرض بلا نسخ على ذاكرة موجودة؛ `Span` ref struct على الـstack لا يمكن تخزينه في حقل ولا استخدامه عبر await — لذلك `Memory<T>` في الحالات غير المتزامنة."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ حقن التبعيات (6)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "السؤال",
+        "الإجابة النموذجية (20–30 ثانية)"
+      ],
+      "rows": [
+        [
+          "الـlifetimes الثلاثة",
+          "Singleton مرة واحدة للعملية، Scoped مرة لكل request/scope، Transient كل طلب حل. القاعدة: الأخف lifetime يفي بالحاجة."
+        ],
+        [
+          "Captive dependency",
+          "حقن Scoped داخل Singleton يجعله يعيش للعملية كلها (وأحيانًا DbContext مشتركًا بين طلبات) → أخطاء تزامن وذاكرة."
+        ],
+        [
+          "لماذا لا حقن Scoped في مُنشئ Middleware؟",
+          "الـMiddleware يُنشأ مرة واحدة (singleton). الحقن الصحيح في `InvokeAsync(HttpContext, IService)` أو عبر `RequestServices`."
+        ],
+        [
+          "كيف تكتشف الخطأ مبكرًا؟",
+          "`ValidateScopes` و`ValidateOnBuild` في بيئة التطوير — ترمي استثناءً عند البناء لا بعد أسبوع في الإنتاج."
+        ],
+        [
+          "مشكلة Service Locator",
+          "`provider.GetService<T>()` داخل الكود يخفي التبعيات ويمنع التحقق وقت البناء ويصعّب الاختبار."
+        ],
+        [
+          "`IOptions` vs Snapshot vs Monitor",
+          "IOptions: قيمة واحدة عند البدء؛ Snapshot: لكل request؛ Monitor: يتغير مع `IOptionsChangeTokenSource` (مثل إعدادات تتبدل من ملف)."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ EF Core والبيانات (8)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "السؤال",
+        "الإجابة النموذجية (20–30 ثانية)"
+      ],
+      "rows": [
+        [
+          "متى `AsNoTracking`؟",
+          "في القراءة فقط؛ يوقف الـchange tracker فيقل التخصيص. لا تستخدمه إذا كنت ستعدّل وتريد SaveChanges."
+        ],
+        [
+          "مشكلة N+1",
+          "استعلام رئيسي + استعلام لكل عنصر عند الوصول لعلاقة كسولة. الحل: `Include` أو projection إلى DTO أو `AsSplitQuery`."
+        ],
+        [
+          "`AsSplitQuery` vs استعلام واحد",
+          "التقسيم يمنع الانفجار الديكارتي مع عدة collections، لكنه يزيد رحلات الشبكة ويحتاج ترتيبًا (`OrderBy` رئيسي) لضمان التناسق."
+        ],
+        [
+          "`ExecuteUpdate/Delete`",
+          "تحديث/حذف في قاعدة البيانات مباشرة بلا تحميل ولا tracker — أسرع بكثير للجمل الجماعية، لكنه لا يشغّل SaveChanges ولا interceptors التغيير."
+        ],
+        [
+          "الاستعلامات المُجمَّعة (compiled)",
+          "`EF.CompileAsyncQuery` يوفّر تكلفة ترجمة الشجرة للاستعلامات الساخنة المتكررة."
+        ],
+        [
+          "قواعد الـMigrations",
+          "لا تعدّل migration طُبّقت؛ أضف migration جديدًا. وللتغييرات الخطرة (حذف عمود) افصل البيانات عن الشكل في خطوتين."
+        ],
+        [
+          "التزامن المتفائل",
+          "`rowversion`/concurrency token + فحص `DbUpdateConcurrencyException` ثم إعادة القراءة والدمج أو رفض التعديل."
+        ],
+        [
+          "كيف تقيس أداء استعلام؟",
+          "`ToQueryString()` + خطة التنفيذ (`EXPLAIN`) + قياس من OpenTelemetry؛ الفهرس المركّب حسب ترتيب WHERE ثم ORDER."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑥ ASP.NET Core والـpipeline (8)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "السؤال",
+        "الإجابة النموذجية (20–30 ثانية)"
+      ],
+      "rows": [
+        [
+          "ترتيب الـmiddleware",
+          "ExceptionHandler → HSTS/HTTPS → StaticFiles → Routing → CORS → Authentication → Authorization → Endpoints. أي خطأ في الترتيب يعني مصادقة لا تعمل أو استثناءات بلا معالجة."
+        ],
+        [
+          "`UseRouting` vs `UseEndpoints`",
+          "UseRouting يطابق المسار (ويختار endpoint)، UseEndpoints ينفّذه. الفلاتر تعمل داخل تنفيذ الـendpoint."
+        ],
+        [
+          "Middleware vs Filter",
+          "Middleware عام على كل الطلبات ولا يعرف الـModelState؛ Filter داخل MVC/minimal endpoint ويمكنه الوصول للـActionArguments والنتيجة."
+        ],
+        [
+          "`IActionResult` vs `ActionResult<T>`",
+          "الأول نتيجة فقط؛ الثاني يوثّق النوع للـOpenAPI ويدعم القيمة أو نتيجة خطأ مع Swagger أدق."
+        ],
+        [
+          "Model binding وvalidation",
+          "`[ApiController]` يفعّل ربط المصدر تلقائيًا ويرجع 400 تلقائيًا عند فشل `ModelState`."
+        ],
+        [
+          "خلف reverse proxy",
+          "اضبط `ForwardedHeaders` وإلا ترى IP وscheme خطأ؛ واحذر الثقة العمياء بالهيدرز من الإنترنت."
+        ],
+        [
+          "Logging منظّم",
+          "استخدم template بمعاملات (`LogInformation(«Order {OrderId}», id)`) لا string interpolation، حتى تبقى الحقول قابلة للاستعلام."
+        ],
+        [
+          "Minimal API vs Controllers",
+          "Minimal أسرع بدءًا وأقل رسميًا لواجهات صغيرة؛ Controllers أفضل للفرق الكبيرة والاتساق والاصطلاحات."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑦ الاختبارات (7)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "السؤال",
+        "الإجابة النموذجية (20–30 ثانية)"
+      ],
+      "rows": [
+        [
+          "هرم الاختبارات",
+          "كثير unit سريع، أقل integration على حدود حقيقية، وقليل E2E. العكس (هرم مقلوب) يعطي بطئًا وflakiness."
+        ],
+        [
+          "`WebApplicationFactory`",
+          "يشغّل الـpipeline كاملًا في الذاكرة لاختبار endpoint/مصادقة/فلاتر بلا شبكة حقيقية."
+        ],
+        [
+          "InMemory vs Testcontainers",
+          "InMemory لا ينفّذ SQL فعليًا فيخفي أخطاء استعلامات وقيود. للثقة: Testcontainers (Postgres/SQL Server حقيقي) للحالات الحرجة."
+        ],
+        [
+          "اختبارات flaky",
+          "سببها غالبًا وقت أو عشوائية أو شبكة أو ترتيب. الحل: `TimeProvider` بدل `DateTime.Now`، وبيانات ثابتة seed، وتنظيف حالة بين الاختبارات."
+        ],
+        [
+          "Mocking",
+          "لا تختبر الـmock؛ اختبر السلوك. NSubstitute للمرونة، وفضّل fake بسيطًا على mock معقّد لبوابة I/O."
+        ],
+        [
+          "Arrange/Act/Assert",
+          "اختبار واحد لكل سلوك، اسم يصف النتيجة المتوقعة (`Refund_WhenOrderAlreadyRefunded_Throws`)."
+        ],
+        [
+          "تغطية الكود",
+          "رقم مضلل بلا mutation testing؛ تغطية 70% مع اختبارات معنى أقوى من 100% مع assertions شكلية."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑧ الأمان (8)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "السؤال",
+        "الإجابة النموذجية (20–30 ثانية)"
+      ],
+      "rows": [
+        [
+          "XSS",
+          "ترميز output افتراضيًا في Razor، وتجنّب `Html.Raw`؛ وCSP صارم كطبقة ثانية."
+        ],
+        [
+          "SQL Injection",
+          "استعلامات مُعاملة (EF/LINQ أو `FromSqlInterpolated`)؛ لا تجمع نص SQL من مدخلات."
+        ],
+        [
+          "CSRF",
+          "SameSite=Lax/Strict + antiforgery token للـcookie-based endpoints؛ لا تحتاجه كثيرًا مع Bearer tokens."
+        ],
+        [
+          "التحقق من JWT",
+          "issuer + audience + lifetime + signature. `ValidateIssuer=false` قرار مؤقت يجب أن يُبرَّر لا أن يُنسى."
+        ],
+        [
+          "تخزين كلمات السر",
+          "PBKDF2/Argon2id/bcrypt مع salt وبلا تشفير قابل للعكس؛ لا MD5/SHA1 مهما كان."
+        ],
+        [
+          "الأسرار",
+          "User-Secrets للتطوير، Key Vault/متغيرات بيئة للإنتاج، ومنع الـcommit؛ وتسريب git history يُعالَج بتدوير السر لا بحذف الـcommit فقط."
+        ],
+        [
+          "Policies vs Roles",
+          "Policies مبنية على requirements (مثل `CanEditOrder`) أقرب للسياسة؛ الأدوار تفصيل تنفيذ."
+        ],
+        [
+          "Rate limiting والتعداد",
+          "حدّ الطلبات على المصادقة، ورسائل خطأ موحّدة («بيانات دخول غير صحيحة») لتقليل كشف وجود البريد."
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "مثال يُطلب كثيرًا: تحديد التوازي مع الإلغاء",
+      "filename": "src/Samples/Throttle.cs",
+      "code": "\nusing System.Collections.Concurrent;\n\npublic static class Throttle\n{\n    // شغّل 50 مهمة I/O بحد أقصى 8 في نفس الوقت، مع احترام الإلغاء.\n    public static async Task<TResult[]> RunAsync<TResult>(\n        IEnumerable<Func<CancellationToken, Task<TResult>>> jobs,\n        int maxConcurrency = 8,\n        CancellationToken ct = default)\n    {\n        ArgumentOutOfRangeException.ThrowIfLessThan(maxConcurrency, 1);\n\n        using var gate = new SemaphoreSlim(maxConcurrency, maxConcurrency);\n        var results = new ConcurrentBag<(int Index, TResult Value)>();\n\n        var tasks = jobs.Select(async (job, index) =>\n        {\n            await gate.WaitAsync(ct).ConfigureAwait(false);\n            try\n            {\n                var value = await job(ct).ConfigureAwait(false);\n                results.Add((index, value));\n            }\n            finally\n            {\n                gate.Release();   // الإفراج في finally: خطأ في مهمة لا يجفف الحد\n            }\n        });\n\n        await Task.WhenAll(tasks).ConfigureAwait(false);\n\n        // أعِد الترتيب الأصلي — ConcurrentBag لا يحفظه.\n        return results.OrderBy(r => r.Index).Select(r => r.Value).ToArray();\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "ملاحظة على المثال",
+      "md": "المحاور عادة يسأل بعدها: **«لو أُلغي الطلب في المنتصف؟»** الجواب: `WaitAsync(ct)` يرمي `OperationCanceledException`، و`finally` يحرر العدّاد، و`WhenAll` يعيد الاستثناء — لا تبتلعه في `catch` عام. و**«لو أردت معرفة أي المهام فشلت؟»** لا تستخدم `WhenAll` وحدها بل افحص `task.Exception` لكل مهمة."
+    },
+    {
+      "type": "quiz",
+      "title": "اختبار سريع",
+      "intro": "٧ أسئلة من البنك.",
+      "questions": [
+        {
+          "q": "ما أخطر نتيجة لحقن Scoped داخل Singleton؟",
+          "options": [
+            "بطء بدء التطبيق",
+            "DbContext مشترك بين طلبات وأخطاء تزامن",
+            "استثناء ترجمة",
+            "تسريب اتصالات فقط"
+          ],
+          "answer": 1,
+          "explain": "الـcaptive dependency يجعل الكائن Scoped يعيش للعملية كلها — وهذا يعني DbContext مشتركًا بين threads."
+        },
+        {
+          "q": "`async void` في خدمة ويب يعني:",
+          "options": [
+            "أداء أفضل",
+            "استثناء لا يمكن التقاطه عبر await",
+            "يعمل مثل async Task",
+            "تحذير فقط من المحلل"
+          ],
+          "answer": 1,
+          "explain": "لا يمكن انتظاره ولا التقاط استثنائه؛ استخدم `async Task` دائمًا عدا event handlers."
+        },
+        {
+          "q": "السبب الحقيقي لمشكلة N+1:",
+          "options": [
+            "قاعدة البيانات ضعيفة",
+            "استعلام لكل عنصر عند تحميل علاقة",
+            "غياب فهرس",
+            "استخدام DTO"
+          ],
+          "answer": 1,
+          "explain": "العدد الخطي من الاستعلامات هو المشكلة، والحل Include أو projection."
+        },
+        {
+          "q": "متى تضبط `ConfigureAwait(false)`؟",
+          "options": [
+            "في كل مكان دائمًا",
+            "في مكتبات مشتركة فقط",
+            "في Controllers فقط",
+            "لا تستخدمها أبدًا"
+          ],
+          "answer": 1,
+          "explain": "تجنب العودة لـSynchronizationContext في المكتبات؛ في ASP.NET Core لا يوجد context أصلًا."
+        },
+        {
+          "q": "أي middleware يجب أن يكون أولًا لالتقاط كل استثناءات الـpipeline؟",
+          "options": [
+            "Authorization",
+            "ExceptionHandler",
+            "StaticFiles",
+            "Routing"
+          ],
+          "answer": 1,
+          "explain": "بعد StaticFiles وRouting قد لا يرى الاستثناءات؛ ضعه في مقدمة الـpipeline."
+        },
+        {
+          "q": "`ExecuteUpdateAsync` لا يشغّل:",
+          "options": [
+            "WHERE",
+            "SaveChanges وinterceptors",
+            "SQL",
+            "الـtransaction"
+          ],
+          "answer": 1,
+          "explain": "ينفّذ SQL مباشرة خارج الـchange tracker، لذلك لا تغييرات متتبعة ولا interceptors تعديل."
+        },
+        {
+          "q": "أفضل اختبار لقيد فريد في قاعدة البيانات:",
+          "options": [
+            "InMemory provider",
+            "Mock لـDbContext",
+            "Testcontainers على نفس محرك القاعدة",
+            "اختبار وحدة على الـrepository"
+          ],
+          "answer": 2,
+          "explain": "قيد UNIQUE سلوك محرك القاعدة؛ InMemory لا يحاكيه بدقة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام",
+      "intro": "لا تحفظ — سجّل.",
+      "items": [
+        {
+          "id": "s10-m3-l2-t1",
+          "title": "مهمة: 20 سؤالًا مسجّلة صوتيًا",
+          "md": "اختر 20 سؤالًا من البنك (2 من كل قسم على الأقل، بضمنها 4 من الأقسام التي تضعف فيها)، وسجّل إجابتك مرتين: الأولى حرة، والثانية بنمط «تعريف + سبب + مثال من مشروعك». قارن المدة والوضوح.",
+          "criteria": [
+            "20 تسجيلًا بين 25 و45 ثانية لكل إجابة.",
+            "كل إجابة تحتوي مثالًا محددًا (اسم مشروع/رقم/حادثة).",
+            "4 أسئلة على الأقل كان جوابك فيها بلا مثال في المحاولة الأولى ثم أضفت مثالًا.",
+            "ملف واحد `docs/interview/qa-log.md` بجدول: سؤال · قوة الإجابة (1–5) · ما ينقص.",
+            "3 أسئلة تصفها بـ«لا أعرف» مكتوب لها خطة تعلّم أسبوع."
+          ],
+          "hint": "لا تسجّل 20 مرة في يوم واحد. 5 أسئلة يوميًا لمدة 4 أيام — الصوت يتحسن بالنوم لا بالتكرار في نفس الجلسة. واقرأ سؤالك بصوت عالٍ قبل التسجيل لتفصل التفكير عن الأداء.",
+          "solution": "النتيجة: بنك شخصي بأمثلة لا بنك عام. الفرق بين مرشح «يعرف» ومرشح «اشتغل» يُسمَع في المثال لا في التعريف.",
+          "resources": [
+            "https://learn.microsoft.com/dotnet/",
+            "https://learn.microsoft.com/ef/core/"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "title": "نقاط تحقق",
+      "items": [
+        "تستطيع الإجابة عن أي سؤال من الستين في 30 ثانية بمثال.",
+        "تعرف ثلاثة أقسام تحتاج تعميقًا وتعرف مصدر التعلم لها.",
+        "تجيب عن «لا أعرف» بمنطق جزئي وخطة تحقق لا باعتذار.",
+        "تشرح مثال `SemaphoreSlim` وتتعامل مع سؤال الإلغاء والفشل الجزئي."
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "C# docs",
+          "url": "https://learn.microsoft.com/dotnet/csharp/"
+        },
+        {
+          "label": "ASP.NET Core docs",
+          "url": "https://learn.microsoft.com/aspnet/core/"
+        },
+        {
+          "label": "EF Core docs",
+          "url": "https://learn.microsoft.com/ef/core/"
+        },
+        {
+          "label": "Async guidance (David Fowler)",
+          "url": "https://github.com/davidfowl/AspNetCoreDiagnosticScenarios/blob/master/AsyncGuidance.md"
+        }
+      ]
+    }
+  ]
+}

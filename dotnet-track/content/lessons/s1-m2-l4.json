@@ -1,0 +1,234 @@
+{
+  "id": "s1-m2-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nاختبارات الـUnit بتأكد إن **منطقك** صح. لكنها ما بتأكدش إن: الـrouting وصل للـendpoint الصح،\nالـvalidation اشتغل، الـauthorization رفض الطلب، الـmodel binding فكّ الـJSON، الـEF ترجم الاستعلام،\nوالـserialization رجّع الشكل المتفق عليه. كل دول بيحصلوا في **الـpipeline الحقيقي** — وده بالظبط\nاللي `WebApplicationFactory` بيشغّله في الذاكرة: تطبيقك كامل، بدون نشر، مع `HttpClient` حقيقي.\n\nالدرس ده: تبني harness واحد نظيف، تبدّل فيه التبعيات (قاعدة البيانات، المصادقة، الخدمات الخارجية)،\nوتكتب اختبارات تغطي النجاح والفشل والصلاحيات.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "WebApplicationFactory<TEntryPoint>",
+          "def": "بيشغّل تطبيقك (Kestrel في الذاكرة/test server) ويعطيك `HttpClient` مربوط بيه."
+        },
+        {
+          "term": "ConfigureTestServices",
+          "def": "آخر تسجيل في DI — عشان كده بيتجاوز تسجيلات التطبيق الحقيقية (مهم جدًا)."
+        },
+        {
+          "term": "RemoveAll<T>",
+          "def": "يمسح كل التسجيلات لنوع معين قبل ما تسجل بديلك (مثال: DbContextOptions)."
+        },
+        {
+          "term": "WithWebHostBuilder",
+          "def": "ينسخ الـfactory بإعدادات مختلفة لاختبار معين (بدون تلويث الباقي)."
+        },
+        {
+          "term": "TestAuthHandler",
+          "def": "مخطط مصادقة للاختبارات يتحكم في الهوية والـclaims — عشان تختبر 401/403/200 بمزاجك."
+        },
+        {
+          "term": "IAsyncLifetime",
+          "def": "بدء/إنهاء غير متزامن للـfixture (تشغيل container، ترحيل قاعدة، بذر بيانات)."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزمة المطلوبة",
+      "code": "\ndotnet add Shop.Tests package Microsoft.AspNetCore.Mvc.Testing\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Program.cs (آخر الملف)",
+      "title": "خطوة صغيرة ضرورية: اجعل Program مرئيًا للاختبارات",
+      "code": "\n// top-level statements بتولّد كلاس Program داخلي (internal).\n// أضف السطر ده في آخر Program.cs عشان WebApplicationFactory<Program> تشتغل:\npublic partial class Program;\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الـHarness: factory واحد لكل الاختبارات"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Tests/CustomWebApplicationFactory.cs",
+      "title": "بيئة Testing + استبدال قاعدة البيانات + المصادقة",
+      "code": "\nusing Microsoft.AspNetCore.Hosting;\nusing Microsoft.AspNetCore.Mvc.Testing;\nusing Microsoft.AspNetCore.TestHost;\nusing Microsoft.Data.Sqlite;\nusing Microsoft.EntityFrameworkCore;\nusing Microsoft.Extensions.DependencyInjection;\nusing Microsoft.Extensions.DependencyInjection.Extensions;\n\npublic sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>, IAsyncLifetime\n{\n    // SQLite في الذاكرة محتاج اتصال مفتوح طول عمر الـfactory\n    private SqliteConnection? _connection;\n\n    public Guid SeededCustomerId { get; private set; }\n    public Guid SeededProductId { get; private set; }\n\n    protected override void ConfigureWebHost(IWebHostBuilder builder)\n    {\n        builder.UseEnvironment(\"Testing\");          // ← appsettings.Testing.json لو موجود\n\n        builder.ConfigureTestServices(services =>\n        {\n            // 1) امسح تسجيلات قاعدة البيانات الحقيقية\n            services.RemoveAll(typeof(DbContextOptions<AppDbContext>));\n            services.RemoveAll<AppDbContext>();\n\n            _connection = new SqliteConnection(\"DataSource=:memory:\");\n            _connection.Open();\n            services.AddDbContext<AppDbContext>(o => o.UseSqlite(_connection));\n\n            // 2) أي خدمة خارجية → fake (لا شبكة في الاختبارات)\n            services.RemoveAll<IPaymentGateway>();\n            services.AddSingleton<IPaymentGateway, FakePaymentGateway>();\n\n            services.RemoveAll<IOrderNotifier>();\n            services.AddSingleton<IOrderNotifier, RecordingNotifier>();\n\n            // 3) المصادقة: مخطط اختباري نتحكم في هويته\n            services.AddAuthentication(\"Test\")\n                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(\"Test\", _ => { });\n            services.AddAuthorization();           // السياسات الحقيقية تفضل شغالة\n\n            // 4) إبطال أي BackgroundService بيستهلك موارد أو بيلخبط البيانات\n            services.RemoveAll<IHostedService>();\n        });\n    }\n\n    public async ValueTask InitializeAsync()\n    {\n        await using var scope = Services.CreateAsyncScope();\n        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();\n        await db.Database.MigrateAsync();           // ✓ نفس مسار الإنتاج\n\n        // بيانات أساسية ثابتة لكل الاختبارات\n        var customer = new Customer { Id = Guid.NewGuid(), Email = \"seed@example.com\", Country = \"EG\" };\n        var product = new Product { Id = Guid.NewGuid(), Name = \"Widget\", Price = 100m, Stock = 50 };\n        db.Customers.Add(customer);\n        db.Products.Add(product);\n        await db.SaveChangesAsync();\n\n        SeededCustomerId = customer.Id;\n        SeededProductId = product.Id;\n    }\n\n    public async ValueTask DisposeAsync()\n    {\n        if (_connection is not null) await _connection.DisposeAsync();\n    }\n\n    /// <summary>عميل بإعدادات صريحة: بدون redirect تلقائي عشان نقرأ 302/401 بصدق.</summary>\n    public HttpClient CreateAuthenticatedClient(params string[] roles)\n    {\n        TestAuthHandler.NextUser = new TestUser(\"test-user\", roles);\n        return CreateClient(new WebApplicationFactoryClientOptions\n        {\n            AllowAutoRedirect = false,\n            HandleCookies = true,\n        });\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Tests/TestAuthHandler.cs",
+      "title": "مصادقة اختبارية قابلة للتحكم (مش إلغاء للأمان)",
+      "code": "\nusing System.Security.Claims;\nusing System.Text.Encodings.Web;\nusing Microsoft.AspNetCore.Authentication;\nusing Microsoft.Extensions.Logging;\nusing Microsoft.Extensions.Options;\n\npublic sealed record TestUser(string Id, IReadOnlyList<string> Roles);\n\npublic sealed class TestAuthHandler(\n    IOptionsMonitor<AuthenticationSchemeOptions> options,\n    ILoggerFactory logger,\n    UrlEncoder encoder)\n    : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)\n{\n    /// <summary>null = مستخدم مجهول (يُنتج 401).</summary>\n    public static TestUser? NextUser { get; set; }\n\n    protected override Task<AuthenticateResult> HandleAuthenticateAsync()\n    {\n        if (NextUser is null) return Task.FromResult(AuthenticateResult.NoResult());\n\n        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, NextUser.Id) };\n        claims.AddRange(NextUser.Roles.Select(r => new Claim(ClaimTypes.Role, r)));\n\n        var identity = new ClaimsIdentity(claims, Scheme.Name);\n        var principal = new ClaimsPrincipal(identity);\n        return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, Scheme.Name)));\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "خلي بالك",
+      "md": "\n- `ConfigureTestServices` بيتنفّذ **بعد** تسجيلات التطبيق، فبيكسب. لو استخدمت `ConfigureServices` عادي ممكن ترتيبك يتلخبط.\n- **لا تختبر على قاعدة الإنتاج**. أبدًا. الـfactory لازم يبدّل الـconnection string.\n- `services.RemoveAll<IHostedService>()` مهم: أي worker بيشتغل وقت الاختبارات بيلخبط البيانات وبيبطّئ.\n- اختبارات الـAPI **بتشارك حالة** قاعدة البيانات — استخدم معرّفات فريدة لكل اختبار، أو عطّل التوازي (`[Collection]`).\n- الـ`TestAuthHandler` بيحاكي الهوية بس؛ **السياسات (`[Authorize(Policy=…)]`) تفضل مُطبَّقة**، وده المقصود.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الاختبارات نفسها"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Tests/OrdersApiTests.cs",
+      "title": "نجاح + تحقق + مجهول + ممنوع",
+      "code": "\n[Collection(\"Api\")]                                  // مشاركة factory واحدة بلا توازي\npublic sealed class OrdersApiTests(CustomWebApplicationFactory factory)\n{\n    [Fact]\n    public async Task POST_orders_as_customer_returns_201_and_persists()\n    {\n        var client = factory.CreateAuthenticatedClient(\"customer\");\n\n        var response = await client.PostAsJsonAsync(\"/api/orders\", new\n        {\n            customerId = factory.SeededCustomerId,\n            lines = new[] { new { productId = factory.SeededProductId, quantity = 2, unitPrice = 100m } },\n        });\n\n        response.StatusCode.Should().Be(HttpStatusCode.Created);\n        var body = await response.Content.ReadFromJsonAsync<OrderCreatedResponse>();\n        body!.Id.Should().NotBeEmpty();\n\n        // الأثر في قاعدة البيانات — مش بس الاستجابة\n        await using var scope = factory.Services.CreateAsyncScope();\n        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();\n        var order = await db.Orders.Include(o => o.Lines).SingleAsync(o => o.Id == body.Id);\n        order.Total.Should().Be(228m);\n        order.Lines.Should().HaveCount(1);\n    }\n\n    [Fact]\n    public async Task POST_orders_with_invalid_quantity_returns_400_problem_json()\n    {\n        var client = factory.CreateAuthenticatedClient(\"customer\");\n\n        var response = await client.PostAsJsonAsync(\"/api/orders\", new\n        {\n            customerId = factory.SeededCustomerId,\n            lines = new[] { new { productId = factory.SeededProductId, quantity = 0, unitPrice = 100m } },\n        });\n\n        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);\n        response.Content.Headers.ContentType?.MediaType.Should().Be(\"application/problem+json\");\n\n        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();\n        problem!.Errors.Should().ContainKey(k => k.Contains(\"Quantity\"));\n        response.Headers.GetValues(\"X-Correlation-Id\").Single().Should().NotBeNullOrWhiteSpace();\n    }\n\n    [Fact]\n    public async Task POST_orders_anonymously_returns_401()\n    {\n        var client = factory.CreateClient();          // TestAuthHandler.NextUser = null\n\n        var response = await client.PostAsJsonAsync(\"/api/orders\", new { customerId = factory.SeededCustomerId });\n\n        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);\n    }\n\n    [Fact]\n    public async Task DELETE_order_as_customer_returns_403()\n    {\n        var client = factory.CreateAuthenticatedClient(\"customer\");   // الدور المطلوب: admin\n\n        var response = await client.DeleteAsync(\"/api/orders/\" + Guid.NewGuid());\n\n        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);\n    }\n\n    [Fact]\n    public async Task GET_unknown_order_returns_404_with_traceId()\n    {\n        var client = factory.CreateAuthenticatedClient(\"customer\");\n\n        var response = await client.GetAsync($\"/api/orders/{Guid.NewGuid()}\");\n\n        response.StatusCode.Should().Be(HttpStatusCode.NotFound);\n        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();\n        problem!.Extensions.Should().ContainKey(\"traceId\");\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Tests/PerTestOverrides.cs",
+      "title": "إعداد مختلف لاختبار واحد بدون تلويث الباقي",
+      "code": "\npublic sealed class TimeoutBehaviourTests(CustomWebApplicationFactory factory)\n{\n    [Fact]\n    public async Task Payment_gateway_timeout_returns_504_problem()\n    {\n        var client = factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>\n        {\n            services.RemoveAll<IPaymentGateway>();\n            services.AddSingleton<IPaymentGateway, HangingPaymentGateway>();   // بيرمي TimeoutException\n        })).CreateAuthenticatedClient(\"customer\");\n\n        var response = await client.PostAsJsonAsync($\"/api/orders/{Guid.NewGuid()}/pay\", new { amount = 100m });\n\n        response.StatusCode.Should().Be(HttpStatusCode.GatewayTimeout);\n        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();\n        problem!.Title.Should().Be(\"تعذّر إتمام الدفع\");\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "عايز تختبر",
+        "التقنية"
+      ],
+      "rows": [
+        [
+          "مسار نجاح عبر الـpipeline",
+          "`factory.CreateClient()` + POST/GET حقيقي"
+        ],
+        [
+          "عقد الأخطاء (problem+json)",
+          "اقرأ `ProblemDetails`/`ValidationProblemDetails` من الجسم"
+        ],
+        [
+          "الصلاحيات (401/403)",
+          "`TestAuthHandler` بأدوار مختلفة"
+        ],
+        [
+          "سلوك تحت فشل تبعية",
+          "`WithWebHostBuilder` + fake بيرمي الاستثناء المطلوب"
+        ],
+        [
+          "الأثر على البيانات",
+          "scope من `factory.Services` واقرأ من `DbContext`"
+        ],
+        [
+          "رؤوس/كاش/حدود",
+          "`WebApplicationFactoryClientOptions` + فحص `response.Headers`"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أبني `CustomWebApplicationFactory` يبدّل قاعدة البيانات والمصادقة والخدمات الخارجية.",
+        "أكتب اختبارات تغطي 201 و400 و401 و403 و404 على endpoint واحد.",
+        "أستخدم `WithWebHostBuilder` لاختبار سلوك فشل تبعية معينة.",
+        "أتحقق من الأثر في قاعدة البيانات مش من الاستجابة فقط."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه `ConfigureTestServices` مش `ConfigureServices` في الـfactory؟",
+          "options": [
+            "أسرع",
+            "بيتسجّل بعد خدمات التطبيق فيكسب الاستبدال",
+            "بيدعم SQLite فقط",
+            "بيتجاهل المصادقة تلقائيًا"
+          ],
+          "answer": 1,
+          "explain": "ترتيب التسجيل بيحدد الفائز للخدمات من نفس النوع. `ConfigureTestServices` هو آخر خطوة في بناء الحاوية."
+        },
+        {
+          "q": "SQLite in-memory مع EF Core: إيه الشرط اللي الناس بتنساه؟",
+          "options": [
+            "لازم تشغّل `Migrate` مرتين",
+            "لازم تفضل `SqliteConnection` مفتوحة طول عمر الاختبارات، وإلا القاعدة بتختفي",
+            "لازم تستخدم `EnsureCreated` فقط",
+            "لازم تعمل Docker"
+          ],
+          "answer": 1,
+          "explain": "قاعدة `:memory:` موجودة طالما الاتصال مفتوح. لو قفل، اختفت البيانات — عشان كده الـconnection يعيش في الـfixture."
+        },
+        {
+          "q": "اختبارك نجح محليًا بيفشل في CI بشكل متقطع. أرجح سبب؟",
+          "options": [
+            "CI أبطأ",
+            "اختبارات بتشارك قاعدة بيانات واحدة بالتوازي وبتلخبط بيانات بعض",
+            "الإصدارات مختلفة",
+            "الحزم ناقصة"
+          ],
+          "answer": 1,
+          "explain": "xUnit بيشغّل collections بالتوازي. استخدم `[Collection(\"Api\")]` لكل الكلاسات المشتركة في factory، أو `DisableParallelization`، أو اعزل البيانات بمعرّفات فريدة."
+        },
+        {
+          "q": "إيه الفائدة من `AllowAutoRedirect = false` في `CreateClient`؟",
+          "options": [
+            "تسريع الاختبارات",
+            "تشوف 301/302 الحقيقية بدل ما العميل يتبعها وتخفي النتيجة",
+            "تعطيل الكوكيز",
+            "تجاوز HTTPS"
+          ],
+          "answer": 1,
+          "explain": "الافتراضي يتبع التحويلات، فاختبار «HTTP يتحول لـHTTPS» مثلًا هيفقد معناه."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "Harness كامل لـAPI عندك",
+          "md": "ابنِ `CustomWebApplicationFactory` لمشروعك مع: SQLite/Testcontainers، استبدال الخدمات الخارجية بـfakes، `TestAuthHandler`، وإبطال الـhosted services. وبعدين اكتب 5 اختبارات: نجاح، 400، 401، 403، 404.",
+          "criteria": [
+            "مفيش أي طلب شبكة أو خدمة خارجية أثناء الاختبارات (افصل النت وجرّب)",
+            "الاختبارات الخمسة ناجحة ومتكررة (شغّلها 3 مرات)",
+            "اختبار واحد على الأقل بيتحقق من الأثر في قاعدة البيانات",
+            "اختبار واحد بيتحقق من `application/problem+json` و`traceId`"
+          ],
+          "hint": "لو ظهر خطأ `Unable to find type Program` أضف `public partial class Program;` في آخر Program.cs، ولو `InvalidOperationException: No service for type` راجع `RemoveAll` قبل `Add`."
+        },
+        {
+          "id": "t2",
+          "title": "اختبار فشل تبعية",
+          "md": "باستخدام `WithWebHostBuilder`، اجعل بوابة الدفع ترمي `TimeoutException` وأكد إن الـAPI بيرجع 504 (مش 500) مع problem+json.",
+          "criteria": [
+            "الكود بيتعامل مع الاستثناء ويترجمه لـ504",
+            "الاختبار يفشل لو رجّعت الحالة لـ500",
+            "ما أثّرتش على بقية الاختبارات (التجاوز محلي)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Integration tests in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/test/integration-tests"
+        },
+        {
+          "label": "WebApplicationFactory API",
+          "url": "https://learn.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.testing.webapplicationfactory-1"
+        },
+        {
+          "label": "Testing authorization",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authorization/"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,303 @@
+{
+  "id": "s3-m1-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nEF Core كافي لـ95% من الشغل — لكن فيه 5% بيكون فيها SQL الخام أسرع أو أوضح أو الإمكانية الوحيدة:\nتقارير بتجميعات معقدة، قراءات عالية الحجم بمسارات ساخنة، window functions وCTEs،\nوقراءات ضخمة للتصدير. هنا **Dapper** بييجي: micro-ORM بيعمل mapping من صفوف لـobjects بأقل overhead.\n\nالدرس ده: إمتى تستحق Dapper، كتابة استعلامات آمنة ضد SQL injection، الـmapping والأنواع المخصصة،\nوأهم نقطة عملية: **مشاركة الاتصال والمعاملة** بين EF Core وDapper في نفس مسار العمل.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Micro-ORM",
+          "def": "طبقة mapping رفيعة فوق ADO.NET: بلا change tracking ولا migrations ولا LINQ provider."
+        },
+        {
+          "term": "`QueryAsync<T>`",
+          "def": "استعلام يرجع مجموعة كائنات من النوع T."
+        },
+        {
+          "term": "`ExecuteAsync`",
+          "def": "تنفيذ INSERT/UPDATE/DELETE أو DDL؛ يرجع عدد الصفوف المتأثرة."
+        },
+        {
+          "term": "`QueryMultipleAsync`",
+          "def": "عدة نتائج من round-trip واحد (تقرير فيه أكثر من جدول) — توفير شبكة حقيقي."
+        },
+        {
+          "term": "Multi-mapping",
+          "def": "تقسيم صفوف JOIN إلى أكثر من كائن (`Query<Order, Customer, Order>(…, splitOn: \"customer_id\")`)."
+        },
+        {
+          "term": "`CommandDefinition`",
+          "def": "الطريقة الكاملة: sql + params + transaction + timeout + **CancellationToken**."
+        },
+        {
+          "term": "`SqlMapper.AddTypeHandler`",
+          "def": "تعليم Dapper أنواعك المخصصة (DateOnly, Money, JSON columns)."
+        },
+        {
+          "term": "Parameters",
+          "def": "قيم مُمرَّرة كـparameters (لا دمج نصوص) — الحماية الوحيدة الحقيقية من SQL injection."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "EF Core",
+        "Dapper",
+        "ADO.NET خام"
+      ],
+      "rows": [
+        [
+          "سرعة القراءة (projections)",
+          "جيدة",
+          "أعلى (mapping أخف)",
+          "الأعلى نظريًا (بلا mapping)"
+        ],
+        [
+          "كتابة/تحديث كيانات",
+          "ممتاز (tracking + graph)",
+          "يدوي (SQL صريح)",
+          "يدوي"
+        ],
+        [
+          "SQL معقد (CTE/window)",
+          "محدود (raw SQL متاح)",
+          "طبيعي",
+          "طبيعي"
+        ],
+        [
+          "مigrations وتطور النموذج",
+          "مدمج",
+          "✗ (عليك)",
+          "✗"
+        ],
+        [
+          "حماية من injection",
+          "مدمجة في LINQ",
+          "بالـparameters",
+          "بالـparameters"
+        ],
+        [
+          "منحنى التعلم/الإنتاجية",
+          "أعلى إنتاجية",
+          "متوسط",
+          "أقل"
+        ],
+        [
+          "الأنسب",
+          "الكتابة + منطق العمل + التطوير السريع",
+          "مسارات قراءة ساخنة وتقارير",
+          "حالات نادرة جدًا (bulk COPY)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قاعدة الاستخدام في مشروع حقيقي",
+      "md": "\n**EF Core للكتابة ونموذج البيانات. Dapper للقراءات الساخنة والتقارير.**\nمش «نختار واحد» — الاتنين بيتشاركوا نفس الـconnection ونفس الـtransaction (القسم 3).\nولا تحط Dapper في الـDomain: عرّف واجهة قراءة (`IOrderReadModel`) ونفّذها بـDapper في Infrastructure.\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Api package Dapper\n# Npgsql / Microsoft.Data.SqlClient موجودين أصلًا مع EF Core\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) الأساسيات بأمان"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Infrastructure/ReadModels/OrderReadModel.cs",
+      "title": "قراءة ساخنة: projection دقيق + parameters + CancellationToken",
+      "code": "\nusing Dapper;\n\npublic sealed class OrderReadModel(IDbConnectionFactory connections) : IOrderReadModel\n{\n    /// <summary>\n    /// ★ SQL ثابت تمامًا؛ كل المدخلات parameters. لا string interpolation ولا concat أبدًا.\n    /// </summary>\n    public async Task<IReadOnlyList<OrderRow>> ListAsync(\n        OrderListQuery q, CancellationToken ct)\n    {\n        const string sql = \"\"\"\n            SELECT o.id,\n                   o.created_at,\n                   o.status,\n                   o.total,\n                   o.currency,\n                   c.id      AS customer_id,\n                   c.email   AS customer_email,\n                   c.country\n            FROM orders o\n            JOIN customers c ON c.id = o.customer_id\n            WHERE o.deleted_at IS NULL\n              AND (@status  IS NULL OR o.status      = @status)\n              AND (@country IS NULL OR c.country     = @country)\n              AND (@from    IS NULL OR o.created_at >= @from)\n              AND (@to      IS NULL OR o.created_at <  @to)\n            ORDER BY o.created_at DESC, o.id DESC\n            LIMIT @size OFFSET @offset;\n            \"\"\";\n\n        await using var conn = await connections.OpenAsync(ct);\n\n        var rows = await conn.QueryAsync<OrderRow>(new CommandDefinition(\n            sql,\n            new\n            {\n                status = q.Status?.ToString(),          // ✓ null = لا فلترة\n                country = q.Country,\n                from = q.From?.UtcDateTime,\n                to = q.To?.UtcDateTime,\n                size = Math.Clamp(q.Size, 1, 100),\n                offset = q.Offset,\n            },\n            commandTimeout: 10,                          // ✓ سقف زمني صريح\n            cancellationToken: ct));                     // ✓ إلغاء حقيقي\n\n        return [.. rows];\n    }\n\n    /// <summary>تقرير بعدة نتائج في round-trip واحد — أوفر من 3 استعلامات.</summary>\n    public async Task<SalesReport> GetSalesReportAsync(DateOnly day, CancellationToken ct)\n    {\n        const string sql = \"\"\"\n            SELECT date_trunc('hour', o.created_at) AS hour,\n                   count(*)                         AS orders,\n                   sum(o.total)                     AS revenue\n            FROM orders o\n            WHERE o.created_at >= @from AND o.created_at < @to AND o.status <> 'cancelled'\n            GROUP BY 1 ORDER BY 1;\n\n            SELECT c.country, count(*) AS orders, sum(o.total) AS revenue\n            FROM orders o JOIN customers c ON c.id = o.customer_id\n            WHERE o.created_at >= @from AND o.created_at < @to AND o.status <> 'cancelled'\n            GROUP BY c.country ORDER BY revenue DESC LIMIT 20;\n\n            SELECT count(*) AS total_orders, coalesce(sum(o.total), 0) AS total_revenue\n            FROM orders o\n            WHERE o.created_at >= @from AND o.created_at < @to AND o.status <> 'cancelled';\n            \"\"\";\n\n        var from = day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);\n        var to = from.AddDays(1);\n\n        await using var conn = await connections.OpenAsync(ct);\n        using var multi = await conn.QueryMultipleAsync(new CommandDefinition(\n            sql, new { from, to }, commandTimeout: 30, cancellationToken: ct));\n\n        var hourly = (await multi.ReadAsync<HourlyBucket>()).ToList();\n        var byCountry = (await multi.ReadAsync<CountryBucket>()).ToList();\n        var totals = await multi.ReadFirstAsync<Totals>();\n\n        return new SalesReport(day, hourly, byCountry, totals);\n    }\n\n    public sealed record OrderRow(Guid Id, DateTimeOffset CreatedAt, string Status,\n                                  decimal Total, string Currency,\n                                  Guid CustomerId, string CustomerEmail, string Country);\n    public sealed record HourlyBucket(DateTime Hour, int Orders, decimal Revenue);\n    public sealed record CountryBucket(string Country, int Orders, decimal Revenue);\n    public sealed record Totals(int TotalOrders, decimal TotalRevenue);\n    public sealed record SalesReport(DateOnly Day, List<HourlyBucket> Hourly,\n                                     List<CountryBucket> ByCountry, Totals Totals);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "SQL injection في Dapper: الطرق الثلاث اللي بتوقع الناس",
+      "md": "\n**① دمج نص في SQL** — مهما كان المصدر «موثوقًا»:\n```csharp\n// ✗ كارثة: العميل بيتحكم في الـSQL\nvar sql = $\"SELECT * FROM products WHERE name LIKE '%{name}%' ORDER BY {sort}\";\n```\n```csharp\n// ✓ القيمة parameter\nconst string sql = \"SELECT * FROM products WHERE name LIKE @pattern\";\nvar rows = await conn.QueryAsync<Product>(sql, new { pattern = $\"%{EscapeLike(name)}%\" });\n```\n\n**② `ORDER BY` ديناميكي** — الأعمدة **لا يمكن** تمريرها كـparameters → whitelist صريح:\n```csharp\nprivate static readonly Dictionary<string, string> Sorts = new(StringComparer.OrdinalIgnoreCase)\n{\n    [\"created_desc\"] = \"o.created_at DESC, o.id DESC\",\n    [\"total_desc\"] = \"o.total DESC, o.id DESC\",\n    [\"country_asc\"] = \"c.country ASC, o.id DESC\",\n};\nvar orderBy = Sorts.GetValueOrDefault(sort ?? \"\", Sorts[\"created_desc\"]);   // ✗ لا قيمة من العميل مباشرة\n```\n\n**③ أسماء جداول/أعمدة ديناميكية (multi-tenancy)** — استخدم خريطة معرّفات داخلية أو مخطط منفصل،\nولا تبني اسم جدول من مدخلات المستخدم. ولو اضطررت: تحقق بـregex صارم + قائمة مسموحات.\n\nوكمان: `EscapeLike` بينظّف `%` و`_` و`\\` عشان المستخدم ما يقدرش يوسّع البحث أو يعمل ReDoS على الفهرس.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) الـmapping والأنواع المخصصة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Infrastructure/DapperSetup.cs",
+      "title": "تهيئة مرة واحدة: أسماء أعمدة، أنواع مخصصة، JSON",
+      "code": "\nusing Dapper;\nusing System.Text.Json;\n\npublic static class DapperSetup\n{\n    public static void Configure()\n    {\n        // ① أعمدة snake_case ↔ خصائص PascalCase\n        DefaultTypeMap.MatchNamesWithUnderscores = true;\n\n        // ② أنواع .NET اللي Dapper ما يعرفهاش افتراضيًا\n        SqlMapper.AddTypeHandler(new DateOnlyHandler());\n        SqlMapper.AddTypeHandler(new TimeOnlyHandler());\n        SqlMapper.AddTypeHandler(new DecimalHandler());\n\n        // ③ أعمدة JSON/JSONB ↔ كائنات قوية النوع\n        SqlMapper.AddTypeHandler(new JsonHandler<OrderMetadata>());\n\n        // ④ أمان: لا توسّع حجم الاستعلام بلا حدود\n        SqlMapper.Settings.CommandTimeout = 30;\n        SqlMapper.Settings.ApplyNullValues = false;\n    }\n\n    private sealed class DateOnlyHandler : SqlMapper.TypeHandler<DateOnly>\n    {\n        public override void SetValue(IDbDataParameter parameter, DateOnly value) => parameter.Value = value;\n        public override DateOnly Parse(object value) => value switch\n        {\n            DateOnly d => d,\n            DateTime dt => DateOnly.FromDateTime(dt),\n            string s => DateOnly.Parse(s),\n            _ => throw new DataException($\"Cannot convert {value.GetType()} to DateOnly\"),\n        };\n    }\n\n    private sealed class TimeOnlyHandler : SqlMapper.TypeHandler<TimeOnly>\n    {\n        public override void SetValue(IDbDataParameter parameter, TimeOnly value) => parameter.Value = value;\n        public override TimeOnly Parse(object value) => value switch\n        {\n            TimeOnly t => t,\n            TimeSpan ts => TimeOnly.FromTimeSpan(ts),\n            DateTime dt => TimeOnly.FromDateTime(dt),\n            _ => throw new DataException($\"Cannot convert {value.GetType()} to TimeOnly\"),\n        };\n    }\n\n    /// <summary>أعمدة numeric من القاعدة قد تصل كـdouble/long — نحوّلها لـdecimal بأمان.\n    /// (لو عندك بنية Money بقيمة+عملة: خزّنها عمودين أو JSON واستخدم JsonHandler أدناه.)</summary>\n    private sealed class DecimalHandler : SqlMapper.TypeHandler<decimal>\n    {\n        public override void SetValue(IDbDataParameter parameter, decimal value) => parameter.Value = value;\n        public override decimal Parse(object value) => value switch\n        {\n            decimal d => d,\n            double dbl => (decimal)dbl,\n            long l => l,\n            int i => i,\n            _ => Convert.ToDecimal(value),\n        };\n    }\n\n    private sealed class JsonHandler<T> : SqlMapper.TypeHandler<T> where T : class\n    {\n        public override void SetValue(IDbDataParameter parameter, T? value)\n        {\n            parameter.Value = value is null ? DBNull.Value\n                : new NpgsqlParameter { Value = JsonSerializer.Serialize(value), NpgsqlDbType = NpgsqlDbType.Jsonb };\n        }\n\n        public override T? Parse(object value) => value switch\n        {\n            null or DBNull => null,\n            string json => JsonSerializer.Deserialize<T>(json, AppJson.Options),\n            byte[] bytes => JsonSerializer.Deserialize<T>(bytes, AppJson.Options),\n            _ => throw new DataException($\"Cannot parse JSON column into {typeof(T).Name}\"),\n        };\n    }\n}\n\n/// <summary>اتصالات مقروءة: قراءة من replica، كتابة على primary — قرار يُخفى خلف واجهة.</summary>\npublic interface IDbConnectionFactory\n{\n    Task<NpgsqlConnection> OpenAsync(CancellationToken ct);\n    Task<NpgsqlConnection> OpenReadAsync(CancellationToken ct);      // replica لو متاح\n}\n\npublic sealed class NpgsqlConnectionFactory(IConfiguration config) : IDbConnectionFactory\n{\n    public async Task<NpgsqlConnection> OpenAsync(CancellationToken ct) =>\n        await Open(config.GetConnectionString(\"Default\")!, ct);\n\n    public async Task<NpgsqlConnection> OpenReadAsync(CancellationToken ct) =>\n        await Open(config.GetConnectionString(\"ReadReplica\") ?? config.GetConnectionString(\"Default\")!, ct);\n\n    private static async Task<NpgsqlConnection> Open(string cs, CancellationToken ct)\n    {\n        var conn = new NpgsqlConnection(cs);\n        await conn.OpenAsync(ct);\n        return conn;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) مشاركة الاتصال والمعاملة مع EF Core (أهم قسم)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Infrastructure/EfDapperBridge.cs",
+      "title": "نفس الـconnection ونفس الـtransaction — بلا اتصالين",
+      "code": "\nusing Dapper;\nusing Microsoft.EntityFrameworkCore.Storage;\n\n/// <summary>\n/// قاعدة ذهبية: لو العملية فيها كتابة بـEF وقراءة بـDapper، لازم يشوفوا **نفس** المعاملة.\n/// وإلا: الدقائق بتقرأ حالة غير ملتزمة/قديمة والسلوك يبقى غير متوقع.\n/// </summary>\npublic sealed class OrderFulfillment(AppDbContext db, ILogger<OrderFulfillment> log)\n{\n    public async Task FulfillAsync(Guid orderId, CancellationToken ct)\n    {\n        // ✓ استخدم اتصال ومعاملة EF الحالية\n        var connection = db.Database.GetDbConnection();\n        if (connection.State != ConnectionState.Open) await connection.OpenAsync(ct);\n\n        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);\n        var dbTx = tx.GetDbTransaction();\n\n        try\n        {\n            // 1) كتابة عبر EF (نموذج البيانات + validation + events)\n            var order = await db.Orders.SingleAsync(o => o.Id == orderId, ct);\n            order.Status = OrderStatus.Processing;\n            await db.SaveChangesAsync(ct);\n\n            // 2) قراءة ثقيلة عبر Dapper — على نفس الاتصال والمعاملة\n            const string sql = \"\"\"\n                SELECT p.id, p.name, p.sku, l.quantity, l.unit_price\n                FROM order_lines l JOIN products p ON p.id = l.product_id\n                WHERE l.order_id = @orderId\n                ORDER BY l.position;\n                \"\"\";\n\n            var lines = await connection.QueryAsync<FulfillmentLine>(new CommandDefinition(\n                sql, new { orderId }, transaction: dbTx, commandTimeout: 10, cancellationToken: ct));\n\n            // 3) تحديث جماعي عبر Dapper (أسرع من تحميل الكيانات وتعديلها)\n            const string decrement = \"\"\"\n                UPDATE products p\n                SET stock = p.stock - l.quantity,\n                    updated_at = now()\n                FROM order_lines l\n                WHERE l.product_id = p.id AND l.order_id = @orderId;\n                \"\"\";\n\n            var affected = await connection.ExecuteAsync(new CommandDefinition(\n                decrement, new { orderId }, transaction: dbTx, commandTimeout: 10, cancellationToken: ct));\n\n            log.LogInformation(\"fulfilled order {OrderId}: {Lines} lines, {Affected} products\",\n                orderId, lines.Count(), affected);\n\n            await tx.CommitAsync(ct);                    // ✓ الالتزام مرة واحدة للجميع\n        }\n        catch\n        {\n            await tx.RollbackAsync(CancellationToken.None);\n            throw;\n        }\n    }\n\n    public sealed record FulfillmentLine(Guid Id, string Name, string Sku, int Quantity, decimal UnitPrice);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "فخاخ الجمع بين EF وDapper",
+      "md": "\n- **اتصالين مختلفين** → قراءات Dapper ما تشوفش تغييرات EF غير الملتزمة (أو تشوف حالة قديمة). استخدم `db.Database.GetDbConnection()`.\n- **معاملة EF من غير تمريرها لـDapper** → `transaction: dbTx` في كل `CommandDefinition`. نسيانها = Dapper برا المعاملة.\n- **`EnableRetryOnFailure` + معاملة يدوية** → استثناء (نفس فخ الدرس السابق). لفّ الكل في `CreateExecutionStrategy().ExecuteAsync(...)`.\n- **Change Tracking متضارب**: لو Dapper عدّل صفوفًا يتتبعها EF، `SaveChanges` بعده قد يفشل بـconcurrency أو يتجاهل التغييرات. رتّب الخطوات: Dapper أولًا ثم اقرأ كيانات EF، أو افصل المسارات.\n- **Migrations**: Dapper ما بيعرفش النموذج → أي عمود جديد تضيفه في migration لازم ينعكس في SQL المكتوب يدويًا (اختبار قراءة يحميك).\n- **التسميات**: `MatchNamesWithUnderscores` عام. لو عندك أعمدة مش snake_case، استخدم aliases في SQL (`AS CustomerEmail`).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) Bulk: لما Dapper نفسه ما يكفيش"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "إدراج 100k صف: 3 طرق بالترتيب الأسرع",
+      "code": "\n// ✗ بطيء: ExecuteAsync لكل صف (أو حتى multi-row INSERT بآلاف القيم)\nforeach (var r in rows) await conn.ExecuteAsync(\"INSERT INTO events (...) VALUES (@a, @b)\", r);\n\n// ✓ جيد: دفعات (batch) من 500-1000 صف في عبارة واحدة\nforeach (var batch in rows.Chunk(500))\n{\n    const string sql = \"\"\"\n        INSERT INTO events (id, type, payload, created_at)\n        SELECT * FROM unnest(@ids::uuid[], @types::text[], @payloads::jsonb[], @times::timestamptz[]);\n        \"\"\";\n    await conn.ExecuteAsync(sql, new\n    {\n        ids = batch.Select(r => r.Id).ToArray(),\n        types = batch.Select(r => r.Type).ToArray(),\n        payloads = batch.Select(r => JsonSerializer.Serialize(r.Payload)).ToArray(),\n        times = batch.Select(r => r.CreatedAt.UtcDateTime).ToArray(),\n    });\n}\n\n// ✓✓ الأسرع (Npgsql): COPY binary — مخصص للإدراج الضخم\nawait using var conn = new NpgsqlConnection(connectionString);\nawait conn.OpenAsync(ct);\nawait using var writer = await conn.BeginBinaryImportAsync(\n    \"COPY events (id, type, payload, created_at) FROM STDIN (FORMAT BINARY)\", ct);\n\nforeach (var r in rows)\n{\n    await writer.StartRowAsync(ct);\n    await writer.WriteAsync(r.Id, ct);\n    await writer.WriteAsync(r.Type, ct);\n    await writer.WriteAsync(JsonSerializer.Serialize(r.Payload), NpgsqlTypes.NpgsqlDbType.Jsonb, ct);\n    await writer.WriteAsync(r.CreatedAt.UtcDateTime, ct);\n}\nawait writer.CompleteAsync(ct);\n// ملاحظة: COPY ما بيحدّثش التسلسلات (sequences) — اضبطها يدويًا لو العمود identity\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "اختبار مسار القراءة: Dapper يحتاج قاعدة حقيقية",
+      "code": "\n[Collection(\"Postgres\")]\npublic sealed class OrderReadModelTests(PostgresFixture db) : IAsyncLifetime\n{\n    public ValueTask InitializeAsync() => new(db.ResetAsync().AsTask());\n    public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n\n    /// <summary>نفس مصانع الاتصال لكل الاختبارات —مؤشر إلى قاعدة الـTestcontainer.</summary>\n    private OrderReadModel CreateReadModel() => new(new NpgsqlConnectionFactory(\n        new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>\n        {\n            [\"ConnectionStrings:Default\"] = db.ConnectionString,\n        }).Build()));\n\n    [Fact]\n    public async Task List_filters_by_status_and_country()\n    {\n        // ✓ بذر عبر EF (نموذج صحيح) والقراءة عبر Dapper (SQL مكتوب يدويًا)\n        await using (var ctx = db.CreateContext())\n        {\n            ctx.Orders.AddRange(\n                AnOrder.WithStatus(OrderStatus.Paid).WithCountry(\"EG\").Build(),\n                AnOrder.WithStatus(OrderStatus.Paid).WithCountry(\"SA\").Build(),\n                AnOrder.WithStatus(OrderStatus.New).WithCountry(\"EG\").Build());\n            await ctx.SaveChangesAsync();\n        }\n\n        var readModel = CreateReadModel();\n\n        var result = await readModel.ListAsync(\n            new OrderListQuery { Status = OrderStatus.Paid, Country = \"EG\", Size = 20, Offset = 0 },\n            CancellationToken.None);\n\n        result.Should().HaveCount(1);\n        result[0].Country.Should().Be(\"EG\");\n        result[0].Status.Should().Be(\"Paid\");\n    }\n\n    [Fact]\n    public async Task Sort_whitelist_ignores_unknown_values()\n    {\n        var readModel = CreateReadModel();\n\n        // ✗ قيمة فرز من العميل ما تصلش للـSQL أبدًا\n        var act = () => readModel.ListAsync(\n            new OrderListQuery { Sort = \"1; DROP TABLE orders--\", Size = 20 }, CancellationToken.None);\n\n        var rows = await act();\n        rows.Should().NotBeNull();                       // يرجع ترتيباً افتراضياً آمناً\n        // وأثبت إن الجدول لسه موجود:\n        await using var ctx = db.CreateContext();\n        (await ctx.Orders.CountAsync()).Should().BeGreaterThanOrEqualTo(0);\n    }\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أقرر إمتى أستخدم Dapper (قراءات ساخنة/تقارير/SQL معقد) وإمتى ألتزم بـEF Core.",
+        "أكتب SQL ثابتًا مع parameters لكل المدخلات وwhitelist للفرز والأعمدة الديناميكية.",
+        "أضبط الـmapping (snake_case، DateOnly/TimeOnly، أعمدة JSON) مرة واحدة عند الإقلاع.",
+        "أشارك الاتصال والمعاملة بين EF وDapper وألتزم مرة واحدة، وأختبر مسارات القراءة على قاعدة حقيقية."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "أنهي حالة تستحق Dapper فعلًا؟",
+          "options": [
+            "حفظ كيان مع علاقاته",
+            "قراءة تقرير بتجميعات وwindow functions على مسار ساخن يحتاج SQL صريحًا",
+            "إدارة الـmigrations",
+            "تتبع تغييرات الكيانات"
+          ],
+          "answer": 1,
+          "explain": "Dapper بلا change tracking وبلا migrations. قوته في القراءة المباشرة والـSQL الصريح بأقل overhead."
+        },
+        {
+          "q": "`ORDER BY` من مدخل العميل — الحل الصحيح؟",
+          "options": [
+            "تمريره كـparameter",
+            "whitelist يترجم القيمة لجملة فرز ثابتة من كودك",
+            "تنظيف الأحرف الخاصة",
+            "منع الفرز"
+          ],
+          "answer": 1,
+          "explain": "الأعمدة/اتجاهات الفرز لا يمكن تمريرها كـparameters في SQL. الـwhitelist هو الحل الوحيد الآمن (والتنظيف وحده غير كافٍ)."
+        },
+        {
+          "q": "كتابة بـEF وقراءة بـDapper في نفس العملية — إيه المطلوب؟",
+          "options": [
+            "اتصالان منفصلان",
+            "`db.Database.GetDbConnection()` + تمرير `tx.GetDbTransaction()` لكل أمر Dapper + commit واحد",
+            "تشغيل Dapper بعد الـcommit",
+            "لا يمكن الجمع"
+          ],
+          "answer": 1,
+          "explain": "بدون مشاركة المعاملة: Dapper يشوف حالة مختلفة (قديمة/غير ملتزمة) والسلوك يبقى غير متوقع وصعب التشخيص."
+        },
+        {
+          "q": "`QueryMultipleAsync` — فايدتها؟",
+          "options": [
+            "فرز النتائج",
+            "عدة مجموعات نتائج في round-trip واحد → توفير زمن شبكة لتقارير متعددة الأجزاء",
+            "دعم الـtransactions",
+            "تحسين الفهارس"
+          ],
+          "answer": 1,
+          "explain": "للتقارير: 3 استعلامات = 3 round-trips. مع `QueryMultiple` = واحدة، والفرق واضح في latency العالية."
+        },
+        {
+          "q": "إدراج 200 ألف صف — الأسرع والأصح على Postgres؟",
+          "options": [
+            "`ExecuteAsync` لكل صف",
+            "`COPY` binary عبر `BeginBinaryImportAsync` (أو دفعات كبيرة بـunnest)",
+            "EF `AddRange` + `SaveChanges`",
+            "Transaction لكل صف"
+          ],
+          "answer": 1,
+          "explain": "`COPY` مصمم للإدراج الضخم. انتبه: لا يحدّث الـsequences تلقائيًا، ولا يطلق triggers بنفس سلوك INSERT العادي."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مسار قراءة بـDapper",
+          "md": "حوّل أبطأ قراءة في مشروعك (أو تقرير) إلى read model بـDapper: SQL ثابت، parameters لكل المدخلات، whitelist للفرز، `CommandDefinition` مع timeout وCancellationToken، واختبار على Postgres حقيقي (Testcontainers).",
+          "criteria": [
+            "لا string interpolation في أي SQL (راجع الكود سطرًا سطرًا)",
+            "whitelist للفرز مع اختبار يثبت تجاهل قيمة خبيثة",
+            "اختبار على قاعدة حقيقية (مش SQLite/InMemory) ناجح",
+            "قياس زمن القراءة قبل/بعد (EF مقابل Dapper) بنفس البيانات والحمل",
+            "واجهة `IOrderReadModel` في التطبيق والتنفيذ في Infrastructure (الـDomain ما يعرفش Dapper)"
+          ],
+          "hint": "لو الأعمدة ما بتتطابقش: فعّل `DefaultTypeMap.MatchNamesWithUnderscores = true` **قبل** أول استعلام (في الإقلاع)، أو استخدم `AS` aliases في SQL."
+        },
+        {
+          "id": "t2",
+          "title": "جسر EF + Dapper في معاملة واحدة",
+          "md": "ابنِ عملية واحدة فيها: كتابة عبر EF، قراءة عبر Dapper، وتحديث جماعي عبر Dapper — كلها داخل معاملة واحدة والتزام واحد. أثبت باختبار إن الفشل في الخطوة الثالثة بيرجع كل شيء (بلا تغييرات جزئية).",
+          "criteria": [
+            "اتصال واحد ومعاملة واحدة (ممرَّرة لـDapper)",
+            "اختبار: خطأ متعمد في الخطوة الأخيرة → الحالة ترجع كما كانت",
+            "لا I/O خارجي داخل المعاملة",
+            "سجل (log) يوضح عدد الصفوف المتأثرة والمدة"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Dapper",
+          "url": "https://github.com/DapperLib/Dapper"
+        },
+        {
+          "label": "EF Core — Raw SQL queries",
+          "url": "https://learn.microsoft.com/ef/core/querying/raw-sql"
+        },
+        {
+          "label": "EF Core — Connection strings & transactions",
+          "url": "https://learn.microsoft.com/ef/core/miscellaneous/connection-strings"
+        },
+        {
+          "label": "Npgsql — Bulk copy (COPY)",
+          "url": "https://www.npgsql.org/doc/copy.html"
+        },
+        {
+          "label": "OWASP SQL Injection Prevention Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"
+        }
+      ]
+    }
+  ]
+}

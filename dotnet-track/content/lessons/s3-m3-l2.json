@@ -1,0 +1,429 @@
+{
+  "id": "s3-m3-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\n«نستخدم MongoDB لأن مفيش schema» — دي أشهر حجة وأغلب الوقت سبب لمشاكل بعدين.\nالـNoSQL مش «أحدث فإذن أفضل»؛ ده **نموذج بيانات مختلف** بيبدّل مقايضات: مرونة في الشكل وقابلية توسع أفقية،\nمقابل ضعف في الانضمّامات والاستعلامات العابرة للأغريغات والقيود.\n\nالدرس ده: نمذجة مستندية صحيحة (embed مقابل reference)، **partition keys في Cosmos DB** (القرار الأغلى)،\nمستويات الاتساق، وجدول قرار واضح: إمتى SQL وإمتى NoSQL — وليه في أغلب مشاريع .NET الإجابة «الاتنين».\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Aggregate",
+          "def": "وحدة اتساق في النمذجة المستندية: تُقرأ وتُكتب ككل (طلب + سطوره). حدودها تحدد ما يُدمج وما يُفصل."
+        },
+        {
+          "term": "Embed (دمج)",
+          "def": "تخزين البيانات المرتبطة داخل المستند → قراءة واحدة سريعة؛ مخاطره: تكرار ونمو غير محدود."
+        },
+        {
+          "term": "Reference (إسناد)",
+          "def": "تخزين معرّف فقط → بلا تكرار؛ ثمنه: أكثر من قراءة أو `$lookup` (أبطأ من join علائقي)."
+        },
+        {
+          "term": "Document size limit",
+          "def": "MongoDB: 16MB للمستند. مصفوفة بلا حدود (logs/comments) = قنبلة موقوتة."
+        },
+        {
+          "term": "Write amplification",
+          "def": "تعديل مدمج صغير يعيد كتابة مستند كبير → تكلفة كتابة وذاكرة أعلى."
+        },
+        {
+          "term": "Partition Key (Cosmos)",
+          "def": "الحقل اللي يحدد التقسيم الفيزيائي. بيقرر أداء الاستعلامات والتكلفة وقابلية التوسع — **أصعب قرار وأصعب تغيير**."
+        },
+        {
+          "term": "Hot Partition",
+          "def": "تقسيم يستقبل أغلب الحمل (مثل تاريخ أو مستأجر ضخم) → اختناق رغم سعة إجمالية فائضة."
+        },
+        {
+          "term": "RU/s",
+          "def": "وحدة تكلفة Cosmos: كل عملية تستهلك Request Units بحسب الحجم والتعقيد. استعلام عبر أقسام = تكلفة مضاعفة."
+        },
+        {
+          "term": "Consistency Levels",
+          "def": "5 مستويات في Cosmos: Strong → Bounded Staleness → **Session (الافتراضي)** → Consistent Prefix → Eventual."
+        },
+        {
+          "term": "Change Feed",
+          "def": "تدفّق تغييرات من Cosmos (أو MongoDB Change Streams) → أساس الـCDC وبناء read models."
+        },
+        {
+          "term": "Polyglot Persistence",
+          "def": "استخدام أكثر من مخزن بحسب المهمة: SQL مصدر الحقيقة، والمستندية/البحث/الكاش لقراءات معينة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) جدول القرار: SQL ولا NoSQL؟"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المتطلب",
+        "SQL (Postgres/SQL Server)",
+        "MongoDB",
+        "Cosmos DB"
+      ],
+      "rows": [
+        [
+          "علاقات كثيرة-إلى-كثير واستعلامات عابرة",
+          "✓ الأفضل",
+          "✗ `$lookup` مكلف",
+          "✗ joins غير مدعومة فعليًا"
+        ],
+        [
+          "معاملات عبر أغريغات",
+          "✓ قوية ونافذة",
+          "△ (4.0+ replica set، مكلفة)",
+          "△ داخل قسم منطقي واحد"
+        ],
+        [
+          "قيود فريدة/مفاتيح أجنبية",
+          "✓ مدمجة",
+          "△ فريد على مستوى المستند/الفهرس",
+          "△ محدود (unique على نفس partition key)"
+        ],
+        [
+          "مخطط مرن/متغير بسرعة",
+          "△ (migrations)",
+          "✓",
+          "✓"
+        ],
+        [
+          "بيانات هرمية تُقرأ كوحدة",
+          "△ (عدة جداول/joins)",
+          "✓ مثالي",
+          "✓ مثالي"
+        ],
+        [
+          "كتابة بحجم ضخم + توسع أفقي",
+          "△ (sharding معقد)",
+          "✓",
+          "✓✓ (مصمم له)"
+        ],
+        [
+          "تقارير/تحليلات ad-hoc",
+          "✓ الأفضل",
+          "△ aggregation pipeline",
+          "△ (أو Synapse/Fabric)"
+        ],
+        [
+          "كمون منخفض عالميًا",
+          "△",
+          "△",
+          "✓ (توزيع جغرافي)"
+        ],
+        [
+          "تكلفة تشغيلية",
+          "منخفضة/معروفة",
+          "متوسطة",
+          "بحسب RU/s — قد تفاجئك"
+        ],
+        [
+          "فريق .NET + EF Core",
+          "✓ ناضج تمامًا",
+          "△ (driver + provider رسمي حديث)",
+          "△ (SDK بلا ORM ناضج)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "القرار الواقعي في أغلب مشاريع .NET",
+      "md": "\n**Postgres/SQL Server كمصدر الحقيقة** (معاملات، قيود، علاقات، تقارير) +\n**مخازن متخصصة للقراءات**: Redis للكاش، Elasticsearch/OpenSearch للبحث النصي،\nMongoDB/Cosmos لسجلات الأحداث أو كتالوجات مرنة أو بيانات تسلسلية ضخمة.\n\nابدأ بـSQL **دائمًا** إلا لو عندك دليل: حجم بيانات/معدل كتابة/مرونة مخطط **تفرض** غير ذلك.\n«ممكن نحتاج نتوسع» ليست سببًا — التوسع الرأسي بيوصّل لملايين الطلبات يوميًا.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) MongoDB: النمذجة والـdriver"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Catalog package MongoDB.Driver\ndotnet add Shop.Infrastructure package Microsoft.Azure.Cosmos\ndotnet add Shop.Api package StackExchange.Redis\n# provider EF Core رسمي من MongoDB (حالة النضج تتطور — تحقق من التوثيق قبل الاعتماد في الإنتاج)\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Catalog/Documents.cs",
+      "title": "نمذجة: embed لما يُقرأ معًا، reference لما ينمو بلا حدود",
+      "code": "\nusing MongoDB.Bson;\nusing MongoDB.Bson.Serialization.Attributes;\n\n/// <summary>\n/// ✓ embed: مراجعات المنتج تُقرأ دائمًا مع صفحة المنتج (حجم محدود).\n/// ✗ لا تُدمج سجلات بلا حدود (أحداث، رسائل) — انفصلها في مجموعة خاصة.\n/// </summary>\npublic sealed class ProductDocument\n{\n    [BsonId]\n    [BsonRepresentation(BsonType.ObjectId)]\n    public string Id { get; init; } = default!;\n\n    [BsonElement(\"sku\")] public required string Sku { get; init; }\n    [BsonElement(\"name\")] public required string Name { get; init; }\n    [BsonElement(\"slug\")] public required string Slug { get; init; }\n\n    // ✓ embed: سمات مرنة تختلف بين الفئات (السبب الحقيقي لاختيار مستندية)\n    [BsonElement(\"attributes\")] public Dictionary<string, object> Attributes { get; init; } = [];\n\n    // ✓ embed: قيمة مركّبة صغيرة\n    [BsonElement(\"price\")] public PriceDocument Price { get; init; } = default!;\n\n    // ✓ embed مع حد صريح (آخر 20 مراجعة فقط) — لا نمو غير محدود\n    [BsonElement(\"top_reviews\")] public List<ReviewEmbed> TopReviews { get; init; } = [];\n\n    // ✗ reference: الفئة كيان له حياة مستقلة ويُستخدم في قوائم/فلاتر كتير\n    [BsonElement(\"category_id\")] public required string CategoryId { get; init; }\n\n    [BsonElement(\"tags\")] public List<string> Tags { get; init; } = [];\n    [BsonElement(\"schema_version\")] public int SchemaVersion { get; init; } = 2;   // ★ لإدارة تطور المخطط\n    [BsonElement(\"updated_at\")] public DateTimeOffset UpdatedAt { get; init; }\n}\n\npublic sealed record PriceDocument(\n    [property: BsonElement(\"amount\")] decimal Amount,\n    [property: BsonElement(\"currency\")] string Currency);\n\npublic sealed record ReviewEmbed(\n    [property: BsonElement(\"author\")] string Author,\n    [property: BsonElement(\"rating\")] int Rating,\n    [property: BsonElement(\"excerpt\")] string Excerpt,\n    [property: BsonElement(\"at\")] DateTimeOffset At);\n\n/// <summary>مجموعة منفصلة للسجلات بلا حدود — مرتبطة بمعرّف المنتج.</summary>\npublic sealed class ProductEventDocument\n{\n    [BsonId][BsonRepresentation(BsonType.ObjectId)] public string Id { get; init; } = default!;\n    [BsonElement(\"product_id\")] public required string ProductId { get; init; }\n    [BsonElement(\"type\")] public required string Type { get; init; }\n    [BsonElement(\"payload\")] public BsonDocument Payload { get; init; } = new();\n    [BsonElement(\"at\")] public DateTimeOffset At { get; init; }\n    [BsonElement(\"expires_at\")] public DateTimeOffset? ExpiresAt { get; init; }     // TTL index يحذفها تلقائيًا\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "القرار",
+        "Embed",
+        "Reference",
+        "معيار الحسم"
+      ],
+      "rows": [
+        [
+          "سطور الطلب داخل مستند الطلب",
+          "✓",
+          "",
+          "تُقرأ وتُكتب دائمًا معًا (aggregate واحد)"
+        ],
+        [
+          "العميل داخل مستند الطلب",
+          "",
+          "✓",
+          "كيان مستقل، يُعدَّل، ويُستخدم في أماكن كثيرة"
+        ],
+        [
+          "مراجعات المنتج",
+          "جزئيًا (آخر 20)",
+          "✓ (كلها)",
+          "الحجم: غير محدود → مجموعة منفصلة"
+        ],
+        [
+          "الفئة/القسم",
+          "",
+          "✓",
+          "يتغير مستقلًا ويُفلتر به في قوائم"
+        ],
+        [
+          "سجل أحداث/تدقيق",
+          "",
+          "✓ + TTL index",
+          "نمو بلا حدود داخل مستند = كارثة"
+        ],
+        [
+          "عنوان الشحن للطلب",
+          "✓",
+          "",
+          "لقطة تاريخية لا يجب أن تتغير"
+        ],
+        [
+          "الصور/الملفات",
+          "",
+          "✓ (GridFS/S3/blob)",
+          "لا تخزّن ثنائيات داخل المستندات"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Catalog/MongoCatalogStore.cs",
+      "title": "الـdriver: فهارس صريحة + استعلامات آمنة + إسقاطات",
+      "code": "\nusing MongoDB.Driver;\n\npublic sealed class MongoCatalogStore(IConfiguration config, ILogger<MongoCatalogStore> log) : ICatalogStore\n{\n    private readonly MongoClient _client = new(config.GetConnectionString(\"Mongo\"));\n    private IMongoCollection<ProductDocument> Products =>\n        _client.GetDatabase(\"shop\").GetCollection<ProductDocument>(\"products\");\n\n    /// <summary>\n    /// ★ الفهارس كود (تُطبَّق عند الإقلاع/في migration داخلي) — مش إضافة يدوية على قاعدة الإنتاج.\n    /// </summary>\n    public async Task EnsureIndexesAsync(CancellationToken ct)\n    {\n        var builder = Builders<ProductDocument>.IndexKeys;\n\n        await Products.Indexes.CreateManyAsync(\n        [\n            new CreateIndexModel<ProductDocument>(builder.Ascending(p => p.Sku),\n                new CreateIndexOptions { Unique = true, Name = \"ux_sku\" }),\n            new CreateIndexModel<ProductDocument>(builder.Ascending(p => p.CategoryId).Descending(p => p.UpdatedAt),\n                new CreateIndexOptions { Name = \"ix_category_updated\" }),           // فهرس مركّب لنمط الاستعلام\n            new CreateIndexModel<ProductDocument>(builder.Text(p => p.Name),\n                new CreateIndexOptions { Name = \"tx_name\" }),\n            new CreateIndexModel<ProductDocument>(builder.Ascending(p => p.Tags),\n                new CreateIndexOptions { Name = \"ix_tags\" }),                        // multikey\n        ], cancellationToken: ct);\n\n        log.LogInformation(\"mongo indexes ensured\");\n    }\n\n    /// <summary>قراءة بفلترة وترقيم — FilterDefinition تبني استعلامًا آمنًا (لا دمج نصوص).</summary>\n    public async Task<IReadOnlyList<ProductDocument>> SearchAsync(\n        string? text, string? categoryId, IReadOnlyList<string>? tags,\n        int page, int size, CancellationToken ct)\n    {\n        var filter = Builders<ProductDocument>.Filter.Empty;\n\n        if (!string.IsNullOrWhiteSpace(categoryId))\n            filter &= Builders<ProductDocument>.Filter.Eq(p => p.CategoryId, categoryId);\n\n        if (tags is { Count: > 0 })\n            filter &= Builders<ProductDocument>.Filter.All(p => p.Tags, tags);\n\n        if (!string.IsNullOrWhiteSpace(text))\n            filter &= Builders<ProductDocument>.Filter.Text(text);\n\n        var projection = Builders<ProductDocument>.Projection\n            .Exclude(p => p.TopReviews)                       // ✓ إسقاط: لا تجلب ما لا يُعرض\n            .Exclude(p => p.Attributes);\n\n        return await Products\n            .Find(filter)\n            .Project<ProductDocument>(projection)\n            .SortByDescending(p => p.UpdatedAt)\n            .Skip(Math.Max(0, (page - 1)) * Math.Clamp(size, 1, 100))\n            .Limit(Math.Clamp(size, 1, 100))\n            .ToListAsync(ct);\n    }\n\n    /// <summary>upsert ذرّي — بلا «اقرأ ثم احفظ» (سباق).</summary>\n    public async Task UpsertAsync(ProductDocument doc, CancellationToken ct)\n    {\n        var filter = Builders<ProductDocument>.Filter.Eq(p => p.Sku, doc.Sku);\n        await Products.ReplaceOneAsync(filter, doc, new ReplaceOptions { IsUpsert = true }, ct);\n    }\n\n    /// <summary>تحديث جزئي (بلا إعادة كتابة المستند كاملًا).</summary>\n    public async Task SetPriceAsync(string sku, decimal amount, string currency, CancellationToken ct)\n    {\n        var update = Builders<ProductDocument>.Update\n            .Set(p => p.Price, new PriceDocument(amount, currency))\n            .Set(p => p.UpdatedAt, DateTimeOffset.UtcNow);\n\n        var result = await Products.UpdateOneAsync(\n            Builders<ProductDocument>.Filter.Eq(p => p.Sku, sku), update, cancellationToken: ct);\n\n        if (result.MatchedCount == 0) throw new NotFoundException(\"Product\", sku);\n    }\n\n    /// <summary>تجميع: أنبوبة aggregation (مكافئ GROUP BY) — الأقوى في المستندية.</summary>\n    public async Task<IReadOnlyList<CategoryStat>> StatsByCategoryAsync(CancellationToken ct) =>\n        await Products.Aggregate()\n            .Group(p => p.CategoryId, g => new CategoryStat(g.Key, g.Count(), g.Average(p => p.Price.Amount)))\n            .SortByDescending(s => s.Products)\n            .Limit(20)\n            .ToListAsync(ct);\n\n    public sealed record CategoryStat(string CategoryId, int Products, decimal AvgPrice);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أخطاء MongoDB الكلاسيكية",
+      "md": "\n- **مصفوفة بلا حدود داخل مستند** (كل التعليقات/الأحداث) → المستند بيكبر لحد 16MB والكتابة بتبطيء بشكل كارثي. افصلها في مجموعة.\n- **بلا فهارس** → كل استعلام `COLLSCAN`. افحص بـ`explain(\"executionStats\")` وتأكد من `IXSCAN`.\n- **`$lookup` كبديل join في كل مكان** → أداء سيئ وتصميم خاطئ؛ لو محتاج joins كتير، استخدم SQL.\n- **دمج بيانات بتتغير كتير** (سعر، مخزون) → تكرار وعدم اتساق. استخدم reference أو حدث تغيير عبر Change Streams.\n- **لا خطة لتطور المخطط** → أضف `schema_version` في كل مستند ومهاجر (migration task) يحدّث تدريجيًا، أو اقرأ بطريقة متسامحة.\n- **كتابة بلا `WriteConcern` مقصود** → الافتراضي قد لا يضمن الدوام؛ للعمليات الحرجة استخدم `w: \"majority\"` و`journal: true`.\n- **تخزين ثنائيات (صور/PDF) في المستندات** → استخدم GridFS أو object storage.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Cosmos DB: partition key هو القرار كله"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Infrastructure/Cosmos/OrderContainer.cs",
+      "title": "اختيار partition key + استعلامات داخل القسم",
+      "code": "\nusing Microsoft.Azure.Cosmos;\n\npublic sealed class CosmosOrderStore(CosmosClient client) : IOrderStore\n{\n    private Container Orders => client.GetContainer(\"shop\", \"orders\");\n\n    /// <summary>\n    /// ★ partition key = customerId:\n    ///   • كل استعلامات العميل داخل قسم واحد → RU أقل وزمن ثابت\n    ///   • معاملات عبر عناصر نفس العميل ممكنة (transactional batch)\n    ///   • توزيع متساوٍ (عدد عملاء كبير) → لا hot partition\n    ///\n    /// ✗ اختيارات سيئة شائعة:\n    ///   • orderDate → كل كتابات اليوم على قسم واحد (hot partition)\n    ///   • country → أقسام قليلة وضخمة (توزيع غير متساوٍ)\n    ///   • id → توزيع ممتاز لكن كل استعلامات «طلبات عميل» تصير cross-partition (مكلفة)\n    /// </summary>\n    public async Task<IReadOnlyList<OrderDto>> ListForCustomerAsync(\n        Guid customerId, int size, CancellationToken ct)\n    {\n        var pk = new PartitionKey(customerId.ToString());\n\n        var query = new QueryDefinition(\n            \"SELECT TOP @size o.id, o.status, o.total, o.createdAt FROM o ORDER BY o.createdAt DESC\")\n            .WithParameter(\"@size\", Math.Clamp(size, 1, 100));          // ✓ parameters دائمًا\n\n        // ✓ تمرير partitionKey: يحوّل الاستعلام من cross-partition لـsingle-partition (فرق تكلفة كبير)\n        using var iterator = Orders.GetItemQueryIterator<OrderDto>(query, requestOptions:\n            new QueryRequestOptions { PartitionKey = pk, MaxItemCount = size });\n\n        var results = new List<OrderDto>();\n        while (iterator.HasMoreResults) results.AddRange(await iterator.ReadNextAsync(ct));\n        return results;\n    }\n\n    /// <summary>قراءة عنصر بمعرّف + partition key = أرخص عملية في Cosmos (نقطة قراءة).</summary>\n    public async Task<OrderDto?> GetAsync(Guid customerId, Guid orderId, CancellationToken ct)\n    {\n        try\n        {\n            return await Orders.ReadItemAsync<OrderDto>(\n                orderId.ToString(), new PartitionKey(customerId.ToString()), cancellationToken: ct);\n        }\n        catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)\n        {\n            return null;\n        }\n    }\n\n    /// <summary>عمليات ذرّية داخل نفس القسم (بديل المعاملات العابرة).</summary>\n    public async Task AddOrderWithAuditAsync(Guid customerId, OrderDto order, AuditEntry audit, CancellationToken ct)\n    {\n        var batch = Orders.CreateTransactionalBatch(new PartitionKey(customerId.ToString()))\n            .CreateItem(order)\n            .CreateItem(audit);\n\n        using var response = await batch.ExecuteAsync(ct);\n        response.EnsureSuccessStatusCode();\n    }\n\n    /// <summary>Change Feed: أساس بناء read models / مزامنة مع SQL.</summary>\n    public async Task StreamChangesAsync(Func<OrderDto, CancellationToken, Task> handle, CancellationToken ct)\n    {\n        var processor = Orders.GetChangeFeedProcessorBuilder<OrderDto>(\n            \"orders-sync\", (changes, token) => Task.WhenAll(changes.Select(c => handle(c, token))))\n            .WithInstanceName($\"{Environment.MachineName}-{Environment.ProcessId}\")\n            .WithLeaseContainer(client.GetContainer(\"shop\", \"leases\"))\n            .Build();\n\n        await processor.StartAsync();\n        ct.Register(async () => await processor.StopAsync());\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "مستوى الاتساق",
+        "الضمان",
+        "التكلفة/الكمون",
+        "إمتى"
+      ],
+      "rows": [
+        [
+          "Strong",
+          "كل القراءات ترى آخر التزام",
+          "الأعلى (زمن + RU)",
+          "مال/مخزون حيث الاتساق أهم من التوفر"
+        ],
+        [
+          "Bounded Staleness",
+          "تأخر محدود (زمن أو عدد إصدارات)",
+          "متوسطة",
+          "مزامنة بين مناطق مع ضمانات معقولة"
+        ],
+        [
+          "**Session** (الافتراضي)",
+          "اتساق داخل جلسة المستخدم نفسه",
+          "منخفضة",
+          "★ أغلب التطبيقات: المستخدم يشوف كتاباته"
+        ],
+        [
+          "Consistent Prefix",
+          "لا ترى ترتيبًا مخلوطًا (لا قفزات للوراء)",
+          "أقل",
+          "تحليلات/سجلات مرتبة"
+        ],
+        [
+          "Eventual",
+          "بلا ضمان ترتيب",
+          "الأرخص",
+          "عدادات، توصيات، بيانات قابلة للتقارب"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "تكلفة Cosmos: RU/s مش «عدد الطلبات»",
+      "md": "\n- **قراءة نقطة** (id + partition key) ≈ 1 RU لمستند 1KB. **استعلام cross-partition** = مئات/آلاف RU.\n- **حجم المستند** بيضاعف التكلفة: خزّن projection لا كائن ضخم، وتجنّب الحقول غير المستخدمة.\n- **الفهارس**: سياسة الفهرسة الافتراضية تفهرس كل المسارات → تكلفة كتابة أعلى. قيّدها (`indexingPolicy` بـ`excludedPaths`).\n- **التصميم أولًا ثم التكلفة**: اختيار partition key غلط ما يتصلحش بضبط RU — يحتاج إعادة تصميم وترحيل بيانات.\n- **قيس بـ`RequestCharge`**: `response.RequestCharge` بيرجعلك التكلفة لكل نداء → سجّلها كـmetric.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) Polyglot: SQL مصدر الحقيقة + مخازن متخصصة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "نمط عملي: write model في Postgres، read models في مخازن متخصصة",
+      "code": "\n// ① الكتابة: SQL فقط (معاملات، قيود، قواعد عمل)\npublic async Task<Guid> CreateOrderAsync(CreateOrderCommand cmd, CancellationToken ct)\n{\n    await using var tx = await db.Database.BeginTransactionAsync(ct);\n    var order = await orders.CreateAsync(cmd, ct);                   // Postgres\n    db.OutboxMessages.Add(OutboxMessage.Of(\"order.created\", order)); // ✓ outbox في نفس المعاملة\n    await db.SaveChangesAsync(ct);\n    await tx.CommitAsync(ct);\n    return order.Id;\n}\n\n// ② المزامنة: عامل outbox ينشر الأحداث (at-least-once)\npublic sealed class OutboxDispatcher(AppDbContext db, IEventPublisher publisher) : BackgroundService\n{\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        while (!stoppingToken.IsCancellationRequested)\n        {\n            var batch = await db.OutboxMessages\n                .Where(m => m.SentAt == null)\n                .OrderBy(m => m.CreatedAt)\n                .Take(50).ToListAsync(stoppingToken);\n\n            foreach (var message in batch)\n            {\n                await publisher.PublishAsync(message.Type, message.Payload, stoppingToken);\n                message.SentAt = DateTimeOffset.UtcNow;               // idempotent على المستهلك\n            }\n            await db.SaveChangesAsync(stoppingToken);\n            await Task.Delay(200, stoppingToken);\n        }\n    }\n}\n\n// ③ المستهلكون يبنون read models متخصصة (كل واحد لمهمته)\npublic sealed class CatalogProjectionHandlers(ICatalogStore mongo, ISearchIndexer search, IRedisCacheService cache)\n{\n    public async Task On(OrderCreated order, CancellationToken ct)\n    {\n        await mongo.UpsertAsync(order.ToProductDocument(), ct);        // MongoDB: كتالوج مرن + سمات\n        await search.IndexAsync(order.ToSearchDoc(), ct);              // OpenSearch: بحث نصي سريع\n        await cache.InvalidateAsync($\"shop:catalog:list\", ct);         // Redis: إبطال القوائم\n    }\n}\n\n// ④ القراءة: أنسب مخزن لكل استعلام — والقاعدة: المصدر الحقيقي هو SQL\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أبرر اختيار SQL أو NoSQL بمعيار (علاقات/معاملات/قيود مقابل مرونة/حجم/توسع) — مش بالموضة.",
+        "أنمذج مستنديًا بقرار embed مقابل reference مبني على نمط الوصول وحدود النمو.",
+        "أختار partition key في Cosmos بحسب نمط الاستعلام والتوزيع، وأفهم أثره على RU وعلى hot partitions.",
+        "أبني نمط polyglot: SQL مصدر حقيقة + outbox + read models متخصصة، مع فهارس وقياس للتكلفة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "سطور الطلب: embed داخل مستند الطلب ولا reference؟",
+          "options": [
+            "Reference دائمًا",
+            "Embed — تُقرأ وتُكتب مع الطلب كوحدة اتساق واحدة (aggregate) وحجمها محدود",
+            "مصفوفة بلا حدود في مستند منفصل",
+            "جدول علائقي داخل Mongo"
+          ],
+          "answer": 1,
+          "explain": "القاعدة: ما يُقرأ ويُكتب معًا يُدمج. العميل/الفئة/الأحداث = reference لأنها كيانات مستقلة أو بلا حدود."
+        },
+        {
+          "q": "partition key بـ`orderDate` في Cosmos — المشكلة؟",
+          "options": [
+            "لا مشكلة",
+            "Hot partition: كل كتابات اليوم تتكدس في قسم واحد → اختناق رغم سعة إجمالية فائضة",
+            "تكلفة تخزين أعلى",
+            "لا يدعم الفرز"
+          ],
+          "answer": 1,
+          "explain": "المفتاح المثالي: cardinality عالية + توزيع متساوٍ + مطابق لنمط الاستعلام الأساسي (مثل `customerId`)."
+        },
+        {
+          "q": "استعلام Cosmos بدون تمرير partition key — الأثر؟",
+          "options": [
+            "لا أثر",
+            "يصبح cross-partition (fan-out لكل الأقسام) → RU أعلى بكتير وزمن أطول",
+            "يرجع نتائج خاطئة",
+            "يفشل تلقائيًا"
+          ],
+          "answer": 1,
+          "explain": "أغلب تحسينات Cosmos تختصر في: صمّم الاستعلامات لتبقى داخل قسم واحد ومرّر المفتاح صراحة."
+        },
+        {
+          "q": "مستوى الاتساق الافتراضي في Cosmos وإمتى ترفعه؟",
+          "options": [
+            "Strong دائمًا",
+            "Session (المستخدم يرى كتاباته)؛ ارفعه لـStrong للعمليات المالية الحساسة مع قبول تكلفة/زمن أعلى",
+            "Eventual دائمًا",
+            "Bounded Staleness"
+          ],
+          "answer": 1,
+          "explain": "Session يكفي أغلب التطبيقات وأرخص. القرار تجاري: كم تتحمل من عدم اتساق مقابل التكلفة والتوفر؟"
+        },
+        {
+          "q": "مشروع .NET متوسط الحجم (متجر، تقارير، مستخدمين) — أنهي تخزين؟",
+          "options": [
+            "MongoDB لأنه مرن",
+            "Postgres/SQL Server مصدر الحقيقة + Redis للكاش (+ بحث متخصص لو محتاج) — NoSQL فقط لدليل مقاس",
+            "Cosmos DB لأنه سحابي",
+            "خليط من الثلاثة من البداية"
+          ],
+          "answer": 1,
+          "explain": "البساطة + المعاملات + التقارير + EF Core الناضج = SQL. أضف مخازن متخصصة لما يظهر دليل قياسي على الحاجة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "قرار تخزين موثق",
+          "md": "اكتب ADR لاختيار التخزين في مشروعك: جدول بالمتطلبات (علاقات/معاملات/قيود/حجم/معدل كتابة/مرونة مخطط) وتقييم كل خيار، والقرار مع شروط إعادة النظر. لو اخترت إضافة مخزن NoSQL: حدد الحالة الدقيقة اللي بيخدمها.",
+          "criteria": [
+            "جدول متطلبات بـ6 معايير على الأقل وتقييم لكل خيار",
+            "قرار صريح مع **دليل** (حجم/معدل كتابة/نمط استعلام) مش تفضيل",
+            "شروط إعادة النظر قابلة للقياس (مثال: «لو تجاوز الجدول X صفًا أو p95 القراءة Y»)",
+            "لو polyglot: تحديد مصدر الحقيقة وآلية المزامنة واتساقها"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "read model في مخزن متخصص",
+          "md": "ابنِ مسارًا كاملًا: كتابة في SQL + outbox + مستهلك يبني read model في MongoDB (أو Redis/OpenSearch) + endpoint قراءة من المخزن المتخصص. شغّله بـTestcontainers واختبر المزامنة.",
+          "criteria": [
+            "الكتابة في SQL فقط (المستند لا يُكتب من الـAPI مباشرة)",
+            "outbox داخل نفس المعاملة (بلا فقد) والمستهلك idempotent",
+            "اختبار: إنشاء/تعديل في SQL → يظهر في الـread model (مع انتظار/استطلاع محدد)",
+            "فهارس المخزن المتخصص معرّفة ككود وتُطبَّق عند الإقلاع",
+            "قرار مكتوب: أنهي استعلامات تُخدم من المخزن المتخصص وأنهي من SQL"
+          ],
+          "hint": "لو الاختبار غير مستقر بسبب زمن المزامنة: استخدم استطلاعًا بحد زمني (poll until or timeout) بدل `Task.Delay` ثابت، وسجّل زمن المزامنة كـmetric."
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "MongoDB C# driver",
+          "url": "https://www.mongodb.com/docs/drivers/csharp/current/"
+        },
+        {
+          "label": "MongoDB — Data modeling",
+          "url": "https://www.mongodb.com/docs/manual/data-modeling/"
+        },
+        {
+          "label": "Azure Cosmos DB documentation",
+          "url": "https://learn.microsoft.com/azure/cosmos-db/"
+        },
+        {
+          "label": "Cosmos DB — Choose a partition key",
+          "url": "https://learn.microsoft.com/azure/cosmos-db/nosql/partitioning-overview"
+        },
+        {
+          "label": "Cosmos DB — Consistency levels",
+          "url": "https://learn.microsoft.com/azure/cosmos-db/consistency-levels"
+        },
+        {
+          "label": "Outbox pattern (MassTransit)",
+          "url": "https://masstransit.io/documentation/configuration/outbox"
+        },
+        {
+          "label": "LiteDB",
+          "url": "https://www.litedb.org/"
+        }
+      ]
+    }
+  ]
+}

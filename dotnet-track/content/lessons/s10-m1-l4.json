@@ -1,0 +1,480 @@
+{
+  "id": "s10-m1-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "«يعمل عندي» لا تُثبت شيئًا للقارئ. **رابط يفتح ويعمل** يثبت كل شيء في ثانية: أنك تنشر · أنك تفهم البيئات · أنك تتعامل مع الأسرار والتكلفة.\n\nالدرس ده: اختيار الاستضافة · دومين + TLS · تقليل التكلفة لصفر تقريبًا · حالة/مراقبة للمشروع · وأهم مافيه: **قائمة أمان النشر العام** (لأن مشروعك سيصبح هدفًا حقيقيًا للبوتات في أول ساعة)."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات",
+      "items": [
+        {
+          "term": "Serverless containers",
+          "def": "تشغيل حاويات بلا إدارة خوادم، غالبًا مع scale-to-zero (Azure Container Apps · Cloud Run)."
+        },
+        {
+          "term": "Free tier / scale-to-zero",
+          "def": "خطة مجانية أو تقليص للنسخ صفر عند الخمول — تجعل مشروعًا شخصيًا بتكلفة ~0."
+        },
+        {
+          "term": "Custom domain + TLS",
+          "def": "دومينك الخاص + شهادة تلقائية (Let's Encrypt) — يرفع المصداقية ويُساعد الـSEO."
+        },
+        {
+          "term": "HSTS / HTTPS-only",
+          "def": "إجبار HTTPS على المتصفح وإعادة توجيه كل HTTP."
+        },
+        {
+          "term": "Health endpoints",
+          "def": "`/alive` (liveness) و`/health` (readiness) — يحتاجهما المُشغّل وإلا يعيد التشغيل بلا داعٍ."
+        },
+        {
+          "term": "Cold start",
+          "def": "زمن أول طلب بعد الخمول — مهم لـscale-to-zero: يُذكر في README بدل أن يُفاجئ الزائر."
+        },
+        {
+          "term": "Status page",
+          "def": "صفحة حالة بسيطة (up/degraded/down) تُظهر جدية التشغيل."
+        },
+        {
+          "term": "Uptime check",
+          "def": "مراقبة خارجية دورية للرابط — مجانية غالبًا وتنبّه بالبريد."
+        },
+        {
+          "term": "Budget alert",
+          "def": "تنبيه تكلفة على السحابة — يحمي من فاتورة مفاجئة عند إساءة الاستخدام."
+        },
+        {
+          "term": "Secret scanning / Dependabot",
+          "def": "فحص الأسرار والتحديثات الأمنية تلقائيًا في GitHub."
+        },
+        {
+          "term": "Bot traffic",
+          "def": "زحف آلي مكثّف على أي رابط عام — يحتاج حدود معدل وحماية من الاستنزاف."
+        },
+        {
+          "term": "Abuse surface",
+          "def": "أي مدخل يمكن إساءة استخدامه: تسجيل مفتوح · رفع ملفات · إرسال بريد · استعلامات ثقيلة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① أين تنشر؟ (مقارنة صريحة)"
+    },
+    {
+      "type": "table",
+      "caption": "خيارات أكتوبر 2026 — مشروع شخصي",
+      "head": [
+        "الخيار",
+        "مناسب لـ",
+        "التكلفة",
+        "درجة الحرية",
+        "ملاحظة"
+      ],
+      "rows": [
+        [
+          "**Azure Container Apps**",
+          "API/Blazor + PostgreSQL",
+          "~0 مع scale-to-zero (منحة شهرية)",
+          "عالية",
+          "الأفضل لو تعلمت .NET على Azure"
+        ],
+        [
+          "**Azure App Service (Free/B1)**",
+          "تطبيقات أبسط",
+          "مجاني محدود / ~$13",
+          "متوسطة",
+          "بلا scale-to-zero في الطبقات الرخيصة"
+        ],
+        [
+          "**Fly.io**",
+          "حاويات صغيرة + قاعدة",
+          "منخفض جدًا",
+          "عالية",
+          "مناطق قريبة من مصر (fra/ams)"
+        ],
+        [
+          "**Railway/Render**",
+          "نشر سريع من GitHub",
+          "مجاني محدود",
+          "منخفضة",
+          "الأسهل للمبتدئ، أقل تحكمًا"
+        ],
+        [
+          "**VPS (Hetzner/Contabo)**",
+          "تحكم كامل",
+          "~$4–5/شهر",
+          "كاملة",
+          "أنت المسؤول عن كل شيء (نظام/شهادة/نسخ)"
+        ],
+        [
+          "**GitHub Pages**",
+          "واجهة ثابتة فقط",
+          "مجاني",
+          "منخفضة",
+          "لا يصلح لـAPI"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "قرار عملي لمشروع .NET",
+      "filename": "docs/deploy/decision.txt",
+      "code": "\nالحالة: API + قاعدة بيانات + (واجهة Blazor أو React)\nمعيار الاختيار: (1) تكلفة صفرية عند الخمول، (2) HTTPS ودومين، (3) ألا تحتاج إدارة نظام.\n\nالاختيار الموصى به: Azure Container Apps + PostgreSQL (Basic/Serverless) + Log Analytics\n  • ACA: scale-to-zero (min replicas = 0) ⇒ تكلفة ~0 في مشروع بلا زوار.\n  • PostgreSQL B1ms ~ $12–15/شهر — أو استخدم خطة مجانية من مزوّد آخر لمشروع تجريبي.\n  • بديل أرخص: Fly.io لحاوية + NeON/Supabase للقاعدة (خطة مجانية).\n\nقرار مخالف مقبول: VPS لأنك تريد تعلّم Docker/Nginx/Certbot. اكتب سببك في README.\n\nما أنت مسؤول عنه في كل الحالات:\n  • أسرار في متغيرات بيئة/Key Vault (لا في الكود ولا في الصورة)\n  • /health و/alive\n  • تنبيه تكلفة + تنبيه uptime\n  • حد معدل + إغلاق أي تسجيل مفتوح\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② قائمة أمان النشر العام (قبل أول رابط)"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "أول ساعة بعد النشر: البوتات تجدك",
+      "md": "بمجرد أن يصبح الرابط عامًا، تبدأ الطلبات: `/wp-login.php` · `/.env` · `/backup.zip` · مسح شامل للمنافذ. **لا يعني ذلك أنك مخترق** — يعني أنك مرئي.\n**الحد الأدنى قبل النشر:** مسح أسرار · تسجيل مغلق أو بحماية · حد معدل · HTTPS فقط · تحديثات أمنية · نسخ احتياطي · تنبيه تكلفة.\n**وبعد النشر:** راقب سجلاتك أول ساعتين — سترى هجمات فعلية، وهذا بحد ذاته درس نادر."
+    },
+    {
+      "type": "table",
+      "caption": "12 بندًا إلزاميًا — لا تنشر بأقل منها",
+      "head": [
+        "#",
+        "البند",
+        "كيف",
+        "لماذا"
+      ],
+      "rows": [
+        [
+          "1",
+          "مسح أسرار في التاريخ",
+          "gitleaks/Trivy + `git filter-repo` عند اللزوم",
+          "أي سر = تسريب فوري"
+        ],
+        [
+          "2",
+          "HTTPS فقط + HSTS",
+          "`UseHttpsRedirection` + header",
+          "منعًا للتنصت وثقة المتصفح"
+        ],
+        [
+          "3",
+          "سياسة CSP + headers أمان",
+          "`UseSecurityHeaders()` (7.2.3)",
+          "XSS/clickjacking"
+        ],
+        [
+          "4",
+          "حد معدل على المصادقة",
+          "Rate limiter على `/login` و`/api/auth`",
+          "منع التعداد والتخمين"
+        ],
+        [
+          "5",
+          "تسجيل مغلق / بريد موثّق",
+          "بلا تسجيل عام في مشروع عرض",
+          "منع رسائل spam باسمك"
+        ],
+        [
+          "6",
+          "صلاحيات قاعدة البيانات",
+          "مستخدم تطبيق بحدود دنيا",
+          "تقليل أثر أي ثغرة"
+        ],
+        [
+          "7",
+          "نسخ احتياطي + استعادة مختبرة",
+          "pg_dump يومي + تجربة استعادة",
+          "لا يمكن استرجاع ما لم تُجرّبه"
+        ],
+        [
+          "8",
+          "تنبيه تكلفة",
+          "Budget alert (Azure/مزوّد)",
+          "حماية من فاتورة مفاجئة"
+        ],
+        [
+          "9",
+          "تحديثات أمنية",
+          "Dependabot + `dotnet list package --vulnerable`",
+          "ثغرات المكتبات تُكشف دوريًا"
+        ],
+        [
+          "10",
+          "حدود الموارد",
+          "حد طلبات/حجم جسم/زمن تنفيذ",
+          "منع استنزاف"
+        ],
+        [
+          "11",
+          "بيانات تجريبية فقط",
+          "بيانات وهمية صريحة",
+          "ممنوع PII حقيقية (PDPL)"
+        ],
+        [
+          "12",
+          "صفحة/رسالة «مشروع عرض»",
+          "سطر في الصفحة الرئيسية",
+          "يوضّح النطاق والحدود"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ النشر خطوة بخطوة (Azure Container Apps)"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "docs/deploy/deploy.sh — من صورة إلى رابط عام",
+      "filename": "docs/deploy/deploy.sh",
+      "code": "#!/usr/bin/env bash\n# نشر حاوية على Azure Container Apps + دومين + أسرار.\nset -euo pipefail\nAPP=\"shop-api\"; RG=\"rg-portfolio\"; ENV=\"env-portfolio\"; ACR=\"acrportfolio$RANDOM\"\n\naz group create -n \"$RG\" -l westeurope\naz acr create -n \"$ACR\" -g \"$RG\" --sku Basic --admin-enabled true\n\n# 1) بناء الصورة في السحابة (بلا Docker محلي)\naz acr build -r \"$ACR\" -t \"$APP:1.0.0\" -f src/Shop.Api/Dockerfile .\n\n# 2) بيئة ACA\naz containerapp env create -n \"$ENV\" -g \"$RG\" -l westeurope\n\n# 3) التطبيق: scale-to-zero + أسرار مرجعية\naz containerapp create -n \"$APP\" -g \"$RG\" --environment \"$ENV\" \\\n  --image \"$ACR.azurecr.io/$APP:1.0.0\" \\\n  --registry-server \"$ACR.azurecr.io\" \\\n  --target-port 8080 --ingress external \\\n  --min-replicas 0 --max-replicas 3 \\\n  --cpu 0.5 --memory 1.0Gi \\\n  --env-vars \"ASPNETCORE_ENVIRONMENT=Production\" \\\n             \"ConnectionStrings__Db=secretref:db-conn\" \\\n  --secrets \"db-conn=$DB_CONNECTION_STRING\"\n\n# 4) دومين مخصص (شهادة مُدارة تلقائيًا)\naz containerapp hostname add -n \"$APP\" -g \"$RG\" --hostname app.yourdomain.com\naz containerapp hostname bind -n \"$APP\" -g \"$RG\" --hostname app.yourdomain.com \\\n  --environment \"$ENV\" --validation-method CNAME\n\nFQDN=$(az containerapp show -n \"$APP\" -g \"$RG\" --query properties.configuration.ingress.fqdn -o tsv)\necho \"الرابط: https://$FQDN\"\n\n# 5) فحص سريع (health + 401 على API محمي)\ncurl -fsS \"https://$FQDN/alive\" -o /dev/null && echo \"alive ✅\"\ncurl -fsS \"https://$FQDN/health\" -o /dev/null && echo \"health ✅\"\ncode=$(curl -s -o /dev/null -w \"%{http_code}\" \"https://$FQDN/api/orders\")\n[ \"$code\" = \"401\" ] && echo \"الأمان: API محمي ✅\" || echo \"⚠️ توقّع 401 ووُجد $code\"\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Program.cs — إعدادات الإنتاج الإلزامية (مختصر)",
+      "filename": "src/Shop.Api/Program.Production.cs",
+      "code": "// ── يُضاف إلى Program.cs قبل app.Run() ──────────────────────────\nif (!app.Environment.IsDevelopment())\n{\n    app.UseHsts();                      // HSTS: إجبار HTTPS في المتصفح\n    app.UseHttpsRedirection();\n}\n\napp.UseSecurityHeaders();               // CSP · X-Content-Type-Options · Referrer-Policy\n\n// حد معدل على نقاط حساسة — يمنع التعداد والتخمين\napp.UseRateLimiter();\n\napp.MapPost(\"/bff/login\", LoginHandler.Handle)\n   .RequireRateLimiting(\"auth\");        // مثال: 10 محاولات/دقيقة لكل IP\n\napp.MapHealthChecks(\"/alive\", new() { Predicate = r => r.Name == \"self\" });\napp.MapHealthChecks(\"/health\");         // يشمل القاعدة\n\n// بيانات تجريبية فقط — لا PII حقيقية\nif (app.Configuration.GetValue<bool>(\"Seed:Enabled\"))\n    await DemoSeed.RunAsync(app.Services);\n\napp.Run();\n\n// appsettings.Production.json — بلا أسرار:\n// { \"Seed\": { \"Enabled\": true }, \"Logging\": { \"LogLevel\": { \"Default\": \"Warning\" } } }\n// الأسرار تأتي من متغيرات بيئة (secretref) أو Key Vault.\n"
+    },
+    {
+      "type": "table",
+      "caption": "أرقام يجب أن تعرفها عن مشروعك",
+      "head": [
+        "السؤال",
+        "المصدر",
+        "لماذا يسأله المحاور"
+      ],
+      "rows": [
+        [
+          "كم يكلّف شهريًا؟",
+          "حاسبة المزوّد + لقطة",
+          "يُظهر فهمًا اقتصاديًا"
+        ],
+        [
+          "زمن cold start؟",
+          "قياس أول طلب بعد خمول",
+          "يُظهر فهم scale-to-zero"
+        ],
+        [
+          "كم صفًا/مستخدمًا يتحمل؟",
+          "اختبار حمل بسيط",
+          "يُظهر الوعي بالحدود"
+        ],
+        [
+          "ماذا يحدث لو سقطت القاعدة؟",
+          "قتل القاعدة + فحص `/health`",
+          "يُظهر نضج التشغيل"
+        ],
+        [
+          "ما أضعف نقطة أمنية متبقية؟",
+          "صدق + خطة",
+          "الصدق يبني الثقة أكثر من الكمال"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ الحالة والمراقبة: صفحة صغيرة ترفع المصداقية"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "الحالة المعروضة (وما لا يُعاد استخدامه)",
+      "filename": "docs/deploy/status.txt",
+      "code": "\nصفحة الحالة (تُبنى من بيانات حقيقية، لا ثابتة):\n  • الحالة: UP / DEGRADED / DOWN — من استعلام `/health` كل دقيقة (مُخزَّن)\n  • آخر فحص ناجح: طابع زمني (ISO) بتوقيت UTC\n  • زمن الاستجابة p95 آخر ساعة (من مقاييسك)\n  • آخر نشر: commit hash + وقت (من CI)\n  • تنبيه: «بيانات تجريبية / مشروع عرض شخصي»\n\nممنوع في الصفحة:\n  ✗ نسخ لوحة Grafana كأنها خاصة بك بلا بيانات\n  ✗ شارات «99.99%» بلا قياس\n  ✗ أسماء/بريد مستخدمين أو بيانات حقيقية\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "5 أخطاء شائعة عند النشر",
+      "md": "**① نشر بلا حد تكلفة** ⇒ فاتورة/منحة تنتهي في يوم بسبب زاحف.\n**② `min-replicas=1`** لمشروع بلا زوار ⇒ تكلفة مستمرة بلا سبب (استخدم 0 واذكر الـcold start).\n**③ أسرار في `appsettings`** ⇒ تسريب دائم.\n**④ `/health` يفحص القاعدة فقط** ⇒ أعطال إعادة تشغيل لا نهائية (افصل `/alive`).\n**⑤ رابط يعمل مرة واحدة** ⇒ لا مراقبة ولا نسخ احتياطي ⇒ أول عطل يمحو المشروع من البورتفوليو بصمت."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "تختار استضافة بحسب التكلفة عند الخمول والحاجة للتحكم.",
+        "تنشر حاوية مع `min-replicas=0` وتشرح cold start في README.",
+        "تربط دومينًا بشهادة مُدارة وتفرض HTTPS + HSTS.",
+        "تنجح فحوص `/alive` و`/health` و`401` على API محمي.",
+        "تضع كل الأسرار في متغيرات بيئة/Key Vault.",
+        "تضيف حد معدل على المسارات الحساسة وتغلق التسجيل العام.",
+        "تضبط تنبيه تكلفة وتنبيه uptime خارجي.",
+        "تُجري نسخة احتياطية وتختبر استعادتها فعلًا.",
+        "تنشر بيانات تجريبية وتكتب «مشروع عرض شخصي» على الصفحة.",
+        "تعرف تكلفة شهرية تقريبية وزمن cold start وحدود مشروعك."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "7 أسئلة.",
+      "questions": [
+        {
+          "q": "ما أهم سبب لاختيار scale-to-zero في مشروع شخصي؟",
+          "options": [
+            "أداء أعلى",
+            "التكلفة تقترب من الصفر عند عدم وجود زوار — مع ثمن زمن إقلاع أول طلب",
+            "أمان أعلى",
+            "جودة كود أفضل"
+          ],
+          "answer": 1,
+          "explain": "مشروع البورتفوليو لا يزوره أحد 95% من الوقت. scale-to-zero يقلل التكلفة لذلك الثمن زمن استجابة أوّل طلب (cold start) — وهو مقبول إذا ذُكر في README."
+        },
+        {
+          "q": "أول شيء تفعله قبل نشر رابط عام؟",
+          "options": [
+            "تشغيل حمل",
+            "مسح الأسرار من التاريخ + ضبط مفتاح/أسرار البيئة + حد معدل + HTTPS",
+            "إضافة قراءة/كتابة",
+            "إضافة لقطة"
+          ],
+          "answer": 1,
+          "explain": "الأمان والتكلفة قبل الافتتاح. أي سر في الـrepo يُعتبر مكشوفًا، وأي رابط عام بلا حد معدل سيُستنزف. الأمان أولًا ثم الأداء."
+        },
+        {
+          "q": "`/health` يفشل عند سقوط القاعدة و`/alive` ينجح. ماذا يحدث؟",
+          "options": [
+            "لا شيء",
+            "المُشغّل يسحب النسخة من الحركة (readiness) لكن لا يعيد تشغيلها (liveness) — وهذا السلوك الصحيح",
+            "المُشغّل يعيد التشغيل بلا نهاية",
+            "القاعدة تعود تلقائيًا"
+          ],
+          "answer": 1,
+          "explain": "هذا هو الفصل المطلوب: readiness يوقف الحركة عند تعطل التبعية؛ liveness بلا تبعيات يمنع حلقات إعادة تشغيل عبثية. عكسهما سبب أعطال متسلسلة."
+        },
+        {
+          "q": "ما أبسط حماية من فاتورة مفاجئة؟",
+          "options": [
+            "كلمة سر قوية",
+            "حد أقصى للنسخ (max-replicas) + تنبيه تكلفة (budget alert)",
+            "إخفاء الرابط",
+            "إيقاف السجلات"
+          ],
+          "answer": 1,
+          "explain": "التكلفة تُصنع من عدد النسخ والحساب. `max-replicas` ومعرفتك بحجم الحساب + تنبيه مسبق = حماية. لا تعتمد على «فيزا محدودة» كضابط."
+        },
+        {
+          "q": "لماذا لا تنشر بيانات حقيقية في مشروع عرض؟",
+          "options": [
+            "غير ضروري",
+            "لأنها بيانات شخصية (PDPL) وتُعرّضك للمسؤولية وتُفتح للسرقة — استخدم بيانات وهمية",
+            "لتوفير المساحة",
+            "لأنها بطيئة"
+          ],
+          "answer": 1,
+          "explain": "أي بيانات عميل حقيقية = مسؤولية قانونية + خطر تسريب + ممارسة غير أخلاقية. البيانات الوهمية تُظهر الوظيفة كاملة بلا مخاطرة."
+        },
+        {
+          "q": "ما أفضل طريقة لعرض مراقبة مشروعك في البورتفوليو؟",
+          "options": [
+            "لقطة لوحة بلا سياق",
+            "لقطة + شرح: ماذا نقيس · عتبة الإنذار · ماذا يحدث عند التجاوز",
+            "شعار OpenTelemetry",
+            "جدول أرقام بلا مصدر"
+          ],
+          "answer": 1,
+          "explain": "اللقطة وحدها لا معنى لها. الأثر الحقيقي: «p95 > 800ms لمدة 5 دقائق ⇒ إنذار ticket» — يُظهر أنك تفكر كمالك للنظام لا كمستخدم للأدوات."
+        },
+        {
+          "q": "سؤال «ماذا يفعل نظامك عندما تسقط القاعدة؟» — كيف تجيب؟",
+          "options": [
+            "«لا أعرف»",
+            "«استخدمت حاوية قاعدة قوية»",
+            "«/alive ينجح و/health يفشل؛ الـingress يوقف الحركة أو يرجع 503 بـProblemDetails؛ لا كاش مضلل للبيانات الحرجة؛ والنسخة الاحتياطية تُستعاد في ≤ 30 دقيقة — جرّبتها»",
+            "«سأصلحها لاحقًا»"
+          ],
+          "answer": 2,
+          "explain": "السؤال يقيس النضج لا معرفة الأسماء. جواب يذكر السلوك والزمن والاختبار الفعلي = مالك نظام. جواب الأدوات = مستخدم أداة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "نشر حقيقي + درس عطل.",
+      "items": [
+        {
+          "id": "s10-m1-l4-t1",
+          "title": "مهمة 1: انشر مشروعك وأثبت الحالة",
+          "md": "انشر flagship على استضافة حقيقية بدومين/URL عام، وأكمل قائمة الأمان الـ12، ثم أكمل صفحة الحالة.",
+          "criteria": [
+            "رابط عام يعمل ويُظهر «مشروع عرض شخصي».",
+            "دومين مخصص أو URL مستقر + HTTPS إجباري + HSTS.",
+            "`/alive` و`/health` يعملان ويختلفان عند سقوط القاعدة (لقطة).",
+            "`401` على API محمي (ثلاث لقطات فحص).",
+            "أسرار من متغيرات بيئة (بلا قيم في المستودع — لقطة مسح).",
+            "حد معدل يعمل (لقطة 429 عند تجاوز الحد).",
+            "تنبيه تكلفة + فحص uptime خارجي مفعّلان (لقطتان).",
+            "نسخة احتياطية + تجربة استعادة موثقة (خطوات + زمن).",
+            "جدول: التكلفة الشهرية · cold start · عدد النسخ · الحدود."
+          ],
+          "hint": "لو الميزانية صفر: استخدم خطة مجانية (ACA + PostgreSQL مزوّد مجاني) أو Fly.io. وابدأ بأصغر صورة (chiseled) وأصغر خطة؛ وارفع فقط عند الحاجة. ولاختبار `/health` مقابل `/alive`: أوقف القاعدة بـ`az containerapp rev set-mode single` أو غيّر سلسلة الاتصال مؤقتًا — وسجّل لقطة الفرق.",
+          "solution": "النتيجة: رابط يفتح + أدلة أمان + أرقام تشغيل. أهم اكتشاف يحدث عادةً: بوتات تزور `/wp-login.php` في أول ساعة — وهذا يجعلك ترى الحد المعدل يعمل فعليًا وهذا وحده درس.",
+          "resources": [
+            "https://learn.microsoft.com/azure/container-apps/overview",
+            "https://learn.microsoft.com/azure/container-apps/scale-app",
+            "https://learn.microsoft.com/azure/cost-management-billing/costs/tutorial-acm-create-budgets",
+            "https://fly.io/docs/"
+          ]
+        },
+        {
+          "id": "s10-m1-l4-t2",
+          "title": "مهمة 2: صمّم عطلًا ووثّقه (Game Day)",
+          "md": "افعل عطلًا واحدًا متعمدًا في بيئة النشر (سقوط قاعدة/نفاد اتصالات/خطأ 500) وراقب ما يحدث، ثم وثّق.",
+          "criteria": [
+            "عطل مُتعمَّد موثّق (ماذا فعلت بالضبط).",
+            "ما رآه المستخدم (لقطة/وصف) — لا ما تخيّلته.",
+            "ما فعلته المراقبة (إنذار/لقطة/سجل).",
+            "زمن الاكتشاف وزمن التعافي (MTTD/MTTR) بالأرقام.",
+            "إصلاح أو تحسين واحد طُبّق نتيجة التجربة.",
+            "فقرة «ما لم أتوقعه» — أثمن جزء في التوثيق."
+          ],
+          "hint": "ابدأ بعطل منخفض الخطر: إيقاف القاعدة 3 دقائق. وثّق كل شيء بالوقت الحقيقي. لا تحذف السجلات السيئة — هي الدليل. وفي النهاية أضف runbook من 5 أسطر: «إذا حدث X فافعل Y».",
+          "solution": "النتيجة: صفحة `docs/gameday.md` يقدر تحكي محتواها في المقابلة بدقة. المحاورون يحبون هذا النوع من التوثيق أكثر من أي شهادة — لأنه يثبت أنك تدير نظامًا لا تكتب كودًا فقط.",
+          "resources": [
+            "https://learn.microsoft.com/azure/container-apps/health-probes",
+            "https://learn.microsoft.com/azure/architecture/framework/devops/",
+            "https://sre.google/workbook/postmortem-culture/"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Azure Container Apps",
+          "url": "https://learn.microsoft.com/azure/container-apps/overview"
+        },
+        {
+          "label": "قواعد scale",
+          "url": "https://learn.microsoft.com/azure/container-apps/scale-app"
+        },
+        {
+          "label": "Health probes في ACA",
+          "url": "https://learn.microsoft.com/azure/container-apps/health-probes"
+        },
+        {
+          "label": "ميزانيات Azure (تنبيه تكلفة)",
+          "url": "https://learn.microsoft.com/azure/cost-management-billing/costs/tutorial-acm-create-budgets"
+        },
+        {
+          "label": "Fly.io",
+          "url": "https://fly.io/docs/"
+        },
+        {
+          "label": "ثقافة Postmortem (Google SRE)",
+          "url": "https://sre.google/workbook/postmortem-culture/"
+        }
+      ]
+    }
+  ]
+}

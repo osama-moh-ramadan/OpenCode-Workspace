@@ -1,0 +1,395 @@
+{
+  "id": "s3-m3-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nكل مرشح بيقول إنه يعرف async. الفرق بين «بعرف أكتب `await`» و«فاهم» بيظهر في الإنتاج:\nطلبات بتعلّق تحت الحمل، `Task` بيتسرب، ذاكرة بتزيد بلا سبب، وdeadlock غامض في تطبيق Desktop.\n\nالدرس ده بيشرح **state machine** اللي بيولّدها المترجم، وإزاي thread pool بيتعامل معاها،\nوليه `.Result` كارثة، وبعدين ينتقل لتقليل التخصيصات بـ`Span<T>`/`ArrayPool`، وينتهي بـNativeAOT: إمتى يستحق وإمتى لا.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Async State Machine",
+          "def": "بنية يولّدها المترجم لكل دالة async: حالة لكل `await` + `MoveNext()` تستأنف التنفيذ. async ≠ خيط جديد."
+        },
+        {
+          "term": "Continuation",
+          "def": "الجزء المتبقي من الدالة بعد `await` — يُجدول على thread pool (أو على SynchronizationContext لو موجود)."
+        },
+        {
+          "term": "SynchronizationContext",
+          "def": "آلية إرجاع الاستكمال لسياق واحد (UI thread / ASP.NET القديم). **غير موجود في ASP.NET Core** — وده يغير قواعد `ConfigureAwait`."
+        },
+        {
+          "term": "Thread Pool Starvation",
+          "def": "كل الخيوط مشغولة بالانتظار (blocking) → طابور مهام يطول وزمن يرتفع فجأة."
+        },
+        {
+          "term": "Sync-over-Async",
+          "def": "`.Result`/`.Wait()`/`.GetAwaiter().GetResult()` على مهمة غير مكتملة — أشهر سبب للاختناق والـdeadlock."
+        },
+        {
+          "term": "`ValueTask`",
+          "def": "بديل `Task` لتقليل التخصيص في المسارات الساخنة اللي بتكمل غالبًا بشكل متزامن — بشروط استخدام صارمة."
+        },
+        {
+          "term": "`Span<T>` / `Memory<T>`",
+          "def": "عرض لجزء من ذاكرة (مصفوفة/stackalloc/string) بلا نسخ. `Span` نوع stack فقط — **لا يعبر `await`**."
+        },
+        {
+          "term": "`ArrayPool<T>`",
+          "def": "إعادة استخدام buffers لتقليل التخصيص وضغط GC — مع تأجير/إرجاع منضبط."
+        },
+        {
+          "term": "NativeAOT",
+          "def": "ترجمة كاملة لملف تنفيذي أصلي: إقلاع فوري وذاكرة أقل — مقابل قيود على reflection/dynamic ودعم EF Core."
+        },
+        {
+          "term": "Trimming warnings (IL2xxx/IL3xxx)",
+          "def": "تحذيرات المترجم عن كود يعتمد على metadata غير مضمون بعد القص — لازم تُعالج قبل AOT."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) اللي بيحصل فعلًا خلف `await`"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "الكود اللي بتكتبه مقابل ما يولّده المترجم (مبسّط)",
+      "code": "\n// ── ما تكتبه ──\npublic async Task<decimal> GetTotalAsync(Guid id, CancellationToken ct)\n{\n    var order = await db.Orders.FindAsync([id], ct);        // نقطة تعليق 1\n    if (order is null) return 0m;\n    var rate = await rates.GetAsync(order.Currency, ct);    // نقطة تعليق 2\n    return order.Total * rate;\n}\n\n// ── ما يولّده المترجم (مبسّط جدًا) ──\n// [CompilerGenerated] struct <GetTotalAsync>d__12 : IAsyncStateMachine\n// {\n//     public int <>1__state;               // 0 = قبل await الأول، 1 = بعده، -1 = منتهي\n//     public TaskAwaiter<Order?> <>u__1;\n//     public TaskAwaiter<decimal> <>u__2;\n//     public Order? order; public decimal rate;   // المتغيرات المحلية تُرفع لحقول\n//\n//     public void MoveNext()\n//     {\n//         switch (<>1__state) {\n//           case 0: goto RESUME_1;\n//           case 1: goto RESUME_2;\n//         }\n//         // ... بدء: أول await\n//         var awaiter = db.Orders.FindAsync(...).GetAwaiter();\n//         if (!awaiter.IsCompleted) {            // ★ لو اكتملت متزامنًا: لا تعليق إطلاقًا\n//             <>1__state = 0; <>u__1 = awaiter;\n//             builder.AwaitUnsafeOnCompleted(ref awaiter, ref this);\n//             return;                            // ← الخيط يتحرر هنا (بلا blocking!)\n//         }\n//       RESUME_1:\n//         order = <>u__1.GetResult();            // الاستكمال على thread pool\n//         // ... await الثاني بنفس النمط\n//       RESUME_2:\n//         result = order.Total * rate;\n//         builder.SetResult(result);\n//     }\n// }\n\n// الخلاصات العملية:\n// ① async لا ينشئ خيطًا — await يحرّر الخيط الحالي ويستأنف لاحقًا (على خيط آخر غالبًا)\n// ② لو المهمة اكتملت متزامنًا، الدالة تعمل بلا أي تعليق (ولهذا ValueTask مفيدة)\n// ③ المتغيرات المحلية تصير حقولًا في بنية → تخصيص على الكومة لو الدالة «هربت»\n// ④ الاستثناءات تُلتقط داخل الـTask (لا تضيع) → await يعيد رميها، .Result يلفها في AggregateException\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) `.Result` وthread pool starvation"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Pricing/PricingService.cs",
+      "title": "الأشكال الخطرة وبدائلها",
+      "code": "\n// ═══ ✗ أشكال sync-over-async ═══\npublic decimal GetTotalSync(Guid id)\n{\n    return GetTotalAsync(id, CancellationToken.None).Result;        // ① يلف الاستثناء في AggregateException\n}\npublic decimal GetTotalSync2(Guid id)\n{\n    return GetTotalAsync(id, CancellationToken.None).GetAwaiter().GetResult();  // ② استثناء أنظف لكن نفس الحجب\n}\npublic decimal GetTotalSync3(Guid id)\n{\n    return Task.Run(() => GetTotalAsync(id, CancellationToken.None)).Result;    // ③ أسوأ: خيطين محجوبين\n}\n\n// لماذا كارثة؟ كل نداء يحجز خيطًا من thread pool في **انتظار** (لا عمل).\n// تحت الحمل: الـpool يستهلك خيوطه، ثم يحقن خيوطًا جديدة بمعدل بطيء (~1/ثانية بعد الحد الأدنى)\n// → طابور المهام يطول، والزمن يقفز من 50ms إلى ثوانٍ، وقد تصل لفشل كامل.\n// التشخيص: `dotnet-counters` → threadpool-queue-length مرتفع + thread-count يصعد ببطء.\n\n// ═══ ✓ الحلول ═══\n// ① الأفضل: اجعل المسار كاملًا async (من الـendpoint للقاعدة)\npublic Task<decimal> GetTotalAsync(Guid id, CancellationToken ct) => /* ... */ Task.FromResult(0m);\n\n// ② لو مضطر لواجهة متزامنة (حدث مكتبة قديمة): اعزل في خيط مخصص ولا تحجب thread pool\npublic decimal GetTotalLegacy(Guid id)\n{\n    return Task.Run(async () => await GetTotalAsync(id, CancellationToken.None))\n               .GetAwaiter().GetResult();          // مقبول **فقط** في مسار نادر/خارج الطلب\n}\n\n// ③ مكتبات: لا تستخدم ConfigureAwait(false) كحل للحجب — بل وفّر واجهة متزامنة أصلًا إن لزم\n//    (في ASP.NET Core لا يوجد SynchronizationContext، فـConfigureAwait(false) غالبًا بلا أثر)\n\n// ═══ ✗ deadlock الكلاسيكي (يحدث مع SynchronizationContext) ═══\n// في WPF/WinForms/ASP.NET القديم:\nprivate void Button_Click(object sender, EventArgs e)\n{\n    var data = LoadAsync().Result;          // UI thread محجوب\n}\nprivate async Task<string> LoadAsync()\n{\n    await Task.Delay(100);                  // الاستكمال يريد العودة لـUI thread… وهو محجوب → deadlock\n    return \"data\";\n}\n// في ASP.NET Core: لا SynchronizationContext → لا deadlock بهذا الشكل، لكن الحجب والاستنزاف قائمان.\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "النمط",
+        "الحكم",
+        "البديل/التصحيح"
+      ],
+      "rows": [
+        [
+          "`.Result` / `.Wait()` على I/O",
+          "✗ ممنوع في مسار الطلب",
+          "اجعل المسار async بالكامل"
+        ],
+        [
+          "`async void`",
+          "✗ إلا في معالجات الأحداث",
+          "`async Task` — الاستثناء في async void يقتل العملية"
+        ],
+        [
+          "fire-and-forget (`_ = DoAsync()`)",
+          "✗ استثناءات غير مراقبة",
+          "Channel + BackgroundService، أو `Task.Run` مع try/catch وسجل"
+        ],
+        [
+          "`Task.Run` داخل ASP.NET لمجرد «توازي»",
+          "✗ يستهلك خيطًا بلا فائدة",
+          "نادِ الدالة async مباشرة"
+        ],
+        [
+          "`Task.WhenAll` بلا `await` في نفس الـscope",
+          "△ استثناءات مفقودة",
+          "`await Task.WhenAll(...)` داخل try، وافحص `Task.Exception`"
+        ],
+        [
+          "حلقة `await` متسلسلة على عناصر مستقلة",
+          "△ بطيء (تسلسل بلا داعٍ)",
+          "`Parallel.ForEachAsync` بحد توازي أو WhenAll بدفعات"
+        ],
+        [
+          "`ValueTask` مخزّنة/منتظرة مرتين",
+          "✗ سلوك غير معرّف",
+          "استخدم `Task` إلا لو قِست فائدة حقيقية"
+        ],
+        [
+          "`CancellationToken` غير مُمرَّر",
+          "✗ تسريب موارد بعد الإلغاء",
+          "مرّره في كل نداء I/O"
+        ],
+        [
+          "`new CancellationTokenSource()` بلا dispose",
+          "△ تسريب مقبض",
+          "`using`/`await using` دائمًا"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) التوازي والإلغاء الصحيحان"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "WhenAll، حدود التوازي، وtimeouts",
+      "code": "\n// ═══ WhenAll: استثناءات متعددة، أول واحد فقط يُرمى ═══\npublic async Task<EnrichedOrder> EnrichAsync(Guid orderId, CancellationToken ct)\n{\n    var orderTask = orders.GetAsync(orderId, ct);\n    var customerTask = customers.GetAsync(orderId, ct);\n    var ratesTask = rates.GetTableAsync(ct);\n\n    try { await Task.WhenAll(orderTask, customerTask, ratesTask); }\n    catch (Exception)\n    {\n        // ✓ سجل كل الاستثناءات، لا الأول فقط\n        foreach (var t in new[] { orderTask, customerTask, ratesTask })\n            if (t.IsFaulted) log.LogError(t.Exception, \"sub-task failed\");\n        throw;\n    }\n\n    return new EnrichedOrder(orderTask.Result, customerTask.Result, ratesTask.Result);\n    // ✓ .Result هنا آمنة: المهام اكتملت بعد WhenAll (لا حجب)\n}\n\n// ═══ حدود التوازي: لا تفتح 10,000 نداء متزامن ═══\npublic async Task<IReadOnlyList<Product>> FetchAllAsync(IReadOnlyList<Guid> ids, CancellationToken ct)\n{\n    var results = new Product[ids.Count];\n\n    await Parallel.ForEachAsync(ids.Select((id, i) => (id, i)),\n        new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct },\n        async (item, token) => results[item.i] = await catalog.GetAsync(item.id, token));\n\n    return results;\n}\n\n// ═══ timeout مستقل عن الإلغاء الخارجي ═══\npublic async Task<Price?> TryGetPriceAsync(string sku, CancellationToken ct)\n{\n    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);\n    timeout.CancelAfter(TimeSpan.FromSeconds(2));       // ✓ سقف زمني محلي\n\n    try { return await pricing.GetAsync(sku, timeout.Token); }\n    catch (OperationCanceledException) when (!ct.IsCancellationRequested)\n    {\n        log.LogWarning(\"pricing timed out for {Sku}; using fallback\", sku);\n        Metrics.Timeouts.Add(1, new(\"dependency\", \"pricing\"));\n        return null;                                     // ← تدهور مقصود، لا فشل\n    }\n}\n\n// ═══ .NET 6+: WaitAsync (أنظف من linked CTS للمهام البسيطة) ═══\nvar result = await longRunning.GetAsync(ct).WaitAsync(TimeSpan.FromSeconds(5));\n\n// ═══ fire-and-forget الصحيح (لو مضطر) ═══\n_ = Task.Run(async () =>\n{\n    try { await notifier.SendAsync(message, appLifetime.ApplicationStopping); }\n    catch (Exception ex) { log.LogError(ex, \"background notification failed\"); }   // ★ لا تبتلع بصمت\n}, CancellationToken.None);\n// الأفضل معماريًا: Channel + BackgroundService (درس المرحلة 2) — بلا فقد وبلا استثناءات طائرة\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) تقليل التخصيصات: Span وArrayPool"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Parsing/CsvParser.cs",
+      "title": "قبل/بعد مع أرقام توجيهية",
+      "code": "\n// ═══ ✗ النمط المعتاد: تخصيصات لكل سطر ═══\npublic static OrderLine ParseNaive(string line)\n{\n    var parts = line.Split(',');                          // ① مصفوفة جديدة\n    var sku = parts[0].Trim();                            // ② string جديد (Trim)\n    var qty = int.Parse(parts[1].Trim());                 // ③ string جديد + parse\n    var price = decimal.Parse(parts[2].Trim());           // ④ نفس الشيء\n    return new OrderLine(Guid.Empty, sku, qty, price);\n}\n\n// ═══ ✓ Span: صفر تخصيص (للسطور القصيرة) ═══\npublic static OrderLine ParseSpan(ReadOnlySpan<char> line)\n{\n    var rest = line;\n    var sku = NextField(ref rest);                        // slice = عرض، لا نسخة\n    var qty = int.Parse(NextField(ref rest));             // ★ int.Parse(ReadOnlySpan<char>) موجود\n    var price = decimal.Parse(NextField(ref rest), NumberStyles.Number, CultureInfo.InvariantCulture);\n\n    return new OrderLine(Guid.Empty, sku.ToString(), qty, price);   // ToString فقط لما يلزم string\n}\n\nprivate static ReadOnlySpan<char> NextField(ref ReadOnlySpan<char> rest)\n{\n    var idx = rest.IndexOf(',');\n    if (idx < 0) { var last = rest.Trim(); rest = default; return last; }\n\n    var field = rest[..idx].Trim();                       // ✓ slicing بلا تخصيص\n    rest = rest[(idx + 1)..];\n    return field;\n}\n\n// ═══ ✓ ArrayPool للـbuffers الكبيرة/المتكررة ═══\npublic static async Task<byte[]> ReadUpToAsync(Stream stream, int maxBytes, CancellationToken ct)\n{\n    var buffer = ArrayPool<byte>.Shared.Rent(maxBytes);   // ✓ استأجر بدل new\n    try\n    {\n        var read = await stream.ReadAsync(buffer.AsMemory(0, maxBytes), ct);\n        return buffer.AsSpan(0, read).ToArray();          // انسخ فقط الحجم المقروء\n    }\n    finally\n    {\n        ArrayPool<byte>.Shared.Return(buffer);            // ★ أرجعه دائمًا (في finally)\n    }\n}\n\n// ═══ ✓ string.Create لتكوين نص بلا StringBuilder (لحالات ثابتة الشكل) ═══\npublic static string FormatOrderRef(Guid id, int year) =>\n    string.Create(12, (id, year), (chars, state) =>\n    {\n        var hex = state.id.ToString(\"N\");\n        hex.AsSpan(0, 8).CopyTo(chars);\n        chars[8] = '-';\n        state.year.TryFormat(chars[9..], out _, \"D3\");\n    });\n\n// أرقام توجيهية (BenchmarkDotNet، سطر CSV نموذجي، 100k سطر):\n//   ParseNaive : ~ 24 ms   Gen0: 3.9 MB allocated\n//   ParseSpan  : ~  9 ms   Gen0: 0.4 MB allocated   (التخصيص من ToString النهائي فقط)\n// ★ قِس في مشروعك: التحسين يستحق فقط لو المسار ساخن فعلًا.\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "قواعد `Span<T>` التي لا تُكسر",
+      "md": "\n- **`Span` نوع `ref struct`** → يعيش على الـstack فقط: لا يُخزَّن في حقل كلاس، لا يُصندَق (boxing)،\n  و**لا يعبر `await`/`yield`**. لو محتاج تحتفظ به عبر تعليق → استخدم `Memory<T>`.\n- **لا تُرجع Span لبيانات مؤقتة** (مثل `stackalloc` أو buffer مُستأجر رُجّع) → dangling/قراءة ذاكرة محررة.\n- **`ArrayPool.Rent` يرجع مصفوفة أكبر من المطلوب** → تابع الطول بنفسك (`AsSpan(0, length)`).\n- **`Return` في `finally` دائمًا** — وإلا تسريب من الـpool (وفقدان الفائدة).\n- **لا تكتب فوق بيانات مُؤجَّرة مشتركة** (إلا لو `clearArray: true` مهمًا لك) — البيانات القديمة ممكن تُقرأ.\n- **`stackalloc` بحدود**: مساحات كبيرة على الـstack → `StackOverflowException`. القاعدة: ≤ 1KB تقريبًا، وإلا استخدم pool.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) NativeAOT: إمتى يستحق"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "JIT (الافتراضي)",
+        "ReadyToRun",
+        "NativeAOT"
+      ],
+      "rows": [
+        [
+          "زمن الإقلاع",
+          "متوسط (تسخين JIT)",
+          "أسرع",
+          "**فوري** (بلا JIT)"
+        ],
+        [
+          "استهلاك الذاكرة",
+          "متوسط",
+          "متوسط",
+          "أقل بوضوح"
+        ],
+        [
+          "حجم الملف",
+          "صغير",
+          "أكبر",
+          "أكبر (ملف أصلي واحد)"
+        ],
+        [
+          "ذروة الأداء (throughput)",
+          "الأفضل عادة (Dynamic PGO)",
+          "قريب",
+          "أقل قليلًا (بلا PGO زمني)"
+        ],
+        [
+          "Reflection/dynamic",
+          "كامل",
+          "كامل",
+          "**محدود** — يحتاج source generation/annotations"
+        ],
+        [
+          "EF Core",
+          "مدعوم",
+          "مدعوم",
+          "**غير مدعوم عمليًا** (يعتمد على proxies/reflection)"
+        ],
+        [
+          "System.Text.Json",
+          "كامل",
+          "كامل",
+          "يحتاج `JsonSerializerContext` (source gen)"
+        ],
+        [
+          "أنسب حالة",
+          "خدمات ويب/تطبيقات EF",
+          "تقليل إقلاع مع دعم كامل",
+          "CLI tools، serverless، sidecars، كثافة عالية"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "filename": "Shop.Worker.csproj",
+      "title": "تفعيل AOT + التعامل مع التحذيرات",
+      "code": "\n<Project Sdk=\"Microsoft.NET.Sdk.Worker\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <PublishAot>true</PublishAot>\n\n    <!-- ★ اجعل تحذيرات القص/AOT أخطاء في CI — وإلا تكتشفها وقت النشر فقط -->\n    <TrimmerSingleWarn>false</TrimmerSingleWarn>\n    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>\n    <EnableAotAnalyzer>true</EnableAotAnalyzer>\n    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>\n\n    <IlcOptimizationPreference>Speed</IlcOptimizationPreference>\n    <InvariantGlobalization>true</InvariantGlobalization>\n  </PropertyGroup>\n</Project>\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "التسلسل مع source generation (شرط AOT) + annotations",
+      "code": "\n// ✓ سياق تسلسل مولّد — يعمل في AOT بلا reflection\n[JsonSourceGenerationOptions(\n    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,\n    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]\n[JsonSerializable(typeof(WorkItem))]\n[JsonSerializable(typeof(IReadOnlyList<WorkItem>))]\ninternal partial class AppJsonContext : JsonSerializerContext;\n\nvar json = JsonSerializer.Serialize(item, AppJsonContext.Default.WorkItem);\nvar back = JsonSerializer.Deserialize(json, AppJsonContext.Default.WorkItem);\n\n// ✓ لو مكتبتك تحتاج أنواعًا غير معروفة وقت الترجمة: وثّق المتطلب بالـannotations\n[RequiresUnreferencedCode(\"يعتمد على reflection لتحديد الخصائص\")]\n[RequiresDynamicCode(\"يولّد كودًا في وقت التشغيل\")]\npublic static object MapDynamic(Type targetType, IDictionary<string, object?> source) => /* ... */ null!;\n\n// ✓ بديل متوافق مع AOT: اعتماد على types معروفة + generics\npublic static T Map<T>(IDictionary<string, object?> source) where T : class, new() => /* ... */ new T();\n\n// النشر والقياس\n//   dotnet publish -c Release -r linux-x64\n//   قبل/بعد: قِس زمن الإقلاع (من أول سطر لـ\"listening\") والذاكرة (RSS بعد الاستقرار)\n//   وجرّب **كل** المسارات: AOT يكشف مشاكله وقت التشغيل (reflection ناقص) لا وقت الترجمة\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "ConfigureAwait(false): الحقيقة في .NET الحديث",
+      "md": "\n- **ASP.NET Core**: لا يوجد `SynchronizationContext` → `ConfigureAwait(false)` **بلا أثر عملي** في كود التطبيق.\n- **مكتبات عامة** (NuGet يستهلكها WPF/WinForms/أدوات): ضعها كعادة دفاعية، أو الأفضل استخدم\n  `ConfigureAwait(ConfigureAwaitOptions.ForceYielding)` (.NET 8+) لما تريد تحرير الخيط صراحة.\n- **لا تستخدمها كحل لمشكلة حجب** (`.Result`) — هي لا تمنع starvation.\n- الأهم من كل ده: **لا تخلط async مع sync** في مسار الطلب.\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "ValueTask: إمتى تستحق وشروطها",
+      "code": "\n// ✓ تستحق: مسار ساخن يكمل متزامنًا في أغلب المرات (كاش ذاكرة، قراءة buffer)\npublic ValueTask<Product?> GetCachedAsync(Guid id, CancellationToken ct)\n{\n    if (_cache.TryGetValue(id, out var product))\n        return ValueTask.FromResult(product);              // صفر تخصيص (بدل Task allocation)\n\n    return new ValueTask<Product?>(LoadFromDbAsync(id, ct));\n}\n\n// قواعد صارمة:\n// ① انتظرها مرة واحدة فقط (`await` واحد) — لا تخزنها ولا تعد انتظارها\n// ② لا تستخدم `.Result`/`.GetAwaiter()` قبل التأكد من الاكتمال\n// ③ لا ترجع ValueTask لو المسار دايما غير متزامن (لا فائدة، وتعقيد إضافي)\n// ④ في الواجهات العامة: `Task` أوضح للمستهلك إلا لو الفائدة مقيسة\n\n// ✗ خطأ شائع\nvar vt = GetCachedAsync(id, ct);\nvar a = await vt;\nvar b = await vt;      // ← سلوك غير معرّف (قد يرمي أو يعطي نتيجة خاطئة)\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أشرح ما يولّده المترجم لـasync (state machine/continuations) وأعرف إن `await` لا يحجز خيطًا.",
+        "أتجنب sync-over-async وأشخّص thread pool starvation بالـcounters وأعرف بدائل كل نمط.",
+        "أدير التوازي والإلغاء والمهل بشكل صحيح (`WhenAll` بحدود، linked CTS، `WaitAsync`).",
+        "أقلل التخصيصات بـ`Span<T>`/`ArrayPool` في المسارات الساخنة، وأقيّم NativeAOT بمعيار واضح."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "`await` بيعمل إيه بالخيط الحالي؟",
+          "options": [
+            "يحجبه حتى تكتمل المهمة",
+            "يحرّره ليعمل في شيء آخر، ويستأنف الدالة كـcontinuation على thread pool عند الاكتمال",
+            "ينشئ خيطًا جديدًا دائمًا",
+            "ينقل التنفيذ لخيط UI"
+          ],
+          "answer": 1,
+          "explain": "ده جوهر async: لا حجز خيوط أثناء الانتظار. ولو المهمة اكتملت متزامنًا، الاستمرار فوري بلا تعليق."
+        },
+        {
+          "q": "`.Result` في ASP.NET Core — إيه الخطر الحقيقي؟",
+          "options": [
+            "deadlock بسبب SynchronizationContext",
+            "thread pool starvation (حجز خيوط في الانتظار) + بطء حقن الخيوط → قفزات زمن وفشل تحت الحمل",
+            "استثناءات مفقودة",
+            "لا خطر"
+          ],
+          "answer": 1,
+          "explain": "الـdeadlock الكلاسيكي يحتاج SynchronizationContext (غير موجود هنا)، لكن الاستنزاف قائم وأخطر لأنه يظهر فقط تحت الحمل."
+        },
+        {
+          "q": "`async void` ليه خطر؟",
+          "options": [
+            "أبطأ",
+            "الاستثناء يهرب للـSynchronizationContext وينهي العملية — ولا يمكن انتظاره",
+            "لا يعمل مع CancellationToken",
+            "يستهلك ذاكرة"
+          ],
+          "answer": 1,
+          "explain": "استخدمه فقط في معالجات الأحداث. أي شيء آخر: `async Task` (أو `ValueTask`)."
+        },
+        {
+          "q": "`Span<T>` لا يمكن استخدامه عبر `await` — ليه والبديل؟",
+          "options": [
+            "قياس أداء؛ البديل `Memory<T>`",
+            "لأنه `ref struct` (stack-only) والدالة async تُرفع حالتها لكائن على الكومة؛ البديل `Memory<T>`/`ReadOnlyMemory<T>`",
+            "خطأ ترجمة؛ البديل `byte[]`",
+            "لا سبب؛ البديل `Task`"
+          ],
+          "answer": 1,
+          "explain": "حالة الدالة async تُخزَّن في state machine على الكومة، و`Span` لا يُخزَّن هناك. `Memory<T>` هو النسخة الآمنة للـheap."
+        },
+        {
+          "q": "متى NativeAOT قرار صحيح؟",
+          "options": [
+            "دائمًا — أسرع",
+            "أدوات CLI/serverless/sidecars تحتاج إقلاعًا فوريًا وذاكرة أقل، ولا تعتمد على reflection/EF Core",
+            "لأي API مع EF Core",
+            "لتقليل حجم الـrepo"
+          ],
+          "answer": 1,
+          "explain": "المقايضة: إقلاع/كثافة أفضل مقابل قيود على reflection وديناميكية، ودعم EF Core غير عملي. خدمة ويب كاملة بـEF → ابقَ على JIT (+R2R لو الإقلاع يهمك)."
+        },
+        {
+          "q": "`ValueTask` تستحق إمتى؟",
+          "options": [
+            "دائمًا بدل Task",
+            "مسار ساخن يكتمل متزامنًا غالبًا (كاش ذاكرة) مع الالتزام بانتظارها مرة واحدة فقط",
+            "للدوال الطويلة",
+            "في الواجهات العامة دائمًا"
+          ],
+          "answer": 1,
+          "explain": "الفائدة: تجنب تخصيص Task. الثمن: قواعد استخدام صارمة. بلا قياس، `Task` أوضح وأأمن."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "تطهير sync-over-async",
+          "md": "ابحث في مشروعك عن كل `.Result`/`.Wait()`/`GetAwaiter().GetResult()` و`async void` (خارج معالجات الأحداث)، وأصلحها بجعل المسارات async بالكامل. أضف قاعدة تحليل (`.editorconfig`/analyzer) تمنع عودتها.",
+          "criteria": [
+            "`grep -rn \"\\.Result\\b\\|\\.Wait()\\|GetAwaiter().GetResult()\"` يرجع صفر نتائج في مسار الطلب (أو موثقة بمبرر)",
+            "لا `async void` إلا في معالجات أحداث",
+            "قاعدة analyzer/.editorconfig تمنع الأنماط دي في CI",
+            "اختبار حمل بعد التغيير يُظهر `threadpool-queue-length` مستقرًا تحت نفس الحمل"
+          ],
+          "hint": "لو فيه مكتبة قديمة تفرض واجهة متزامنة: وفّر مسارًا async موازيًا في كودك، واستخدم العزل (خيط مخصص) في المسار النادر فقط — مش في مسار الطلب."
+        },
+        {
+          "id": "t2",
+          "title": "تقليل تخصيصات في مسار ساخن",
+          "md": "اختار مسار معالجة نصوص/بايتات ساخن (parsing، تسلسل، قراءة ملف) وأعد كتابته بـ`Span<T>`/`ArrayPool`. قِس بـBenchmarkDotNet (Mean + Allocated) وسجّل الفرق، ثم تحقق إن p95 في اختبار الحمل تحسّن.",
+          "criteria": [
+            "benchmark بـ`[MemoryDiagnoser]` يظهر انخفاض Allocated بنسبة مسجلة",
+            "لا `Span` مخزّن في حقل ولا عابر لـ`await` (مراجعة)",
+            "`ArrayPool.Return` داخل `finally`",
+            "اختبارات الوحدة تغطي الحالات الحدّية (مدخلات ناقصة/فارغة/بلا فواصل)",
+            "قرار: هل التحسين يستحق التعقيد؟ (مكتوب)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Async programming in .NET",
+          "url": "https://learn.microsoft.com/dotnet/csharp/asynchronous-programming/"
+        },
+        {
+          "label": "Task asynchronous programming model",
+          "url": "https://learn.microsoft.com/dotnet/csharp/programming-guide/concepts/async/task-asynchronous-programming-model"
+        },
+        {
+          "label": "ConfigureAwait FAQ / .NET 8 options",
+          "url": "https://learn.microsoft.com/dotnet/api/system.threading.tasks.configureawaitoptions"
+        },
+        {
+          "label": "Span<T> and Memory<T>",
+          "url": "https://learn.microsoft.com/dotnet/standard/memory-and-spans/"
+        },
+        {
+          "label": "ArrayPool<T>",
+          "url": "https://learn.microsoft.com/dotnet/api/system.buffers.arraypool-1"
+        },
+        {
+          "label": "NativeAOT deployment",
+          "url": "https://learn.microsoft.com/dotnet/core/deploying/native-aot/"
+        },
+        {
+          "label": "ValueTask guidance",
+          "url": "https://learn.microsoft.com/dotnet/api/system.threading.tasks.valuetask-1"
+        }
+      ]
+    }
+  ]
+}

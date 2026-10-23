@@ -1,0 +1,260 @@
+{
+  "id": "s2-m1-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nتلات حاجات بتفرق بين API هاوي وAPI إنتاجي: **الإصدارات** (تغيّر العقد بدون كسر العملاء)،\n**الترقيم** (offset بيبقى بطيء ومؤلم مع نمو البيانات — cursor بيحلها)،\nو**الفلترة والفرز** (عقد موحّد بدل endpoint لكل حالة).\n\nالدرس ده بيبني التلاتة بكود جاهز للنسخ والتعديل، مع الحدود اللي لازم تعرفها.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "API Versioning",
+          "def": "تشغيل أكثر من إصدار من العقد في نفس الوقت مع خطة تقاعد معلنة."
+        },
+        {
+          "term": "URL segment vs Header vs Query",
+          "def": "طرق حمل رقم الإصدار: `/api/v1/…` (الواضح والكاش-صديق)، رأس `api-version`، أو query string."
+        },
+        {
+          "term": "Offset pagination",
+          "def": "`skip/take` — بسيط لكن `OFFSET 100000` بيكلف مسح كل الصفوف السابقة."
+        },
+        {
+          "term": "Cursor (keyset) pagination",
+          "def": "ترقيم بمفتاح مرتب (وقت + id): `WHERE (created_at, id) > (cursor)` — أداء ثابت مهما كان العمق."
+        },
+        {
+          "term": "Stable sort key",
+          "def": "مفتاح ترتيب فريد وثابت. بدون `Id` كمكسّر تعادل، الصفوف بتتكرر أو بتضيع بين الصفحات."
+        },
+        {
+          "term": "Filter contract",
+          "def": "قواعد موحدة للفلترة (`status=paid&country=EG&min=100`) بدل endpoints مكررة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) الإصدارات: ابدأ بسيطًا"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Orders/OrdersEndpoints.cs",
+      "title": "خيار أ: مجموعات إصدار صريحة (بلا حزم — الأنسب للبداية)",
+      "code": "\npublic static IEndpointRouteBuilder MapOrdersApi(this IEndpointRouteBuilder app)\n{\n    // v1: العقد القديم — مجمّد إلا لإصلاح أمني\n    var v1 = app.MapGroup(\"/api/v1/orders\").WithTags(\"Orders v1\");\n    v1.MapGet(\"/{id:guid}\", GetOrderV1).Produces<OrderResponseV1>();\n\n    // v2: العقد الحالي\n    var v2 = app.MapGroup(\"/api/v2/orders\").WithTags(\"Orders v2\");\n    v2.MapGet(\"/{id:guid}\", GetOrderV2).Produces<OrderResponseV2>();\n\n    return app;\n}\n\n// الـDTOs منفصلة — لا تعدل V1 لإضافة حقل V2\npublic sealed record OrderResponseV1(Guid Id, decimal Total, string Status);\npublic sealed record OrderResponseV2(\n    Guid Id,\n    Money Total,                       // بنية { amount, currency } بدل decimal غامض\n    OrderStatus Status,\n    IReadOnlyList<OrderLineDto> Lines,\n    DateTimeOffset CreatedAt);\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "خيار ب: حزمة الإصدارات الرسمية (لما الإصدارات كتير)",
+      "code": "\ndotnet add Shop.Api package Asp.Versioning.Http\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Asp.Versioning.Http مع Minimal APIs",
+      "code": "\nusing Asp.Versioning;\n\nbuilder.Services.AddProblemDetails();\nbuilder.Services.AddApiVersioning(options =>\n{\n    options.DefaultApiVersion = new ApiVersion(1, 0);\n    options.AssumeDefaultVersionWhenUnspecified = true;\n    options.ReportApiVersions = true;                        // رؤوس api-supported-versions / api-deprecated-versions\n    options.ApiVersionReader = ApiVersionReader.Combine(\n        new UrlSegmentApiVersionReader(),\n        new HeaderApiVersionReader(\"api-version\"));\n    options.UnsupportedApiVersionStatusCode = StatusCodes.Status400BadRequest;\n}).AddApiExplorer(options =>\n{\n    options.GroupNameFormat = \"'v'VVV\";                        // مستند OpenAPI لكل إصدار\n    options.SubstituteApiVersionInUrl = true;\n});\n\n// في الـpipeline\nvar versionSet = app.NewApiVersionSet()\n    .WithApiVersion(1, 0)\n    .WithApiVersion(2, 0)\n    .ReportApiVersions()\n    .Build();\n\napp.MapGroup(\"/api/v{version:apiVersion}/orders\")\n   .WithApiVersionSet(versionSet)\n   .MapGet(\"/{id:guid}\", GetOrder)\n   .MapToApiVersion(2, 0);                                    // الـendpoint ده موجود في v2 بس\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "قواعد الإصدارات اللي بتحميك",
+      "md": "\n- **إضافة حقل جديد للاستجابة ≠ إصدار جديد** (العملاء بيتجاهلوا الحقول الزائدة). الحذف/إعادة التسمية/تغيير النوع = **كسر** = إصدار جديد.\n- **لا تعمل إصدار لكل تعديل صغير**: كل إصدار = عبء صيانة مضاعف (اختبارات، وثائق، مراقبة).\n- **أعلن التقاعد**: رأس `Deprecation` + `Sunset` + تاريخ في الوثيقة، ومراقبة استخدام الإصدار القديم قبل حذفه.\n- **قيس الاستخدام**: metric لكل إصدار — لو v1 بيستخدمه 2% من الطلبات، جدول تقاعده.\n- راجع تفاصيل الحزمة في مستودعها الرسمي قبل الاعتماد عليها (الأسماء أعلاه من الوثائق الحالية).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) Cursor pagination: أداء ثابت عند أي عمق"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Common/Paging.cs",
+      "title": "مفتاح مركّب (CreatedAt, Id) + ترميز آمن للرابط",
+      "code": "\npublic sealed record PageRequest(int Size, string? Cursor)\n{\n    public int ClampedSize => Math.Clamp(Size is 0 ? 20 : Size, 1, 100);   // حد أعلى: حماية من طلب 100k صف\n}\n\npublic sealed record PagedResult<T>(IReadOnlyList<T> Items, string? NextCursor, int Size);\n\npublic static class CursorCodec\n{\n    // Cursor = (CreatedAt ticks, Id) → base64url. معتِم بما يكفي للرابط، مش للتشفير.\n    public static string Encode(DateTimeOffset createdAt, Guid id)\n    {\n        var raw = $\"{createdAt.UtcTicks}:{id:N}\";\n        return Convert.ToHexString(Encoding.UTF8.GetBytes(raw)).ToLowerInvariant();\n    }\n\n    public static (DateTimeOffset CreatedAt, Guid Id)? Decode(string? cursor)\n    {\n        if (string.IsNullOrWhiteSpace(cursor)) return null;\n        try\n        {\n            var raw = Encoding.UTF8.GetString(Convert.FromHexString(cursor));\n            var parts = raw.Split(':', 2);\n            return (new DateTimeOffset(long.Parse(parts[0]), TimeSpan.Zero), Guid.ParseExact(parts[1], \"N\"));\n        }\n        catch (Exception) { return null; }        // cursor تالف → ابدأ من الأول بدل 500\n    }\n}\n\npublic static class PagingExtensions\n{\n    /// <summary>\n    /// Keyset pagination على (CreatedAt DESC, Id DESC).\n    /// الشرط المركّب ده هو اللي بيمنع تكرار/فقدان الصفوف عند تساوي التواريخ.\n    /// </summary>\n    public static async Task<PagedResult<OrderSummary>> PageOrdersAsync(\n        this AppDbContext db, PageRequest page, OrderFilter filter, CancellationToken ct)\n    {\n        var query = db.Orders.AsNoTracking().ApplyFilter(filter).AsQueryable();\n\n        if (CursorCodec.Decode(page.Cursor) is { } cursor)\n        {\n            // (CreatedAt, Id) < (cursorTime, cursorId)  — ترتيب تنازلي\n            query = query.Where(o => o.CreatedAt < cursor.CreatedAt\n                                  || (o.CreatedAt == cursor.CreatedAt && o.Id.CompareTo(cursor.Id) < 0));\n        }\n\n        var rows = await query\n            .OrderByDescending(o => o.CreatedAt)\n            .ThenByDescending(o => o.Id)          // ← مكسّر التعادل: بدونه الترقيم غير مستقر\n            .Take(page.ClampedSize + 1)           // ← صف زيادة عشان نعرف هل فيه صفحة تانية\n            .Select(o => OrderSummary.From(o))\n            .ToListAsync(ct);\n\n        var hasMore = rows.Count > page.ClampedSize;\n        if (hasMore) rows.RemoveAt(rows.Count - 1);\n\n        var last = rows.LastOrDefault();\n        var next = hasMore && last is not null ? CursorCodec.Encode(last.CreatedAt, last.Id) : null;\n\n        return new PagedResult<OrderSummary>(rows, next, rows.Count);\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "Offset (`skip/take`)",
+        "Cursor (keyset)"
+      ],
+      "rows": [
+        [
+          "الأداء عند العمق",
+          "يتدهور: `OFFSET 100000` بيمسح 100 ألف صف",
+          "ثابت: فهرس على مفتاح الترتيب"
+        ],
+        [
+          "القفز لصفحة رقم N",
+          "مدعوم",
+          "غير مدعوم (تنقل تسلسلي فقط)"
+        ],
+        [
+          "الاستقرار مع إدراجات جديدة",
+          "صفوف بتتكرر/تضيع",
+          "مستقر (المفتاح ثابت)"
+        ],
+        [
+          "العدد الكلي للصفحات",
+          "سهل (`COUNT(*)`)",
+          "مكلف — غالبًا ما تُرجعه"
+        ],
+        [
+          "متطلبات",
+          "ترتيب ثابت",
+          "ترتيب **فريد** + فهرس مناسب"
+        ],
+        [
+          "أنسب حالة",
+          "واجهات إدارية صغيرة",
+          "Feeds، سجلات، تصدير، API عام"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "title": "الفهرس اللي بيخلي الـcursor سريعًا",
+      "code": "\nCREATE INDEX ix_orders_createdat_id\n    ON orders (created_at DESC, id DESC)\n    INCLUDE (status, total, currency);   -- covered index: الاستعلام ما يلمسش الجدول\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) الفلترة والفرز: عقد واحد"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Orders/OrderListQuery.cs",
+      "title": "`[AsParameters]` + whitelist صريح (لا تسمح بفرز حر)",
+      "code": "\npublic sealed record OrderListQuery\n{\n    public int Size { get; init; } = 20;\n    public string? Cursor { get; init; }\n    public string? Status { get; init; }\n    public string? Country { get; init; }\n    public decimal? MinTotal { get; init; }\n    public decimal? MaxTotal { get; init; }\n    public DateTimeOffset? From { get; init; }\n    public DateTimeOffset? To { get; init; }\n    public string? Sort { get; init; }          // \"total_desc\" | \"created_desc\" | \"created_asc\"\n}\n\npublic sealed record OrderFilter(OrderStatus? Status, string? Country,\n                                 decimal? MinTotal, decimal? MaxTotal,\n                                 DateTimeOffset? From, DateTimeOffset? To, OrderSort Sort);\n\npublic enum OrderSort { CreatedDesc, CreatedAsc, TotalDesc }\n\npublic static class OrderQueryMapper\n{\n    /// <summary>whitelist: أي قيمة sort غير معروفة ترجع للافتراضي بدل ما توصل للـSQL.</summary>\n    public static OrderFilter ToFilter(this OrderListQuery q) => new(\n        Status: Enum.TryParse<OrderStatus>(q.Status, true, out var s) ? s : null,\n        Country: q.Country?.Trim().ToUpperInvariant() is { Length: 2 } c ? c : null,\n        MinTotal: q.MinTotal,\n        MaxTotal: q.MaxTotal,\n        From: q.From,\n        To: q.To,\n        Sort: q.Sort?.ToLowerInvariant() switch\n        {\n            \"total_desc\"   => OrderSort.TotalDesc,\n            \"created_asc\"  => OrderSort.CreatedAsc,\n            _              => OrderSort.CreatedDesc,\n        });\n}\n\npublic static IQueryable<Order> ApplyFilter(this IQueryable<Order> q, OrderFilter f)\n{\n    if (f.Status is { } s)     q = q.Where(o => o.Status == s);\n    if (f.Country is { } c)    q = q.Where(o => o.Customer.Country == c);\n    if (f.MinTotal is { } min) q = q.Where(o => o.Total >= min);\n    if (f.MaxTotal is { } max) q = q.Where(o => o.Total <= max);\n    if (f.From is { } from)    q = q.Where(o => o.CreatedAt >= from);\n    if (f.To is { } to)        q = q.Where(o => o.CreatedAt < to);\n\n    return f.Sort switch\n    {\n        OrderSort.TotalDesc  => q.OrderByDescending(o => o.Total).ThenByDescending(o => o.Id),\n        OrderSort.CreatedAsc => q.OrderBy(o => o.CreatedAt).ThenBy(o => o.Id),\n        _                    => q.OrderByDescending(o => o.CreatedAt).ThenByDescending(o => o.Id),\n    };\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "لا تنفّذ فرزًا حرًا من العميل",
+      "md": "\nأنماط زي `?orderBy=Total desc, Customer.Email` بتتحوّل لـ**بناء تعبيرات ديناميكية** — ومكتبات زي\n`System.Linq.Dynamic.Core` بتسمح بحقن أسماء أعمدة: تسريب بيانات (فرز على عمود حساس يكشف معلومات)،\nأو استعلامات بلا فهرس تدمّر قاعدة البيانات.\n\nالقاعدة: **whitelist صريح** لكل حقل فرز وفلترة. لو العميل محتاج مرونة حقيقية، اعمل endpoint تقارير منفصل\nبصلاحيات وحدود مختلفة.\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "الاستجابة الكاملة: روابط تنقل ذاتية الوصف",
+      "code": "\ngroup.MapGet(\"/\", async (\n    [AsParameters] OrderListQuery query,\n    AppDbContext db,\n    CancellationToken ct) =>\n{\n    var page = await db.PageOrdersAsync(query.ToPageRequest(), query.ToFilter(), ct);\n\n    return TypedResults.Ok(new OrdersPageResponse(\n        Items: page.Items,\n        Size: page.Size,\n        Next: page.NextCursor is null ? null : $\"/api/v2/orders?size={page.Size}&cursor={page.NextCursor}\",\n        // ملاحظة: مفيش total/count — COUNT(*) على جدول كبير مكلف. لو لازم، ارجعه تقريبيًا أو مخبأ.\n    ));\n}).Produces<OrdersPageResponse>();\n\npublic sealed record OrdersPageResponse(\n    IReadOnlyList<OrderSummary> Items, int Size, string? Next);\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أقرر بين مجموعات إصدار يدوية وحزمة الإصدارات، وأعرف إيه اللي يستحق إصدار جديد فعلًا.",
+        "أنفّذ cursor pagination بمفتاح مركّب وفهرس مناسب وصف زيادة.",
+        "أبني عقد فلترة/فرز واحد بـwhitelist صريح.",
+        "أتجنب `COUNT(*)` و`OFFSET` العميق في المسارات السخنة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "إيه التغيير اللي يستوجب إصدار API جديد؟",
+          "options": [
+            "إضافة حقل جديد للاستجابة",
+            "تغيير نوع `total` من `decimal` إلى كائن `{amount, currency}`",
+            "إضافة مثال في الوثيقة",
+            "تحسين أداء استعلام داخلي"
+          ],
+          "answer": 1,
+          "explain": "تغيير النوع/الحذف/إعادة التسمية كسر للعميل. الإضافة للاستجابة عادةً متوافقة رجعيًا لأن العملاء بيتجاهلوا الحقول غير المعروفة."
+        },
+        {
+          "q": "ليه `Take(size + 1)` في cursor pagination؟",
+          "options": [
+            "لتحسين الأداء",
+            "لمعرفة هل فيه صفحة تالية بدون تنفيذ `COUNT(*)`",
+            "لتجنب الأخطاء",
+            "لتكرار الصف الأخير"
+          ],
+          "answer": 1,
+          "explain": "لو رجّعنا أكثر من `size`، فيه المزيد → نبني `NextCursor`. ولو لا، `Next = null`. التكلفة صف واحد بدل عدّ الجدول كله."
+        },
+        {
+          "q": "ليه `ThenByDescending(o => o.Id)` ضروري؟",
+          "options": [
+            "متطلب EF Core",
+            "بدون مكسّر تعادل فريد، الصفوف المتساوية في `CreatedAt` ممكن تتكرر أو تضيع بين الصفحات",
+            "للأمان",
+            "لتقليل حجم الاستجابة"
+          ],
+          "answer": 1,
+          "explain": "الترتيب لازم يكون **كليًا** (total order). `CreatedAt` وحده مش فريد؛ `Id` بيكسر التعادل ويخلي الـcursor مستقرًا."
+        },
+        {
+          "q": "عميل بعت `?sort=Customer.Email;DROP` — أنهي سلوك صح؟",
+          "options": [
+            "تمريره لـEF Core",
+            "whitelist: القيمة غير معروفة → ترجع للفرز الافتراضي (أو 400 صريح)",
+            "تجاهل كل الفلاتر",
+            "500"
+          ],
+          "answer": 1,
+          "explain": "EF Core بيمرّر قيم معطاة كـparameters فالحقن المباشر مش سهل، لكن المشكلة الحقيقية هي **الفرز على أعمدة غير مقصودة** وتسريب المعلومات. الـwhitelist بيمنع ده."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "cursor pagination كامل",
+          "md": "نفّذ ترقيم cursor على أكبر جدول عندك مع فهرس مناسب، وصف زيادة، و`NextCursor` في الاستجابة. قِس الفرق مقابل `skip/take` عند العمق 10,000 (EXPLAIN ANALYZE أو stopwatch).",
+          "criteria": [
+            "فهرس مركّب على (created_at, id) موجود ومُستخدم فعليًا (شوف خطة التنفيذ)",
+            "التنقل عبر 5 صفحات متتالية بلا صفوف مكررة أو مفقودة (اختبار آلي)",
+            "قياس مسجل: زمن offset مقابل cursor عند العمق",
+            "`size` محدود بـ100 كحد أقصى"
+          ],
+          "hint": "لو الاختبار كشف تكرار: تأكد إن الـcursor بيحتوي **الاتنين** (الوقت والمعرّف) وإن شرط `WHERE` بيغطي حالة التعادل."
+        },
+        {
+          "id": "t2",
+          "title": "عقد فلترة موحّد",
+          "md": "ابنِ `OrderListQuery` بـ`[AsParameters]` وwhitelist للفرز، وطبّقه على endpoint قائمة. أضف اختبار integration يغطي: فلتر حالة + نطاق تاريخ + فرز غير معروف يرجع افتراضي.",
+          "criteria": [
+            "endpoint واحد يغطي كل حالات الفلترة (مش endpoint لكل حالة)",
+            "قيم الفرز المسموحة موثقة في OpenAPI",
+            "3 اختبارات على الأقل ناجحة"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "ASP.NET Core API versioning",
+          "url": "https://github.com/dotnet/aspnet-api-versioning"
+        },
+        {
+          "label": "Pagination guidance",
+          "url": "https://learn.microsoft.com/azure/architecture/best-practices/api-design"
+        },
+        {
+          "label": "EF Core — query performance & indexes",
+          "url": "https://learn.microsoft.com/ef/core/performance/"
+        },
+        {
+          "label": "PostgreSQL EXPLAIN",
+          "url": "https://www.postgresql.org/docs/current/using-explain.html"
+        }
+      ]
+    }
+  ]
+}

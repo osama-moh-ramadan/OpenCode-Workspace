@@ -1,0 +1,235 @@
+{
+  "id": "s1-m1-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nكل طلب بيدخل نظامك هو **مدخل غير موثوق**. لو التحقق من المدخلات متناثر في الـServices، هتلاقي نفسك\nبتتحقق من نفس الحاجة في تلات أماكن وتنسى الرابع.\n\nالنمط المطلوب: قواعد التحقق في **كلاس Validator مستقل**، يشتغل أوتوماتيك قبل الوصول لمنطق العمل،\nويرجع استجابة أخطاء **موحّدة** تقدر الواجهة تعرضها مباشرة. ده بالظبط اللي بتوفره FluentValidation.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "AbstractValidator<T>",
+          "def": "الكلاس اللي بيحتوي قواعد التحقق لنوع معين (DTO أو command)."
+        },
+        {
+          "term": "RuleFor / RuleForEach",
+          "def": "بداية كل قاعدة: حدد الخاصية، ثم سلسل القيود (`NotEmpty`, `MaximumLength`, `Matches`…)."
+        },
+        {
+          "term": "Must / Custom",
+          "def": "قاعدة مخصصة بدالة — للتحقق المعتمد على أكثر من خاصية أو على خدمة خارجية."
+        },
+        {
+          "term": "ValidationFailure / Result",
+          "def": "نتيجة التحقق: قائمة أخطاء لكل واحدة `PropertyName` و`ErrorMessage` و`ErrorCode`."
+        },
+        {
+          "term": "Fail-fast (CascadeMode.Stop)",
+          "def": "التوقف عند أول خطأ في القاعدة بدل إنتاج قائمة طويلة."
+        },
+        {
+          "term": "Severity",
+          "def": "تمييز الأخطاء عن التحذيرات (Warning) داخل نفس النتيجة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الـDTO والـValidator"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Orders/CreateOrderRequest.cs",
+      "title": "عقد الطلب (ما تخلطهوش بالـEntity)",
+      "code": "\npublic sealed record CreateOrderRequest(\n    Guid CustomerId,\n    IReadOnlyList<CreateOrderLine> Lines,\n    string? CouponCode,\n    string? Note);\n\npublic sealed record CreateOrderLine(Guid ProductId, int Quantity, decimal UnitPrice);\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Orders/CreateOrderValidator.cs",
+      "title": "قواعد واضحة وقابلة للقراءة والاختبار",
+      "code": "\nusing FluentValidation;\n\npublic sealed class CreateOrderValidator : AbstractValidator<CreateOrderRequest>\n{\n    public CreateOrderValidator()\n    {\n        RuleFor(x => x.CustomerId)\n            .NotEmpty().WithMessage(\"معرّف العميل مطلوب\");\n\n        RuleFor(x => x.Lines)\n            .NotEmpty().WithMessage(\"الطلب لازم يحتوي على صنف واحد على الأقل\")\n            .Must(lines => lines!.Count <= 100).WithMessage(\"الحد الأقصى 100 صنف في الطلب\")\n            .ForEach(line => line.SetValidator(new OrderLineValidator()));\n\n        RuleFor(x => x.CouponCode)\n            .MaximumLength(32)\n            .Matches(\"^[A-Z0-9-]+$\").When(x => x.CouponCode is not null)\n            .WithMessage(\"كود الكوبون غير صالح\");\n\n        RuleFor(x => x.Note)\n            .MaximumLength(500);\n\n        // قاعدة عبر أكثر من خاصية\n        RuleFor(x => x)\n            .Must(x => x.Lines?.Sum(l => l.Quantity) <= 1000)\n            .WithMessage(\"إجمالي الكميات لا يتجاوز 1000\")\n            .WithErrorCode(\"ORDER_QTY_LIMIT\");\n    }\n}\n\npublic sealed class OrderLineValidator : AbstractValidator<CreateOrderLine>\n{\n    public OrderLineValidator()\n    {\n        RuleFor(l => l.ProductId).NotEmpty();\n        RuleFor(l => l.Quantity).InclusiveBetween(1, 500);\n        RuleFor(l => l.UnitPrice).InclusiveBetween(0.01m, 1_000_000m)\n            .WithMessage(\"السعر خارج النطاق المسموح\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "التشغيل التلقائي في الـEndpoints"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Program.cs",
+      "title": "تسجيل + Endpoint Filter يشغّل التحقق قبل منطق العمل",
+      "code": "\nusing FluentValidation;\n\nvar builder = WebApplication.CreateBuilder(args);\n\n// تسجيل كل الـValidators في الـassembly مرة واحدة\nbuilder.Services.AddValidatorsFromAssemblyContaining<CreateOrderValidator>(ServiceLifetime.Scoped);\nbuilder.Services.AddScoped<IValidationRunner, ValidationRunner>();\n\nvar app = builder.Build();\n\napp.MapPost(\"/api/orders\", async (\n    CreateOrderRequest request,\n    IValidationRunner validator,\n    OrderPlacementService orders,\n    CancellationToken ct) =>\n{\n    var failures = await validator.ValidateAsync(request, ct);\n    if (failures.Count > 0)\n        return Results.ValidationProblem(\n            failures.GroupBy(f => f.PropertyName)\n                    .ToDictionary(g => g.Key, g => g.Select(f => f.ErrorMessage).ToArray()));\n\n    var id = await orders.PlaceAsync(request, ct);\n    return Results.Created($\"/api/orders/{id}\", new { id });\n})\n.WithName(\"CreateOrder\")\n.WithOpenApi();\n\napp.Run();\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Validation/ValidationRunner.cs",
+      "title": "تشغيل عام لأي DTO (يصلح للـEndpoints كلها)",
+      "code": "\nusing FluentValidation;\n\npublic interface IValidationRunner\n{\n    Task<IReadOnlyList<ValidationFailure>> ValidateAsync<T>(T instance, CancellationToken ct = default);\n}\n\npublic sealed class ValidationRunner(IEnumerable<IValidator> validators) : IValidationRunner\n{\n    public async Task<IReadOnlyList<ValidationFailure>> ValidateAsync<T>(T instance, CancellationToken ct = default)\n    {\n        var failures = new List<ValidationFailure>();\n        foreach (var validator in validators.OfType<IValidator<T>>())\n        {\n            var result = await validator.ValidateAsync(new ValidationContext<T>(instance), ct);\n            if (!result.IsValid) failures.AddRange(result.Errors);\n        }\n        return failures;\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "الرد الموحد: ValidationProblemDetails",
+      "md": "\n`Results.ValidationProblem(...)` بيرجع **400** بجسم `application/problem+json` بالشكل ده —\nوالواجهة تقدر تعرضه مباشرة بدون parsing مخصص:\n```json\n{\n  \"type\": \"https://tools.ietf.org/html/rfc9110#section-15.5.1\",\n  \"title\": \"One or more validation errors occurred.\",\n  \"status\": 400,\n  \"errors\": {\n    \"Lines[0].Quantity\": [\"الكمية يجب أن تكون بين 1 و500\"],\n    \"CouponCode\": [\"كود الكوبون غير صالح\"]\n  },\n  \"traceId\": \"00-8f2c...-01\"\n}\n```\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "في .NET 10 فيه Validation مدمج للـMinimal APIs",
+      "md": "\nASP.NET Core 10 أضاف دعم التحقق (DataAnnotations) داخل Minimal APIs بشكل مدمج، وده يغطي الحالات البسيطة.\nاختيار عملي شائع: **DataAnnotations للعقود البسيطة + FluentValidation للقواعد المعقدة** (عبر أكثر من خاصية،\nتحقق غير متزامن، رسائل معرّفة). راجع التوثيق للتفعيل واختر أسلوبًا واحدًا لكل المشروع عشان الرسائل تفضل موحّدة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "اختبار الـValidator (بلا API)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "CreateOrderValidatorTests.cs",
+      "title": "اختبارات سريعة ومباشرة",
+      "code": "\npublic sealed class CreateOrderValidatorTests\n{\n    private readonly CreateOrderValidator _sut = new();\n\n    [Fact]\n    public async Task Empty_lines_is_rejected()\n    {\n        var request = new CreateOrderRequest(Guid.NewGuid(), [], null, null);\n\n        var result = await _sut.ValidateAsync(request);\n\n        result.IsValid.Should().BeFalse();\n        result.Errors.Should().Contain(e => e.PropertyName == \"Lines\");\n    }\n\n    [Fact]\n    public async Task Quantity_above_500_is_rejected_with_property_path()\n    {\n        var request = new CreateOrderRequest(\n            Guid.NewGuid(),\n            [new CreateOrderLine(Guid.NewGuid(), 900, 10m)],\n            null, null);\n\n        var result = await _sut.ValidateAsync(request);\n\n        result.IsValid.Should().BeFalse();\n        result.Errors.Should().Contain(e => e.PropertyName.Contains(\"Quantity\"));\n    }\n\n    [Theory]\n    [InlineData(\"SAVE-10\")]\n    [InlineData(\"A1\")]\n    public async Task Valid_coupon_shapes_pass(string code)\n    {\n        var request = new CreateOrderRequest(\n            Guid.NewGuid(),\n            [new CreateOrderLine(Guid.NewGuid(), 1, 10m)],\n            code, null);\n\n        (await _sut.ValidateAsync(request)).IsValid.Should().BeTrue();\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المكان",
+        "نوع التحقق",
+        "مثال"
+      ],
+      "rows": [
+        [
+          "الـValidator (FluentValidation)",
+          "شكل المدخل وقواعده",
+          "مطلوب، طول، نطاق، regex، قاعدة عبر خصائص"
+        ],
+        [
+          "الـDomain (الكيان)",
+          "قواعد العمل",
+          "«الطلب الملغي لا يُعدَّل»، «الرصيد لا يقل عن صفر»"
+        ],
+        [
+          "قاعدة البيانات",
+          "السلامة النهائية",
+          "Unique/FK/Check constraints — آخر خط دفاع"
+        ]
+      ],
+      "caption": "التحقق مش طبقة واحدة: الشكل عند الحافة، والقواعد في الـDomain، والسلامة في قاعدة البيانات."
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أكتب Validator لقواعد معقدة (عبر خصائص، قوائم، غير متزامن).",
+        "أشغّل التحقق تلقائيًا قبل منطق العمل وأرجع 400 موحّد.",
+        "أختبر الـValidator كوحدة مستقلة بدون API.",
+        "أفرّق بين تحقق الشكل (edge) وقواعد العمل (domain) وقيود قاعدة البيانات."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "القاعدة «تاريخ النهاية لازم يكون بعد تاريخ البداية» مكانها الأنسب؟",
+          "options": [
+            "DataAnnotations على كل خاصية لوحدها",
+            "`RuleFor(x => x).Must(...)` في الـValidator",
+            "جوه الـController",
+            "في قاعدة البيانات فقط"
+          ],
+          "answer": 1,
+          "explain": "قاعدة عبر أكثر من خاصية تُكتب على الكائن كله (`RuleFor(x => x)`) أو بـ`Must` مرتبطة بخاصية مع `WithMessage`."
+        },
+        {
+          "q": "ليه الأفضل إن الـValidator يرجع 400 بـValidationProblemDetails بدل رسالة نصية؟",
+          "options": [
+            "أسرع في الأداء",
+            "عقد موحّد (RFC 9457) تقدر الواجهة تعرضه مباشرة لكل الأخطاء",
+            "بيشفّر البيانات",
+            "بيتجنب الحاجة للـlogging"
+          ],
+          "answer": 1,
+          "explain": "التوحيد هو المكسب: كل أخطاء التحقق في مشروعك بشكل واحد، فالعميل يكتب معالجة مرة واحدة."
+        },
+        {
+          "q": "أنهي حالة **ما** ينفعش تتحل بـFluentValidation لوحدها وتحتاج قيد في قاعدة البيانات؟",
+          "options": [
+            "طول الاسم الأقصى 100 حرف",
+            "أن البريد الإلكتروني فريد بين كل المستخدمين",
+            "أن الكمية أكبر من صفر",
+            "أن الكود يتكون من حروف كبيرة"
+          ],
+          "answer": 1,
+          "explain": "التفرد عبر كل الصفوف يحتاج قيد Unique (وحتى مع تحقق غير متزامن، فيه سباق زمني). القاعدة الأخيرة في قاعدة البيانات."
+        },
+        {
+          "q": "إمتى تستخدم `CascadeMode.Stop`؟",
+          "options": [
+            "لما عايز كل الأخطاء دفعة واحدة للواجهة",
+            "لما التحقق التالي مالوش معنى بعد فشل الأول (زي ما يكون الحقل فاضي)",
+            "لما التحقق غير متزامن",
+            "دايمًا في كل validator"
+          ],
+          "answer": 1,
+          "explain": "Fail-fast بيقلل الضوضاء: بعد `NotEmpty` فشل، مالوش لازمة تشتكي من الـregex."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "Validator كامل لـendpoint حقيقي",
+          "md": "اختار endpoint في مشروعك (أو `CreateOrderRequest` فوق) واكتب له Validator كامل مع قواعد عبر الخصائص، وشغّله تلقائيًا، وارجع `ValidationProblem`.",
+          "criteria": [
+            "5 قواعد على الأقل، منها واحدة عبر أكثر من خاصية",
+            "رسائل بالعربي و`ErrorCode` ثابت للأخطاء المهمة",
+            "الاستجابة 400 بشكل problem+json",
+            "3 اختبارات على الأقل للـValidator (نجاح + فشلين)"
+          ],
+          "hint": "استخدم `WithErrorCode` عشان الواجهة تتصرف بحسب الكود مش النص (النص ممكن يُترجم)."
+        },
+        {
+          "id": "t2",
+          "title": "منع التحقق المكرر",
+          "md": "ابحث في مشروعك عن كل أماكن التحقق اليدوي (`if (string.IsNullOrWhite...` في الخدمات) وانقلها للـValidators، وسيب في الـDomain قواعد العمل فقط.",
+          "criteria": [
+            "قائمة بالمواضع اللي شلتها (في ملاحظات الدرس)",
+            "الـDomain بقى بيتحقق من القواعد مش من الشكل",
+            "الاختبارات كلها لسه ناجحة"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "FluentValidation documentation",
+          "url": "https://docs.fluentvalidation.net/"
+        },
+        {
+          "label": "Minimal APIs in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis"
+        },
+        {
+          "label": "What's new in ASP.NET Core (validation in Minimal APIs)",
+          "url": "https://learn.microsoft.com/aspnet/core/what-is-new/"
+        },
+        {
+          "label": "RFC 9457 — Problem Details for HTTP APIs",
+          "url": "https://www.rfc-editor.org/rfc/rfc9457"
+        }
+      ]
+    }
+  ]
+}

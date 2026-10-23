@@ -1,0 +1,499 @@
+{
+  "id": "s6-m3-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "الـpipeline السريع بلا بوابات = ناقل سريع للأعطال. في الدرس ده هتحوّل «المعايير» من كلام في الـPR review إلى **فحوصات بتفشل البناء**: تنسيق وتحذيرات كأخطاء · **بوابة تغطية** رقمية · **اختبارات معمارية** تمنع تسريب الاعتماديات · **فحص ثغرات الصور** · **مراجعة التبعيات** · **SBOM وتوقيع** · وكشف كسر العقود (OpenAPI/Pact). ومع كل بوابة: **الحد الرقمي، والسرعة، وخطة التعامل مع الفشل** — لأن البوابة اللي بتصرخ طول الوقت بتتعطّل."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "Required status checks",
+          "def": "فحوصات لازم تنجح قبل الدمج (branch protection). من غيرها الـCI «نصيحة»."
+        },
+        {
+          "term": "بوابة التغطية (coverage gate)",
+          "def": "حد رقمي على نسبة التغطية يفشل البناء لو اتكسر. المفيد: **حد على الكود الجديد/المتغير** مش على المشروع كله (وإلا المشروع القديم بيمنعك للأبد)."
+        },
+        {
+          "term": "اختبار الطفرات (Mutation testing)",
+          "def": "أداة (Stryker) بتعدّل كودك عمدًا (مثل `<` إلى `<=`) وتشوف هل اختباراتك بتكتشف التغيير. بتكشف «تغطية عالية واختبارات ضعيفة»."
+        },
+        {
+          "term": "اختبار معماري",
+          "def": "اختبار وحدة على **الاعتماديات بين الطبقات** (NetArchTest): Domain ما يعرفش EF · Application ما يعرفش ASP.NET · الخ. بيمنع تآكل المعمارية (4.1/4.2)."
+        },
+        {
+          "term": "كسر العقد (breaking change)",
+          "def": "تغيير في API بيكسر عميلًا موجودًا: حذف مسار/حقل · تغيير نوع · إضافة حقل مطلوب. يُكشف بمقارنة OpenAPI أو باختبارات العقد (Pact)."
+        },
+        {
+          "term": "Dependency review",
+          "def": "فحص PR بيوضح: الحزم الجديدة · تراخيصها · هل فيها تنبيهات أمان · هل فيها كود بناء (build scripts)."
+        },
+        {
+          "term": "SBOM",
+          "def": "قائمة مكونات الصورة/الحزمة (CycloneDX/SPDX). بتجاوب «أنا متأثر بثغرة X في مكتبة Y؟» في دقائق بدل أيام."
+        },
+        {
+          "term": "Renovate / Dependabot",
+          "def": "بوتات بتفتح PRs لتحديث التبعيات. الفرق المهم: التجميع (grouping) وسياسة التحديثات الكبرى والجدول — عشان ما يغرقوش الفريق."
+        },
+        {
+          "term": "Flaky test",
+          "def": "اختبار بينجح ويفشل عشوائيًا من غير تغيير في الكود. أخطر حاجة في الـCI: بيقتل الثقة في البوابة. الحل: عزل (quarantine) + issue + مهلة إصلاح."
+        },
+        {
+          "term": "Secret scanning / push protection",
+          "def": "فحص المستودع وPRs بحثًا عن أسرار ومنع رفعها أصلًا — طبقة أخيرة بعد ما تفشل كل الطبقات."
+        },
+        {
+          "term": "Deterministic build",
+          "def": "بناء ينتج نفس البايتات من نفس المصدر (مهم للتحقق من الـattestations وللكاش)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① البوابات: جدول الحد والسرعة وخطة الفشل"
+    },
+    {
+      "type": "table",
+      "caption": "كل بوابة لازم يكون لها حد رقمي وزمن وخطة فشل — وإلا هتتعطّل",
+      "head": [
+        "البوابة",
+        "الأداة",
+        "الحد الموصى به",
+        "الزمن التقريبي",
+        "لو فشلت"
+      ],
+      "rows": [
+        [
+          "التنسيق والتحليل",
+          "`dotnet format --verify-no-changes` + analyzers",
+          "صفر انحراف · `TreatWarningsAsErrors`",
+          "10–40 ثانية",
+          "صلح محليًا بـ`dotnet format`؛ لو قاعدة غلط → `EditorConfig`/`.editorconfig` + suppress بتبرير"
+        ],
+        [
+          "اختبارات الوحدة",
+          "xUnit v3 (1.2.1)",
+          "**100% نجاح**",
+          "20–60 ثانية",
+          "لا تدمج. لو flaky → عزل فوري (الأسفل)"
+        ],
+        [
+          "التغطية",
+          "coverlet + ReportGenerator",
+          "**80% على الكود الجديد** · وحد أدنى عام (مثال 60%)",
+          "10–20 ثانية",
+          "أضف اختبارات للمسار الجديد؛ **لا ترفع الحد لتبرير فشل**"
+        ],
+        [
+          "اختبارات المعمارية",
+          "NetArchTest",
+          "صفر اعتماد مخالف",
+          "1–3 ثوانٍ",
+          "صلح الاعتماد أو اكتب ADR يبرر الاستثناء (4.1.3)"
+        ],
+        [
+          "اختبارات التكامل/العقود",
+          "Testcontainers + Pact (5.3.3)",
+          "100% نجاح على المسارات الحرجة",
+          "2–6 دقائق",
+          "شغّلها job منفصل؛ لو بطيئة → على main/merge queue"
+        ],
+        [
+          "الطفرات (mutation)",
+          "Stryker.NET",
+          "≥ 60–70% للمشروعات الجديدة (تدريجيًا)",
+          "10–40 دقيقة",
+          "**على جدول (ليلًا/أسبوعيًا)** مش على كل PR — واعمل issue للنتيجة"
+        ],
+        [
+          "ثغرات الصورة",
+          "Trivy / Docker Scout (6.1.3)",
+          "صفر CRITICAL · HIGH بدون إصلاح متاح = مقبول مؤقتًا بـissue",
+          "30–90 ثانية",
+          "حدّث الصورة الأساسية/الحزمة؛ `--ignore-unfixed` للثغرات بلا حل"
+        ],
+        [
+          "التبعيات الجديدة",
+          "dependency-review + Dependabot/Renovate",
+          "لا حزمة بتنبيه أمان معروف · تراخيص متوافقة",
+          "5–15 ثانية",
+          "راجع الترخيص والبديل؛ لا توافق على حزمة بلا صيانة"
+        ],
+        [
+          "كسر العقد (API)",
+          "مقارنة OpenAPI + Pact provider verification",
+          "صفر كسر غير مُعلَن",
+          "10–60 ثانية",
+          "إصدار جديد (versioning 2.1.x) + مسار توسيع/تضييق (3.5)"
+        ],
+        [
+          "الأسرار في الكود",
+          "secret scanning + push protection + gitleaks في CI",
+          "صفر تسريب",
+          "<10 ثوانٍ",
+          "**دوّر السر فورًا** ثم احذفه — الحذف وحده لا يكفي (6.2.3)"
+        ],
+        [
+          "SBOM + توقيع",
+          "`sbom: true` + cosign + attestations",
+          "موجود لكل صورة منشورة",
+          "10–30 ثانية",
+          "لا تنشر صورة بلا SBOM — هتبقى أعمى عند ثغرة جديدة"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "قاعدة البوابة اللي بتعيش",
+      "md": "**بوابة بتفشل من غير خطة = بوابة بتتعطّل.** لكل بوابة حدد: (1) الحد الرقمي (2) مين مسؤول عن إصلاح الفشل (3) إمتى يُسمح بالاستثناء وكيف يُسجَّل (ADR/issue بملصق + تاريخ انتهاء). والأهم: **ابدأ بمستوى أدنى واقعي وارفعه تدريجيًا** — مشروع قديم بتغطية 35% ما تحطّش له بوابة 80% على الكود كله؛ حطّ البوابة على **الكود الجديد** بس وارفع الحد العام كل ربع سنة."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② ملف البوابات (نفس الأوامر محليًا وفي CI)"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": ".github/workflows/quality.yml",
+      "filename": ".github/workflows/quality.yml",
+      "code": "name: Quality Gates\n\non:\n  pull_request:\n    branches: [main]\n  schedule:\n    - cron: \"0 2 * * 1\"        # الاثنين 02:00 — للبوابات البطيئة (mutation/ثغرات)\n  workflow_dispatch:\n\npermissions:\n  contents: read\n  pull-requests: write          # لنشر تعليقات المراجعة على الـPR\n  security-events: write        # لو رفعت نتائج SARIF لـCode Scanning\n\njobs:\n  static:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-dotnet@v4\n        with: { global-json-file: global.json, cache: true }\n      - run: dotnet restore --locked-mode\n      - name: Format\n        run: dotnet format --verify-no-changes --severity info\n      - name: Build with warnings as errors\n        run: dotnet build -c Release --no-restore /warnaserror\n      - name: Architecture tests\n        run: dotnet test tests/Shop.ArchitectureTests -c Release --no-build --logger \"trx\"\n\n  coverage:\n    runs-on: ubuntu-latest\n    timeout-minutes: 20\n    needs: static\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-dotnet@v4\n        with: { global-json-file: global.json, cache: true }\n      - run: dotnet restore --locked-mode\n      - name: Tests with coverage\n        run: >\n          dotnet test -c Release --no-restore\n          --collect:\"XPlat Code Coverage\" --results-directory coverage\n      - name: Merge & gate\n        run: |\n          dotnet tool install -g dotnet-reportgenerator-globaltool\n          reportgenerator -reports:\"coverage/**/coverage.cobertura.xml\" \\\n            -targetdir:coverage-report -reporttypes:\"Cobertura;MarkdownSummaryGithub\" \\\n            -assemblyfilters:\"-*.Tests;-*.Designer\"\n          python3 scripts/coverage_gate.py coverage-report/Cobertura.xml 80\n          cat coverage-report/SummaryGithub.md >> \"$GITHUB_STEP_SUMMARY\"\n\n  secrets-scan:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps:\n      - uses: actions/checkout@v4\n        with: { fetch-depth: 0 }        # التاريخ الكامل لكشف الأسرار المرفوعة سابقًا\n      - name: gitleaks\n        uses: gitleaks/gitleaks-action@v2\n        env:\n          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n\n  dependency-review:\n    if: github.event_name == 'pull_request'\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/dependency-review-action@v4\n        with:\n          fail-on-severity: high\n          deny-licenses: AGPL-1.0-only,AGPL-3.0-only   # عدّل حسب سياستك\n\n  image-scan:\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    if: github.event_name != 'pull_request'\n    steps:\n      - uses: actions/checkout@v4\n      - uses: docker/setup-buildx-action@v3\n      - name: Build (no push)\n        uses: docker/build-push-action@v6\n        with: { context: ., push: false, tags: \"local/orders:scan\", sbom: true }\n      - name: Trivy\n        uses: aquasecurity/trivy-action@0.28.0\n        with:\n          image-ref: local/orders:scan\n          format: sarif\n          output: trivy.sarif\n          exit-code: \"1\"\n          severity: CRITICAL,HIGH\n          ignore-unfixed: true\n      - uses: github/codeql-action/upload-sarif@v3\n        with: { sarif_file: trivy.sarif }\n\n  mutation:\n    runs-on: ubuntu-latest\n    timeout-minutes: 45\n    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-dotnet@v4\n        with: { global-json-file: global.json, cache: true }\n      - run: dotnet restore --locked-mode\n      - name: Stryker (على مشروع واحد في كل مرة)\n        run: |\n          dotnet tool install -g dotnet-stryker\n          # اسم راية الحد بيتغير بين الإصدارات (كانت threshold-break قديمًا):\n          #   dotnet stryker --help   ← تحقق قبل الاعتماد عليها، أو ضع الحدود في stryker-config.json\n          dotnet stryker -p src/Orders.Application/Orders.Application.csproj \\\n            --reporter markdown --break-at 50 --concurrency 4\n      - uses: actions/upload-artifact@v4\n        with: { name: mutation-report, path: \"**/reports/**/*.md\" }\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "scripts/quality-gates.sh — نفّذها محليًا قبل ما تدفع",
+      "filename": "scripts/quality-gates.sh",
+      "code": "#!/usr/bin/env bash\n# نفس بوابات CI على جهازك: ما تدفعش commit يكسر الـpipeline.\nset -uo pipefail          # بلا -e عشان نشوف كل الفحوصات لا أولها فقط\nFAIL=0\n\nrun() { echo; echo \"═══ $1 ═══\"; shift; \"$@\" || { echo \"✗ فشل\"; FAIL=1; }; }\n\nrun \"التنسيق\"            dotnet format --verify-no-changes --severity info\nrun \"البناء (تحذيرات=أخطاء)\" dotnet build -c Release /warnaserror\nrun \"اختبارات المعمارية\"   dotnet test tests/Shop.ArchitectureTests -c Release --no-build\nrun \"اختبارات الوحدة\"      dotnet test tests/Shop.UnitTests -c Release --no-build \\\n                            --collect:\"XPlat Code Coverage\" --results-directory coverage\n\necho; echo \"═══ بوابة التغطية ═══\"\nif command -v reportgenerator >/dev/null; then\n  reportgenerator -reports:\"coverage/**/coverage.cobertura.xml\" \\\n    -targetdir:coverage-report -reporttypes:Cobertura >/dev/null\n  python3 scripts/coverage_gate.py coverage-report/Cobertura.xml 80 || FAIL=1\nelse\n  echo \"ثبّت الأداة: dotnet tool install -g dotnet-reportgenerator-globaltool\"\nfi\n\necho; echo \"═══ الأسرار ═══\"\nif command -v gitleaks >/dev/null; then gitleaks detect --source . --no-banner || FAIL=1\nelse echo \"gitleaks غير مثبت (اختياري محليًا — CI بيفحصه)\"; fi\n\necho\n[ \"$FAIL\" = 0 ] && echo \"✅ كل البوابات نجحت\" || { echo \"❌ فيه بوابات فشلت\"; exit 1; }\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "scripts/coverage_gate.py — بوابة رقمية قابلة للتفاوض عليها",
+      "filename": "scripts/coverage_gate.py",
+      "code": "#!/usr/bin/env python3\n\"\"\"بوابة تغطية: تفشل لو النسبة تحت الحد.\nالاستخدام: python3 scripts/coverage_gate.py coverage-report/Cobertura.xml 80\nملاحظة: البوابة على المشروع كله قاسية للمشروعات القديمة؛\nالأفضل (لما تتوفر الأداة) بوابة على **الكود المتغير** في الـPR.\"\"\"\nimport sys\nimport xml.etree.ElementTree as ET\n\npath, threshold = sys.argv[1], float(sys.argv[2])\nroot = ET.parse(path).getroot()\nline_rate = float(root.attrib[\"line-rate\"]) * 100\nbranch_rate = float(root.attrib.get(\"branch-rate\", 0)) * 100\n\nprint(f\"line coverage   = {line_rate:.1f}%  (threshold {threshold:.0f}%)\")\nprint(f\"branch coverage = {branch_rate:.1f}%\")\n\n# تفاصيل: أسوأ 5 ملفات (هي اللي تستاهل اختبارات):\nworst = []\nfor cls in root.iter(\"class\"):\n    r = float(cls.attrib.get(\"line-rate\", 0)) * 100\n    worst.append((r, cls.attrib.get(\"filename\", \"?\")))\nfor r, f in sorted(worst)[:5]:\n    print(f\"   {r:5.1f}%  {f}\")\n\nif line_rate < threshold:\n    print(f\"✗ FAIL: التغطية تحت الحد بنقص {threshold - line_rate:.1f} نقطة\")\n    sys.exit(1)\nprint(\"✓ PASS\")\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ بوابتان بيحموا المعمارية والعقود (أغلى بوابتين لو اتكسروا)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "tests/Shop.ArchitectureTests/LayerTests.cs",
+      "filename": "tests/Shop.ArchitectureTests/LayerTests.cs",
+      "code": "using NetArchTest.Rules;\nusing Xunit;\n\nnamespace Shop.ArchitectureTests;\n\n/// <summary>\n/// قواعد المعمارية من المرحلة 4 — مفروضة آليًا بدل الـPR review.\n/// أي مخالفة = اختبار فاشل = الـCI أحمر.\n/// </summary>\npublic class LayerTests\n{\n    // Marker = نوع فارغ في كل مشروع للرجوع إليه (أو استخدم أي نوع موجود فعلًا في المشروع).\n    private static readonly System.Reflection.Assembly Domain = typeof(Shop.Domain.Marker).Assembly;\n    private static readonly System.Reflection.Assembly Application = typeof(Shop.Application.Marker).Assembly;\n    private static readonly System.Reflection.Assembly Infrastructure = typeof(Shop.Infrastructure.Marker).Assembly;\n    private static readonly System.Reflection.Assembly Api = typeof(Shop.Api.Marker).Assembly;\n\n    [Fact]\n    public void Domain_has_no_dependency_on_any_other_layer()\n    {\n        var result = Types.InAssembly(Domain)\n            .ShouldNot().HaveDependencyOnAny(\n                \"Shop.Application\", \"Shop.Infrastructure\", \"Shop.Api\",\n                \"Microsoft.EntityFrameworkCore\", \"Microsoft.AspNetCore\", \"Dapper\")\n            .GetResult();\n\n        Assert.True(result.IsSuccessful,\n            \"المجال اعتمد على طبقة أعلى: \" + string.Join(\", \", result.FailingTypeNames ?? Array.Empty<string>()));\n    }\n\n    [Fact]\n    public void Application_does_not_know_about_EF_or_AspNet()\n    {\n        var result = Types.InAssembly(Application)\n            .ShouldNot().HaveDependencyOnAny(\n                \"Microsoft.EntityFrameworkCore\", \"Microsoft.AspNetCore.Mvc\")\n            .GetResult();\n\n        Assert.True(result.IsSuccessful,\n            \"التطبيق تسرّب إليه تفاصيل البنية: \" + string.Join(\", \", result.FailingTypeNames ?? []));\n    }\n\n    [Fact]\n    public void Api_does_not_reference_Infrastructure_directly()\n    {\n        // API يعتمد على Application (العقود) — والبنية تُحقن بالـDI من الـcomposition root فقط.\n        var result = Types.InAssembly(Api)\n            .That().ResideInNamespaceContaining(\"Features\")\n            .ShouldNot().HaveDependencyOn(\"Shop.Infrastructure\")\n            .GetResult();\n\n        Assert.True(result.IsSuccessful, \"handlers بتعرف تفاصيل البنية — اكسر الاعتماد بواجهة\");\n    }\n\n    [Fact]\n    public void Handlers_are_sealed_and_have_single_responsibility_shape()\n    {\n        // قاعدة فريق: كل handler اسمها *Handler ومغلقة (sealed) — تمنع التوريث الخفي.\n        var result = Types.InAssembly(Application)\n            .That().HaveNameEndingWith(\"Handler\")\n            .Should().BeSealed()\n            .GetResult();\n\n        Assert.True(result.IsSuccessful, \"handlers غير مغلقة: \" + string.Join(\", \", result.FailingTypeNames ?? []));\n    }\n\n    [Fact]\n    public void No_layer_leaks_into_tests_assemblies()\n    {\n        // اختبار بسيط لكن قيم: يمنع نسخ أنواع بين المشروعات (duplicated DTOs).\n        var result = Types.InAssembly(Application)\n            .ShouldNot().ResideInNamespaceContaining(\"Shop.Infrastructure\")\n            .GetResult();\n        Assert.True(result.IsSuccessful);\n    }\n\n    [Fact]\n    public void Modules_do_not_reference_each_other_internals()\n    {\n        // Modular monolith (4.2): الوصول فقط عبر العقود العامة.\n        var result = Types.InAssembly(Application)\n            .That().ResideInNamespaceContaining(\"Modules.Orders\")\n            .ShouldNot().HaveDependencyOn(\"Shop.Application.Modules.Catalog.Internal\")\n            .GetResult();\n\n        Assert.True(result.IsSuccessful, \"وحدة Orders بتعرف internals وحدة Catalog\");\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "scripts/contract-gates.sh — OpenAPI diff + Pact provider verification",
+      "filename": "scripts/contract-gates.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\n\nmkdir -p artifacts\nBASE=docs/openapi/Orders.Api.json      # الخط الأساسي الملتزَم في المستودع\n\n# ═══ 1) ولّد OpenAPI وقت البناء (بلا راية مخترعة) ═══\n# في src/Orders.Api.csproj:\n#   <PackageReference Include=\"Microsoft.Extensions.ApiDescription.Server\" Version=\"10.*\">\n#     <PrivateAssets>all</PrivateAssets>\n#     <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>\n#   </PackageReference>\n#   <OpenApiGenerateDocuments>true</OpenApiGenerateDocuments>\n#   <OpenApiGenerateDocumentsOnBuild>true</OpenApiGenerateDocumentsOnBuild>\n#   <OpenApiDocumentsDirectory>$(MSBuildThisFileDirectory)../../docs/openapi</OpenApiDocumentsDirectory>\ndotnet build src/Orders.Api -c Release\nNEW=$(ls -t docs/openapi/*.json | head -n 1)\necho \"المستند المولّد: $NEW\"\n\n# ═══ 2) قارن بالعقد الملتزَم — الكسر يُفشل البناء ═══\nif command -v oasdiff >/dev/null; then\n  # الراية --fail-on ترجع كود خروج غير صفري عند الكسر بمستوى ERR (تحقق في إصدارك):\n  oasdiff breaking \"$BASE\" \"$NEW\" --fail-on ERR --format markdown | tee artifacts/openapi-breaking.md\nelse\n  # بوابة بديلة رخيصة: أي تغيير في العقد لازم ييجي مع تحديث CHANGELOG في نفس الـPR\n  if ! git diff --quiet \"$BASE\"; then\n    git diff --name-only HEAD | grep -q \"CHANGELOG-api.md\" || {\n      echo \"✗ العقد اتغير من غير إدخال في CHANGELOG-api.md\"; exit 1; }\n    echo \"⚠ العقد اتغير — تأكد إنه تغيير متوافق رجعيًا (2.1.x) ووثّقه\"\n  fi\n  echo \"oasdiff غير مثبت — البوابة الحقيقية تبقى اختبارات العقد (Pact) بالأسفل\"\nfi\n\n# ═══ 2) تحقق المزوّد من عقود المستهلكين (5.3.3) ═══\ndotnet test tests/Shop.ProviderVerificationTests -c Release \\\n  --filter \"Category=ProviderVerification\" --logger \"trx;LogFileName=pact.trx\"\n\n# ═══ 3) تحديث الخط الأساسي = قرار صريح في الـPR (مش تلقائي) ═══\n# بعد ما تتأكد إن التغيير متوافق رجعيًا (أو إنك عملت إصدارًا جديدًا):\n#   cp \"$NEW\" \"$BASE\" && git add \"$BASE\" CHANGELOG-api.md\n# ترك التحديث يدويًا مقصود: لو الـCI بيحدّث الأساس لوحده، الكسر هيمر من غير ما حد ياخد باله.\necho \"الملف الجديد: $NEW | الأساس: $BASE\"\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ التبعيات والأسرار: البوابات اللي بتمنع حادثة قبل ما تحصل"
+    },
+    {
+      "type": "table",
+      "caption": "أدوات الأمان والتبعيات في CI — وإعدادها الصحيح",
+      "head": [
+        "الخطر",
+        "الأداة/الإعداد",
+        "الإعداد الموصى به",
+        "ملاحظة عملية"
+      ],
+      "rows": [
+        [
+          "ثغرة في مكتبة/صورة",
+          "Dependabot أو Renovate + Trivy/Scout",
+          "تجميع التحديثات الصغيرة أسبوعيًا · تحديثات الأمان فورًا · `ignore-unfixed` للثغرات بلا حل",
+          "بوت التحديثات بلا سياسة = 200 PR مفتوح ومحدش بيقرأ"
+        ],
+        [
+          "حزمة خبيثة/مشكوك فيها في PR",
+          "`actions/dependency-review-action`",
+          "`fail-on-severity: high` + قائمة تراخيص مرفوضة + كشف build scripts",
+          "المراجعة بتظهر الحزم **الجديدة** فقط — وده اللي محتاج عين"
+        ],
+        [
+          "سر مرفوع في commit",
+          "Secret scanning + push protection + gitleaks في CI",
+          "فعّل push protection على المستودع · `fetch-depth: 0` في CI لكشف التاريخ",
+          "**لو اتسرّب: دوّره أولًا**، ثم احذفه من التاريخ (6.2.3)"
+        ],
+        [
+          "كود خبيث في action خارجي",
+          "pin بـSHA + مراجعة `permissions`",
+          "ثبّت كل action خارجي على SHA · `permissions: contents: read` افتراضيًا",
+          "tag بيتحرك = سلسلة إمداد مفتوحة"
+        ],
+        [
+          "صورة بلا مصدر معروف",
+          "SBOM + provenance + cosign + attestations (6.1.3/6.3.1)",
+          "لا تنشر صورة بلا SBOM وتوقيع",
+          "عند ثغرة جديدة: `cosign verify` + SBOM يجاوبوا «هل أنا متأثر؟» في دقائق"
+        ],
+        [
+          "اعتماد على إصدار عائم",
+          "lock files + `--locked-mode` + pin للإصدارات في csproj",
+          "`RestorePackagesWithLockFile` · تجنب `*` في إصدارات الحزم",
+          "إصدار عائم = بناء النهاردة غير بناء بكرة (وCI أخضر بشكل كاذب)"
+        ],
+        [
+          "تآكل المعمارية",
+          "NetArchTest في CI (أعلاه)",
+          "بوابة required check — مش اختيارية",
+          "أرخص بوابة بأعلى قيمة: ثانية واحدة وتمنع شهور من إعادة الهيكلة"
+        ],
+        [
+          "اختبارات flaky",
+          "عزل (quarantine) + سياسة",
+          "ملصق `quarantine` + استبعاد من required checks + **issue بمهلة 14 يوم** ثم حذف",
+          "البديل (تجاهلها) بيقتل ثقة الفريق في الـCI كله"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "ترتيب التفعيل (لا تفعّل كل حاجة في يوم)",
+      "md": "**الأسبوع 1:** التنسيق + التحذيرات كأخطاء + اختبارات الوحدة (بوابة required). **الأسبوع 2:** بوابة التغطية على **الكود الجديد** فقط بحد منخفض (50%) + رفعها تدريجيًا. **الأسبوع 3:** اختبارات المعمارية (NetArchTest) + secret scanning. **الأسبوع 4:** فحص الصور (Trivy) + dependency review + SBOM/توقيع. **بعدها:** mutation testing على جدول أسبوعي + OpenAPI diff + Pact. كل أسبوع بوابة واحدة، وكل بوابة بتتعطّل لو فشلت 3 مرات بلا خطة."
+    },
+    {
+      "type": "steps",
+      "title": "⑤ خطة تفعيل البوابات على مشروع موجود (6 خطوات)",
+      "items": [
+        {
+          "title": "1) قِس الوضع الحالي من غير ما تمنع حاجة",
+          "md": "شغّل كل الفحوصات بوضع «تقرير فقط» (مش required checks): التغطية الحالية · عدد التحذيرات · الثغرات · مخالفات المعمارية. الأرقام دي بتحدد الحدود الواقعية.",
+          "code": "bash scripts/quality-gates.sh 2>&1 | tee docs/quality-baseline.md"
+        },
+        {
+          "title": "2) نظّف الديون الرخيصة أولًا",
+          "md": "`dotnet format` على المشروع كله + إصلاح التحذيرات (أو suppress بتبرير) — ده بيخلي `warnaserror` ممكنًا من غير ألم.",
+          "code": "dotnet format && dotnet build /warnaserror"
+        },
+        {
+          "title": "3) فعّل البوابات السريعة كـrequired checks",
+          "md": "التنسيق · البناء · اختبارات الوحدة · المعمارية. دي أقل من دقيقتين وبتدي أغلب القيمة.",
+          "code": ""
+        },
+        {
+          "title": "4) أضف بوابة التغطية على الكود الجديد",
+          "md": "حد منخفض في البداية (50%) وزيده كل ربع سنة. الأهم: **لا تُخفض الحد أبدًا لتبرير فشل** — خفضه مرة واحدة بيقتل مصداقيته.",
+          "code": ""
+        },
+        {
+          "title": "5) أضف بوابات الأمان (صور + تبعيات + أسرار)",
+          "md": "Trivy على الصورة · dependency review على PRs · push protection · SBOM وتوقيع لكل صورة منشورة.",
+          "code": ""
+        },
+        {
+          "title": "6) البوابات البطيئة على جدول",
+          "md": "mutation testing أسبوعيًا + OpenAPI diff عند تغيير `src/…/Endpoints` + Pact provider verification قبل النشر. وراقب زمن الـpipeline شهريًا.",
+          "code": ""
+        }
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أعرف الفرق بين «CI بيشتغل» و«بوابة required» — ومن غير required checks الـCI نصيحة.",
+        "أقدر أكتب بوابة تغطية رقمية (سكربت يقرأ Cobertura ويفشل تحت الحد) وأفهم ليه البوابة على **الكود الجديد** أفضل.",
+        "أقدر أكتب اختبارات معمارية بـNetArchTest تمنع تسريب EF/ASP.NET للطبقات العليا.",
+        "أعرف إمتى أشغّل mutation testing (على جدول، بحد `break-at`) وليه مش على كل PR.",
+        "أقدر أفعّل dependency review وsecret scanning وأتعامل مع تسريب سر بالترتيب الصح (تدوير ثم حذف).",
+        "أعرف سياسة التعامل مع flaky tests (عزل + issue + مهلة + حذف) وليه التجاهل أخطر.",
+        "عندي خطة تفعيل تدريجية (بوابة كل أسبوع) بدل تفعيل كل شيء مرة واحدة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على البوابات.",
+      "questions": [
+        {
+          "q": "مشروع قديم بتغطية 35%. حطيت بوابة 80% على المشروع كله. النتيجة المتوقعة؟",
+          "options": [
+            "الفريق هيكتب اختبارات بسرعة",
+            "**الـCI هيبقى أحمر دايمًا فبيتجاهلوه أو بيعطّلوه** — الصح: بوابة على الكود الجديد/المتغير وحد عام منخفض يُرفع تدريجيًا",
+            "التغطية هترتفع تلقائيًا",
+            "مفيش مشكلة"
+          ],
+          "answer": 1,
+          "explain": "بوابة مستحيلة = بوابة معطّلة. الخطة: حد على الكود المتغير (مثال 80%) + حد عام واقعي (مثال 50%) يُرفع كل ربع سنة، وممنوع تخفيضه لتبرير فشل."
+        },
+        {
+          "q": "التغطية 92% لكن mutation score 40%. ده معناه إيه؟",
+          "options": [
+            "الاختبارات ممتازة",
+            "**الاختبارات بتنفّذ الكود من غير ما تتحقق من سلوكه** (assertions ضعيفة) — الطفرات بتكشف ده",
+            "الأداة غلط",
+            "التغطية محسوبة غلط"
+          ],
+          "answer": 1,
+          "explain": "الـmutation testing بيعدّل الكود عمدًا (مثل `<` إلى `<=`) ولو الاختبارات فضلت خضرا فمعناه إنها ما بتفحصش النتيجة. ده سبب إن mutation بوابة قيمة حتى مع تغطية عالية."
+        },
+        {
+          "q": "ليه اختبارات المعمارية (NetArchTest) من أعلى البوابات قيمة؟",
+          "options": [
+            "لأنها بطيئة",
+            "**لأنها تمنع تآكل المعمارية في ثوانٍ، وديون المعمارية أغلى بكتير من ديون الاختبارات** — إعادة هيكلة بعد سنة أصعب من رفض PR النهاردة",
+            "لأنها بديل للاختبارات",
+            "لأنها بتقيس التغطية"
+          ],
+          "answer": 1,
+          "explain": "قاعدة «Domain ما يعرفش EF» بتتكسر تدريجيًا في PRs صغيرة، ولو اكتُشفت بعد سنة = إعادة هيكلة كبيرة. الاختبار بيمنعها في ثانية."
+        },
+        {
+          "q": "اختبار تكامل بينجح 9 مرات ويفشل مرة عشوائيًا. التصرف؟",
+          "options": [
+            "أعد تشغيله لحد ما ينجح",
+            "**اعزله (quarantine) فورًا من required checks + افتح issue بمهلة إصلاح (مثال 14 يوم) ثم احذفه أو أصلحه**",
+            "احذفه مباشرة",
+            "اتركه — 90% كفاية"
+          ],
+          "answer": 1,
+          "explain": "إعادة التشغيل بتخفي المشكلة وبتقتل الثقة. الحذف المباشر بيخسر تغطية. العزل بمهلة = تحافظ على الإشارات وتمنع تآكل الثقة. وغالبًا السبب: اعتماد على الوقت/الترتيب/منفذ مشترك/بيانات متشاركة (1.2.5)."
+        },
+        {
+          "q": "Trivy لقى ثغرة HIGH في مكتبة أساسية ومفيش إصدار مُصلَح. تعمل إيه؟",
+          "options": [
+            "تعطّل الفحص",
+            "**`--ignore-unfixed` للثغرات بلا إصلاح متاح + issue موثّق فيه التعويض (WAF/تقييد شبكة/تقليل الصلاحيات) + متابعة للتحديث**",
+            "تحذف المكتبة",
+            "تنشر على أي حال من غير توثيق"
+          ],
+          "answer": 1,
+          "explain": "الهدف: البوابة تفضل صارمة على **القابل للإصلاح** (وإلا هتتعطّل)، مع مسار معلن وغير قابل للتجاهل للباقي. والتوثيق بيخلي القرار قابل للمراجعة بدل ما يبقى إخفاءً."
+        },
+        {
+          "q": "ليه SBOM + توقيع الصورة مش «ترف أمني»؟",
+          "options": [
+            "مطلوب من GitHub",
+            "**بدونهم ما تعرفش إنك متأثر بثغرة جديدة**: SBOM بيجاوب «أيه اللي جوه صورتي؟» والتوقيع بيثبت «الصورة دي من build بتاعي» — في دقائق بدل أيام",
+            "بيقلل حجم الصورة",
+            "بيسرع النشر"
+          ],
+          "answer": 1,
+          "explain": "لما تطلع ثغرة في مكتبة، السؤال الأول: «أي من صورنا فيها المكتبة دي وبأي إصدار؟» من غير SBOM الإجابة بتاخد أيام من البحث اليدوي."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "بوابات شغالة + قياس أثرها.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: فعّل 5 بوابات على مشروعك وقِس أثرها",
+          "md": "**السياق:** مشروعك فيه CI (6.3.1) لكن بلا بوابات حقيقية.\n\n**المطلوب:**\n1. `docs/quality-baseline.md`: قياس الوضع الحالي (التغطية · عدد التحذيرات · الثغرات في الصورة · مخالفات المعمارية · زمن الـpipeline) — **قبل** تفعيل أي بوابة.\n2. فعّل 5 بوابات كـ**required checks**: التنسيق/التحذيرات · اختبارات الوحدة · **بوابة التغطية** (سكربت `coverage_gate.py`) · **اختبارات المعمارية** (NetArchTest بـ4 قواعد على الأقل) · **secret scanning**.\n3. أضف بوابة سادسة على جدول أسبوعي: Trivy على الصورة أو Stryker على مشروع واحد (اختَر وبرر الاختيار بالزمن/القيمة).\n4. `scripts/quality-gates.sh` يشغّل نفس البوابات محليًا (بدون CI) وبيطبع ملخصًا.\n5. **اختبار عكسي**: لكل بوابة، ارفع PR يكسرها عن قصد (تغيير تنسيق · اختبار فاشل · حذف اختبار لتقليل التغطية · اعتماد `Domain` على EF · سر تجريبي في ملف) ووثّق إن كل واحدة **فشّلت البناء** — مع لقطة/مخرج.\n6. سياسة flaky tests مكتوبة في `docs/testing-policy.md`: تعريف · عزل · مهلة · مصير الاختبار المعزول.\n7. بعد أسبوع: قِس أثر البوابات (عدد الفشل المُلتقَط قبل الدمج · زمن الـpipeline · أي بوابة اتكسرت كذبًا false positive) واكتب الخلاصة في `docs/quality-baseline.md`.",
+          "criteria": [
+            "قياس **قبل** و**بعد** بأرقام (مش انطباع).",
+            "5 بوابات required checks فعلًا (لقطة من إعدادات branch protection).",
+            "بوابة التغطية بسكربت مستقل يعمل محليًا وفي CI بنفس الحد.",
+            "4 قواعد معمارية على الأقل، وكل قاعدة برسالة فشل مفهومة (بتقول إيه النوع المخالف).",
+            "secret scanning شغال على التاريخ الكامل (`fetch-depth: 0`) + push protection مفعّل.",
+            "البوابة السادسة (Trivy أو Stryker) على جدول مع تبرير الاختيار.",
+            "5 اختبارات عكسية موثقة (كل بوابة كُسرت عن قصد وفشّلت البناء).",
+            "سياسة flaky tests مكتوبة بمهلة ومصير واضح.",
+            "خلاصة أسبوع: الفشل المُلتقَط + زمن الـpipeline + أي false positives وخطة لها."
+          ],
+          "hint": "أصعب خطوة عمليًا: `warnaserror` في مشروع فيه تحذيرات قديمة. الحل: شغّل `dotnet format` أولًا، وبعدين أصلح التحذيرات بالتدريج أو استخدم `<NoWarn>` **بقائمة محددة وتعليق يبرر كل واحدة** (مش تعطيل شامل). وللأسرار التجريبية: استخدم قيمة وهمية واضحة مثل `AKIAIOSFODNN7EXAMPLE` وتأكد إنها مكتشفة ثم احذفها فورًا.",
+          "solution": "الترتيب النموذجي والنتائج: القياس قبل = تغطية 42% · 87 تحذيرًا · 3 ثغرات HIGH في الصورة · 6 مخالفات معمارية · زمن pipeline 6 دقائق. بعد التنظيف (format + إصلاح تحذيرات + suppress موثّق) → التحذيرات صفر فـ`warnaserror` بقى ممكن. البوابات الخمس اشتغلت واختبارات المعمارية كشفت إن `Domain` بيستورد `Microsoft.EntityFrameworkCore` في مكانين (عادةً بسبب attributes مثل `[Required]` من DataAnnotations — الحل: استبدلها بأنواع المجال أو انقلها لطبقة التطبيق). الاختبارات العكسية الخمسة كلها فشّلت البناء. بعد أسبوع: 11 محاولة دمج اتكسرت قبل الوصول لـmain (7 تنسيق/تحذيرات · 2 تغطية · 1 معمارية · 1 اختبار) وfalse positive واحد (قاعدة معمارية صارمة على مشروع الاختبارات نفسه → استُثنيت بـ`.That().ResideOutsideOfNamespace`). زمن الـpipeline بقى 4:30 بعد الكاش.",
+          "resources": [
+            "https://github.com/BenMorris/NetArchTest",
+            "https://github.com/danielpalme/ReportGenerator",
+            "https://stryker-mutator.io/docs/stryker-net/Introduction/",
+            "https://github.com/gitleaks/gitleaks",
+            "https://trivy.dev/latest/docs/",
+            "https://docs.github.com/en/code-security/secret-scanning",
+            "https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/overview"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: بوابة العقود — OpenAPI diff + Pact provider verification",
+          "md": "**السياق:** API مستهلك من عميلين (ويب وتطبيق موبايل) — أي كسر في العقد بيبقى حادثة.\n\n**المطلوب:**\n1. صدّر OpenAPI من التطبيق كخطوة بناء (أو أمر) وثبّته في `docs/openapi/main.json`.\n2. `scripts/contract-gates.sh`: يصدّر النسخة الجديدة · يقارنها · **يفشل عند الكسر** · ويطبع جدول التغييرات في ملخص الـPR.\n3. اختبارات **provider verification** بـPact (5.3.3) تعمل في CI ضد عقود المستهلكين المنشورة، وتُشغَّل قبل أي نشر.\n4. سياسة إصدارات مكتوبة في `docs/api-versioning.md`: إيه اللي يُعتبر كسرًا (حذف مسار/حقل · تغيير نوع · إضافة حقل مطلوب) وإيه اللي مسموح (إضافة حقل اختياري · مسار جديد) — والمسار المطلوب عند الكسر (إصدار جديد + expand/contract من 3.5 + إعلان للمستهلكين).\n5. **اختبار عكسي**: احذف حقلًا من استجابة موجودة وغيّر نوعًا، ووثّق إن البوابة فشّلت البناء **قبل** الدمج.\n6. أضف فحصًا بسيطًا للتوافق الرجعي في الاختبارات: اختبار وحدة يفك تشفير **مثال استجابة قديم محفوظ** (golden file) بالنموذج الحالي — بيكشف كسر deserialization عند العملاء.\n7. اكتب في `docs/contract-runbook.md`: إيه اللي أعمله لو البوابة فشلت (3 مسارات: تراجع عن التغيير · إصدار جديد · تفاوض مع المستهلك).",
+          "criteria": [
+            "OpenAPI مُصدَّر آليًا ومثبت في المستودع كمرجع للمقارنة.",
+            "مقارنة تكتشف الكسر وتُفشل البناء (موثّق بتجربة عكسية).",
+            "ملخص التغييرات يظهر في الـPR (تعليق أو `GITHUB_STEP_SUMMARY`) بصيغة مقروءة.",
+            "Pact provider verification يعمل في CI ومطلوب قبل النشر.",
+            "سياسة إصدارات واضحة بقائمة «كسر» و«مسموح» ومسار التعامل مع الكسر.",
+            "اختبار golden file لفك تشفير استجابة قديمة بالنموذج الحالي.",
+            "runbook بثلاثة مسارات عند فشل البوابة.",
+            "ملاحظة صريحة عن حدود أداة المقارنة (بعض التغييرات الدلالية لا تُكشف) وأن اختبارات العقد هي الحماية الحقيقية."
+          ],
+          "hint": "لو أداة مقارنة OpenAPI مش متاحة عندك، ابدأ بأبسط بوابة فعالة: **فشل الـPR لو `docs/openapi/main.json` اتغير من غير ملف `CHANGELOG-api.md` مُحدَّث** (فحص في CI بمقارنة المسارات المتغيرة). دي بوابة رخيصة وبتمنع «تغيير صامت في العقد». وPact بيغطي الباقي لأنه بيختبر السلوك مش الشكل.",
+          "solution": "البوابة المركّبة: (1) CI يصدّر OpenAPI → يقارن بـ`docs/openapi/main.json` → لو فيه تغييرات كاسرة (حذف مسار/خاصية · تغيير نوع · خاصية جديدة مطلوبة) يفشل ويطبع الجدول (2) لو التغيير مسموح (إضافة اختيارية) ينجح ويطلب تحديث changelog (3) Pact provider verification يعمل ضد العقود المنشورة — وده اللي بيكشف الكسر الدلالي اللي مش بيبان في المخطط (4) اختبار golden file: `sample-order-response-v1.json` محفوظ + `JsonSerializer.Deserialize<OrderResponseV1>` + assertions على الحقول القديمة. التجربة العكسية: حذف `orderId` من الاستجابة → فشل في (1) و(3) و(4) معًا؛ تغيير نوعه من `string` إلى `Guid` → فشل في (1) و(4). الـrunbook: تراجع عن التغيير (الأرخص) · إصدار جديد `v2` مع expand/contract (للتغيير المطلوب) · تفاوض مع المستهلك (لو المستهلك داخلي وقابل للتحديث في نفس الأسبوع).",
+          "resources": [
+            "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/openapi/aspnetcore-openapi",
+            "https://docs.pact.io/",
+            "https://github.com/pact-foundation/pact-net",
+            "https://learn.microsoft.com/en-us/aspnet/core/web-api/jsonpatch",
+            "https://github.com/Tufin/oasdiff"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "تحليل الكود في .NET (analyzers)",
+          "url": "https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/overview"
+        },
+        {
+          "label": "NetArchTest",
+          "url": "https://github.com/BenMorris/NetArchTest"
+        },
+        {
+          "label": "ReportGenerator (دمج تقارير التغطية)",
+          "url": "https://github.com/danielpalme/ReportGenerator"
+        },
+        {
+          "label": "Stryker.NET (اختبار الطفرات)",
+          "url": "https://stryker-mutator.io/docs/stryker-net/Introduction/"
+        },
+        {
+          "label": "Trivy",
+          "url": "https://trivy.dev/latest/docs/"
+        },
+        {
+          "label": "dependency-review-action",
+          "url": "https://github.com/actions/dependency-review-action"
+        },
+        {
+          "label": "Secret scanning وpush protection",
+          "url": "https://docs.github.com/en/code-security/secret-scanning"
+        },
+        {
+          "label": "Pact: اختبارات العقد",
+          "url": "https://docs.pact.io/"
+        },
+        {
+          "label": "Dependabot: إعداد التحديثات",
+          "url": "https://docs.github.com/en/code-security/dependabot/working-with-dependabot-updates"
+        }
+      ]
+    }
+  ]
+}

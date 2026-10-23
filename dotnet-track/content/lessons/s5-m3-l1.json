@@ -1,0 +1,448 @@
+{
+  "id": "s5-m3-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nلحد دلوقتي النظام اللي بنيناه محتاج: Postgres + Redis + RabbitMQ + 4 خدمات + gateway،\nوكل واحد بيتشغّل بأمر مختلف، بترتيب مختلف، بمنافذ مكتوبة يدويًا في `appsettings.Development.json`.\n**ده ثمن الميكروسيرفيسز الحقيقي**: المطور الجديد بياخد يوم عشان يشغّل النظام محليًا.\n\n**.NET Aspire** بيحل المشكلة دي بثلاث حاجات:\n1. **AppHost** — برنامج واحد بيوصف النظام كله ككود (موارد، تبعيات، ترتيب إقلاع، أسرار) وبيشغّله بأمر واحد.\n2. **Service Discovery** — الخدمات تنادي بعضها بـ**الاسم** (`https+http://catalog`) بدل URL ثابت،\n   والمنافذ العشوائية محليًا بتتحل تلقائيًا.\n3. **ServiceDefaults + Dashboard** — telemetry وhealth checks وresilience موحدة في كل خدمة (الدرس الجاي).\n\nالمهم تفهمه من الأول: **Aspire أداة تطوير وتنسيق محلي**، مش بديل Kubernetes في الإنتاج\n(رغم إنه بيولّد مخططات نشر لـK8s/ACA/Compose).\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "AppHost",
+          "def": "مشروع تنفيذي (`Aspire.AppHost.Sdk`) بيوصف النظام: موارد، تبعيات، أسرار. `DistributedApplication.CreateBuilder(args)` ← `builder.Build().Run()`."
+        },
+        {
+          "term": "Resource",
+          "def": "أي حاجة في النموذج: مشروع .NET، container، قاعدة بيانات، cache، وسيط رسائل، ملف تنفيذي. كل مورد له اسم فريد."
+        },
+        {
+          "term": "IResourceBuilder<T>",
+          "def": "الـfluent API لتكوين المورد: `WithReference`, `WaitFor`, `WithHttpHealthCheck`, `WithEnvironment`, `WithDataVolume`, `WithBindMount`."
+        },
+        {
+          "term": "Integration",
+          "def": "حزمة `Aspire.Hosting.*` بتضيف مورد جاهز (`AddPostgres`, `AddRedis`, `AddRabbitMQ`) + حزمة `Aspire.*` في الخدمة بتقرأ الـconnection string (`AddNpgsqlDbContext`)."
+        },
+        {
+          "term": "Service Discovery",
+          "def": "حل اسم الخدمة لعنوان فعلي وقت التشغيل. محليًا: Aspire يحقن `services__catalog__https__0`. في K8s: DNS."
+        },
+        {
+          "term": "ServiceDefaults",
+          "def": "مشروع مكتبة مشترك فيه `AddServiceDefaults()`: OTel + health checks + discovery + resilience لكل الخدمات."
+        },
+        {
+          "term": "DCP (Developer Control Plane)",
+          "def": "المحرك اللي بيدير دورة حياة الموارد محليًا وبيوزع المنافذ عشوائيًا (عشان تشغّل نسختين مع بعض)."
+        },
+        {
+          "term": "Parameter",
+          "def": "قيمة تكوين/سر من بره الكود: `builder.AddParameter(\"pg-password\", secret: true)` ← من user-secrets أو environment."
+        },
+        {
+          "term": "WaitFor / WaitForCompletion",
+          "def": "ترتيب إقلاع: المورد ما يبدأش إلا لما الاعتماد يبقى **صحي** (مش بس شغال) — أو لحد ما مهمة تنتهي (seeder)."
+        },
+        {
+          "term": "Aspire CLI",
+          "def": "`aspire run` · `aspire add` · `aspire restore` · `aspire init` · `aspire dashboard run` — و`aspire.config.json` لاكتشاف الـAppHost."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) شكل المشاريع: 3 أنواع"
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "filename": "src/Shop.AppHost/Shop.AppHost.csproj",
+      "title": "AppHost (صيغة Aspire 13) — الـSDK في سطر المشروع نفسه",
+      "code": "\n<!--\n  ★ تغيّر في Aspire 13: الـSDK بيتحدد مباشرة في وسم <Project> بالإصدار.\n  الـSDK بيشمل Aspire.Hosting.AppHost تلقائيًا — بلا PackageReference إضافية،\n  وبلا <Sdk Name=\"Aspire.AppHost.Sdk\" .../> ولا Microsoft.NET.Sdk كقاعدة (الصيغة القديمة 9.x).\n-->\n<Project Sdk=\"Aspire.AppHost.Sdk/13.6.0\">\n\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net10.0</TargetFramework>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <Nullable>enable</Nullable>\n    <!-- ✓ قوالب 13.5+ بتفعّلها: الـAppHost بيحل نسخة CLI محلية (dotnet run == aspire run) -->\n    <AspireUseCliBundle>true</AspireUseCliBundle>\n    <UserSecretsId>9f2c1a7e-shop-apphost</UserSecretsId>\n  </PropertyGroup>\n\n  <ItemGroup>\n    <!-- كل مورد من حزمة hosting خاصة به -->\n    <PackageReference Include=\"Aspire.Hosting.PostgreSQL\" Version=\"13.6.0\" />\n    <PackageReference Include=\"Aspire.Hosting.Redis\"      Version=\"13.6.0\" />\n    <PackageReference Include=\"Aspire.Hosting.RabbitMQ\"   Version=\"13.6.0\" />\n  </ItemGroup>\n\n  <ItemGroup>\n    <!-- ✓ ProjectReference هي اللي بتولّد أنواع `Projects.Shop_Orders` المستخدمة في AppHost.cs -->\n    <ProjectReference Include=\"..\\Shop.Catalog\\Shop.Catalog.csproj\" />\n    <ProjectReference Include=\"..\\Shop.Orders\\Shop.Orders.csproj\" />\n    <ProjectReference Include=\"..\\Shop.Payments\\Shop.Payments.csproj\" />\n    <ProjectReference Include=\"..\\Shop.Notifications\\Shop.Notifications.csproj\" />\n    <ProjectReference Include=\"..\\Shop.Gateway\\Shop.Gateway.csproj\" />\n    <ProjectReference Include=\"..\\Shop.Seed\\Shop.Seed.csproj\" />\n  </ItemGroup>\n\n</Project>\n"
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "filename": "src/Shop.ServiceDefaults/Shop.ServiceDefaults.csproj",
+      "title": "ServiceDefaults — مشروع مشترك (لا يُنشر كخدمة)",
+      "code": "\n<Project Sdk=\"Microsoft.NET.Sdk\">\n\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <Nullable>enable</Nullable>\n    <!-- ★ بيعلّم أدوات Aspire إن ده المشروع المشترك اللي يتضاف تلقائيًا لأي خدمة جديدة -->\n    <IsAspireSharedProject>true</IsAspireSharedProject>\n  </PropertyGroup>\n\n  <ItemGroup>\n    <FrameworkReference Include=\"Microsoft.AspNetCore.App\" />\n  </ItemGroup>\n\n  <ItemGroup>\n    <PackageReference Include=\"Microsoft.Extensions.Http.Resilience\"            Version=\"10.0.0\" />\n    <PackageReference Include=\"Microsoft.Extensions.ServiceDiscovery\"          Version=\"10.0.0\" />\n    <PackageReference Include=\"OpenTelemetry.Exporter.OpenTelemetryProtocol\"   Version=\"1.12.0\" />\n    <PackageReference Include=\"OpenTelemetry.Extensions.Hosting\"               Version=\"1.12.0\" />\n    <PackageReference Include=\"OpenTelemetry.Instrumentation.AspNetCore\"       Version=\"1.12.0\" />\n    <PackageReference Include=\"OpenTelemetry.Instrumentation.Http\"             Version=\"1.12.0\" />\n    <PackageReference Include=\"OpenTelemetry.Instrumentation.Runtime\"          Version=\"1.12.0\" />\n  </ItemGroup>\n\n</Project>\n\n<!--\n  لو بتستخدم file-based AppHost (apphost.cs بلا csproj) المشروع ده مش بيتولد تلقائيًا:\n      dotnet new aspire-servicedefaults -n Shop.ServiceDefaults\n-->\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "أوامر التجهيز والتشغيل",
+      "code": "\n# ═══ 1) إضافة Aspire لحل قائم (بدل إنشاء مشروع جديد) ═══\ndotnet new install Aspire.ProjectTemplates\ndotnet new aspire-apphost       -n Shop.AppHost        -o src/Shop.AppHost\ndotnet new aspire-servicedefaults -n Shop.ServiceDefaults -o src/Shop.ServiceDefaults\n\n# أو من CLI (13.x) — يكتشف/ينشئ الـAppHost ويضيف موارد\ndotnet tool install --global aspire.cli      # مرة واحدة\naspire init                                  # في جذر المستودع\naspire add aspire.hosting.postgresql         # يضيف الحزمة + سطر المورد\naspire add aspire.hosting.rabbitmq\naspire restore                               # يستعيد الحزم (ويعيد توليد SDKs للغات تانية)\n\n# ═══ 2) التشغيل: أمر واحد لكل النظام ═══\ncd src/Shop.AppHost\ndotnet run                                   # يفتح لوحة Aspire + يشغّل كل الموارد\n# أو\naspire run                                   # نفس الحاجة عبر CLI (يدعم launch profiles)\n\n# ═══ 3) الأسرار: user-secrets (لا أسرار في الكود ولا في git) ═══\ncd src/Shop.AppHost\ndotnet user-secrets set \"Parameters:pg-password\"     \"local-dev-only\"\ndotnet user-secrets set \"Parameters:rabbit-password\" \"local-dev-only\"\n\n# ═══ 4) اللوحة لوحدها (لخدمات مش تحت AppHost) — الدرس الجاي ═══\naspire dashboard run                         # UI على 18888، OTLP على 4317/4318\n\n# ═══ 5) file-based AppHost (بديل خفيف لمستودع متعدد اللغات) ═══\n#   apphost.cs يبدأ بـ:\n#     #:sdk Aspire.AppHost.Sdk@13.6.0\n#     #:package Aspire.Hosting.Redis@13.6.0\n#   ⚠ الـAppHost الملفّي **لا يمكن** اختباره بـDistributedApplicationTestingBuilder (درس 5.3.3)\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) AppHost الكامل: موارد + تبعيات + ترتيب إقلاع"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.AppHost/AppHost.cs",
+      "title": "النظام كله ككود",
+      "code": "\n// requires: using Aspire.Hosting;\nvar builder = DistributedApplication.CreateBuilder(args);\n\n// ═══ 1) بارامترات وأسرار (من user-secrets / environment — بلا قيم في الكود) ═══\nvar pgPassword     = builder.AddParameter(\"pg-password\",     secret: true);\nvar rabbitPassword = builder.AddParameter(\"rabbit-password\", secret: true);\n\n// ═══ 2) البنية التحتية ═══\nvar postgres = builder.AddPostgres(\"postgres\", password: pgPassword)   // ✓ تحقق من ترتيب الوسائط في إصدارك\n    .WithDataVolume(\"shop-pg-data\")\n    .WithLifetime(ContainerLifetime.Persistent)     // ★ البيانات تبقى بين التشغيلات (وإلا كل مرة DB فاضية)\n    .WithPgAdmin();                                 // أداة إدارة (في إصدارات أحدث: PgWeb — تحقق)\n\nvar shopdb = postgres.AddDatabase(\"shopdb\");        // ← الاسم ده هو مفتاح الـconnection string\n\nvar cache = builder.AddRedis(\"cache\")\n    .WithDataVolume(\"shop-redis-data\");\n\nvar rabbit = builder.AddRabbitMQ(\"rabbit\", password: rabbitPassword)\n    .WithDataVolume(\"shop-rabbit-data\")\n    .WithManagementPlugin()                         // لوحة 15672 (إصدارات أحدث: sidecar — تحقق)\n    // ★ بنية الوسيط المعلنة ككود (درس 5.2.1): exchanges/queues/bindings/policies\n    .WithBindMount(\"../infra/rabbitmq/rabbitmq.conf\",     \"/etc/rabbitmq/rabbitmq.conf\",     isReadOnly: true)\n    .WithBindMount(\"../infra/rabbitmq/definitions.json\",  \"/etc/rabbitmq/definitions.json\",  isReadOnly: true);\n\n// ═══ 3) مهمة تجهيز البيانات: الباقي ينتظر **انتهاءها** ═══\nvar seed = builder.AddProject<Projects.Shop_Seed>(\"seed\")\n    .WithReference(shopdb)\n    .WaitFor(shopdb);\n\n// ═══ 4) الخدمات ═══\nvar catalog = builder.AddProject<Projects.Shop_Catalog>(\"catalog\")\n    .WithHttpHealthCheck(\"/health\")                 // ✓ يتطلب MapDefaultEndpoints في الخدمة (تحت)\n    .WithReference(shopdb).WaitFor(shopdb)          // → يحقن ConnectionStrings__shopdb\n    .WithReference(cache).WaitFor(cache)            // → يحقن ConnectionStrings__cache\n    .WaitForCompletion(seed);                       // ★ ما تبدأش قبل ما البيانات تتزرع\n\nvar orders = builder.AddProject<Projects.Shop_Orders>(\"orders\")\n    .WithHttpHealthCheck(\"/health\")\n    .WithReference(shopdb).WaitFor(shopdb)\n    .WithReference(rabbit).WaitFor(rabbit)          // → يحقن ConnectionStrings__rabbit\n    .WithReference(catalog).WaitFor(catalog);       // → يحقن services__catalog__https__0 (discovery!)\n\nvar payments = builder.AddProject<Projects.Shop_Payments>(\"payments\")\n    .WithHttpHealthCheck(\"/health\")\n    .WithReference(rabbit).WaitFor(rabbit);         // worker: بلا endpoint خارجي\n\nvar notifications = builder.AddProject<Projects.Shop_Notifications>(\"notifications\")\n    .WithReference(rabbit).WaitFor(rabbit);\n\nvar gateway = builder.AddProject<Projects.Shop_Gateway>(\"gateway\")\n    .WithExternalHttpEndpoints()                    // ★ يُعلن للمتصفح/الخارج (وإلا الرابط مش هيظهر)\n    .WithHttpHealthCheck(\"/health\")\n    .WithReference(orders).WaitFor(orders)\n    .WithReference(catalog).WaitFor(catalog);\n\n// ═══ 5) أمثلة تكوين إضافية (مش مستخدمة كلها هنا) ═══\n// .WithEnvironment(\"Orders__FeatureFlags__NewPricing\", \"true\")   // تكوين لكل تشغيل\n// .WithReplicas(2)                                               // نسختين محليًا (اختبار discovery/load)\n// .WithArgs(\"--verbose\")\n// .WithHttpEndpoint(port: 5100, targetPort: 8080, name: \"api\")   // تثبيت منفذ (يفضّل تركه عشوائيًا)\n// .WithEndpoint(\"api\", e => e.UriScheme = \"https\")               // تعديل endpoint موجود\n\nbuilder.Build().Run();\n\n// ══════════════════════════════════════════════════════════════════\n// ما الذي يحدث فعلًا عند Run()؟\n// ① DCP يبني نموذج الموارد ويحسب ترتيب الإقلاع من WaitFor\n// ② يشغّل containers (postgres/redis/rabbit) وينتظر صحتها\n// ③ يشغّل مشاريع .NET كعمليات محلية بمنافذ **عشوائية**\n// ④ يحقن لكل عملية: ConnectionStrings__* + services__<name>__<scheme>__0 + OTEL_* للوحة\n// ⑤ يفتح لوحة Aspire (الدرس الجاي) ويعرض الحالة واللوغات والـtraces\n// ══════════════════════════════════════════════════════════════════\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المورد",
+        "الحزمة",
+        "المتغير المحقون في الخدمة",
+        "ملاحظة"
+      ],
+      "rows": [
+        [
+          "`AddPostgres(\"postgres\").AddDatabase(\"shopdb\")`",
+          "Aspire.Hosting.PostgreSQL",
+          "`ConnectionStrings__shopdb`",
+          "اسم **قاعدة البيانات** هو المفتاح، مش اسم الخادم"
+        ],
+        [
+          "`AddRedis(\"cache\")`",
+          "Aspire.Hosting.Redis",
+          "`ConnectionStrings__cache`",
+          "منفذ عشوائي — `IDatabase` واحد مشترك (درس 3.3.5)"
+        ],
+        [
+          "`AddRabbitMQ(\"rabbit\")`",
+          "Aspire.Hosting.RabbitMQ",
+          "`ConnectionStrings__rabbit`",
+          "بصيغة `amqp://user:pass@host:port`"
+        ],
+        [
+          "`AddProject<Projects.Shop_Catalog>(\"catalog\")`",
+          "—",
+          "`services__catalog__https__0`",
+          "★ discovery: استخدم الاسم في `BaseAddress`"
+        ],
+        [
+          "`AddParameter(\"x\", secret: true)`",
+          "—",
+          "بالحقن الصريح (`WithEnvironment`/`WithReference`)",
+          "من user-secrets أو environment"
+        ],
+        [
+          "`AddContainer(\"otel\", \"…\")`",
+          "—",
+          "حسب الـendpoints",
+          "لأدوات جانبية (Jaeger/Collector)"
+        ],
+        [
+          "`AddExecutable(\"node\", …)`",
+          "—",
+          "`services__web__http__0`",
+          "لواجهات غير .NET (polyglot)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "الـAppHost كود — يتراجع في الـPR زي أي كود",
+      "md": "\n**قواعد نطبقها في الفريق:**\n1. **بلا أسرار في AppHost** — `AddParameter(secret: true)` دائمًا، والقيم في user-secrets/key-vault.\n2. **بلا منطق أعمال** — AppHost يصف **التوبولوجيا** بس. لو لقيت نفسك بتعمل حسابات/قراءة ملفات تكوين خدمات،\n   ده مكانه الخدمة نفسها.\n3. **أسماء الموارد = أسماء الخدمات في discovery** — ثبّتها في مستند (`docs/services.md`) لأن كل `BaseAddress` بيعتمد عليها.\n4. **`WaitFor` لكل اعتماد** — بلا ترتيب، الخدمة تبدأ وتفشل في أول طلب (وتعيد المحاولة بصخب).\n5. **`WithHttpHealthCheck` لكل خدمة HTTP** — هو اللي يخلي `WaitFor` يعني «صحي» مش «العملية اشتغلت».\n6. **مراجعة الـAppHost في الـPR** إلزامية: إضافة مورد = تغيير في توبولوجيا النظام.\n7. **AppHost نفسه لا يُنشر** كخدمة؛ يُستخدم لتوليد مخطط النشر (`aspire publish`/`PublishAs*` APIs).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Service Discovery: من URL ثابت لاسم خدمة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.ServiceDefaults/Extensions.cs",
+      "title": "الملف الكامل اللي كل خدمة بتستخدمه",
+      "code": "\n// requires: using Microsoft.AspNetCore.Builder; using Microsoft.AspNetCore.Diagnostics.HealthChecks;\n//           using Microsoft.Extensions.DependencyInjection; using Microsoft.Extensions.Diagnostics.HealthChecks;\n//           using Microsoft.Extensions.Hosting; using Microsoft.Extensions.Logging;\n//           using OpenTelemetry; using OpenTelemetry.Metrics; using OpenTelemetry.Trace;\n\npublic static class ServiceDefaultsExtensions\n{\n    /// <summary>السطر الوحيد اللي كل خدمة بتناديه في Program.cs.</summary>\n    public static TBuilder AddServiceDefaults<TBuilder>(this TBuilder builder)\n        where TBuilder : IHostApplicationBuilder\n    {\n        builder.ConfigureOpenTelemetry();\n        builder.AddDefaultHealthChecks();\n\n        builder.Services.AddServiceDiscovery();          // ✓ يحل أسماء الخدمات لعناوين\n\n        builder.Services.ConfigureHttpClientDefaults(http =>\n        {\n            http.AddStandardResilienceHandler();         // ✓ resilience افتراضي لكل HttpClient (درس 5.2.4)\n            http.AddServiceDiscovery();                  // ✓ discovery افتراضي لكل HttpClient\n            // (في إصدارات أقدم كان الاسم: http.UseServiceDiscovery())\n        });\n\n        // اختياري: قصر discovery على https في البيئات المشفرة\n        // builder.Services.Configure<ServiceDiscoveryOptions>(o => o.AllowedSchemes = [\"https\"]);\n\n        return builder;\n    }\n\n    private static TBuilder ConfigureOpenTelemetry<TBuilder>(this TBuilder builder)\n        where TBuilder : IHostApplicationBuilder\n    {\n        builder.Services.AddOpenTelemetry()\n            .WithMetrics(metrics => metrics\n                .AddAspNetCoreInstrumentation()\n                .AddHttpClientInstrumentation()\n                .AddRuntimeInstrumentation())\n            .WithTracing(tracing => tracing\n                .AddSource(builder.Environment.ApplicationName)     // ★ مصادرنا المخصصة (الدرس الجاي)\n                .AddAspNetCoreInstrumentation()\n                .AddHttpClientInstrumentation());\n                // .AddGrpcClientInstrumentation()  ← يحتاج OpenTelemetry.Instrumentation.GrpcNetClient\n\n        builder.AddOpenTelemetryExporters();\n        return builder;\n    }\n\n    private static TBuilder AddOpenTelemetryExporters<TBuilder>(this TBuilder builder)\n        where TBuilder : IHostApplicationBuilder\n    {\n        // ✓ لو فيه OTLP endpoint (لوحة Aspire بتحطه تلقائيًا) → صدّر له\n        var useOtlp = !string.IsNullOrWhiteSpace(builder.Configuration[\"OTEL_EXPORTER_OTLP_ENDPOINT\"]);\n        if (useOtlp)\n        {\n            builder.Services.AddOpenTelemetry().UseOtlpExporter();\n        }\n\n        // للإنتاج: Azure Monitor / Grafana / Prometheus (المرحلة 6)\n        return builder;\n    }\n\n    private static TBuilder AddDefaultHealthChecks<TBuilder>(this TBuilder builder)\n        where TBuilder : IHostApplicationBuilder\n    {\n        builder.Services.AddHealthChecks()\n            .AddCheck(\"self\", () => HealthCheckResult.Healthy(), [\"live\"]);   // ✓ liveness رخيص\n        return builder;\n    }\n\n    /// <summary>يُنادى في نهاية Program.cs لكل خدمة HTTP.</summary>\n    public static WebApplication MapDefaultEndpoints(this WebApplication app)\n    {\n        // ⚠ في الإنتاج قيّد الوصول لهذه المسارات (شبكة داخلية/مصادقة) — فيها معلومات حساسة\n        app.MapHealthChecks(\"/health\");                          // readiness: كل الفحوصات\n\n        app.MapHealthChecks(\"/alive\", new HealthCheckOptions     // liveness: التطبيق بيرد بس\n        {\n            Predicate = r => r.Tags.Contains(\"live\"),\n        });\n\n        return app;\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Orders/Program.cs",
+      "title": "خدمة تستهلك الاسم بدل العنوان + تكاملات Aspire",
+      "code": "\n// requires: using Shop.ServiceDefaults;\nvar builder = WebApplication.CreateBuilder(args);\n\n// ★ 1) السطر اللي يربط الخدمة بكل defaults (OTel + health + discovery + resilience)\nbuilder.AddServiceDefaults();\n\n// 2) قاعدة البيانات: التكامل بيقرأ ConnectionStrings:shopdb اللي حقنه الـAppHost\nbuilder.AddNpgsqlDbContext<OrdersDbContext>(\"shopdb\");      // حزمة Aspire.Npgsql.EntityFrameworkCore.PostgreSQL\n\n// 3) Redis بنفس الطريقة\nbuilder.AddRedisDistributedCache(\"cache\");                  // حزمة Aspire.StackExchange.Redis\n\n// 4) ★ الوسيط: connection string من discovery — بدل RabbitMq:Host الثابت في درس 5.2.1\nbuilder.Services.AddMassTransit(x =>\n{\n    x.AddConsumer<OrderPlacedConsumer>();\n    x.AddEntityFrameworkOutbox<OrdersDbContext>(o => o.UsePostgres().UseBusOutbox());\n\n    x.UsingRabbitMq((context, cfg) =>\n    {\n        // ✓ Aspire يحقن ConnectionStrings__rabbit = amqp://shop:****@localhost:52341\n        cfg.Host(new Uri(builder.Configuration.GetConnectionString(\"rabbit\")!));\n        cfg.ConfigureEndpoints(context);\n    });\n});\n\n// 5) ★ عميل HTTP لخدمة تانية **بالاسم** — بلا أرقام منافذ\nbuilder.Services.AddHttpClient<CatalogClient>(client =>\n{\n    // https+http:// ← «فضّل https، ولو مش متاح استخدم http» (محلل الـschemes)\n    client.BaseAddress = new Uri(\"https+http://catalog\");\n    client.Timeout = TimeSpan.FromSeconds(5);               // ✓ ميزانية المهلة (درس 5.2.4)\n});\n// الشكل المختصر: BaseAddress = new Uri(\"http://catalog\")\n// endpoint مُسمّى:  BaseAddress = new Uri(\"https://catalog.api\")   ← اسم المورد.اسم الـendpoint\n\nvar app = builder.Build();\n\napp.MapDefaultEndpoints();                                  // /health + /alive\napp.MapPost(\"/api/orders\", OrdersApi.PlaceOrder);\n// …\napp.Run();\n\n// ═══ العميل نفسه (بلا أي كود discovery — بيشتغل بالاسم) ═══\npublic sealed class CatalogClient(HttpClient http, ILogger<CatalogClient> log)\n{\n    public async Task<ProductSnapshot?> GetAsync(Guid productId, CancellationToken ct)\n    {\n        try\n        {\n            // ✓ resilience handler + discovery اتضافوا افتراضيًا عبر ConfigureHttpClientDefaults\n            return await http.GetFromJsonAsync<ProductSnapshot>($\"/api/products/{productId}\", ct);\n        }\n        catch (HttpRequestException ex)\n        {\n            log.LogError(ex, \"catalog lookup failed for {ProductId} — degrading\", productId);\n            return null;                                     // fallback مُعلَن (درس 5.2.4)\n        }\n    }\n}\n\npublic sealed record ProductSnapshot(Guid Id, string Name, long PriceMinor, string Currency, int Stock);\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "إزاي الاسم بيتحل فعلًا (بلا سحر)",
+      "md": "\n**محليًا (Aspire):** الـAppHost بيحقن لكل خدمة متغيرات بيئة بالشكل ده (من 13.2 الاسم = **الـscheme**):\n```bash\nservices__catalog__https__0 = https://localhost:53211\nservices__catalog__http__0  = http://localhost:53210\nConnectionStrings__shopdb   = Host=localhost;Port=54321;Database=shopdb;Username=postgres;Password=****\nConnectionStrings__rabbit   = amqp://shop:****@localhost:52341\n```\n`AddServiceDiscovery()` بيقرأ المتغيرات دي ويحل `https+http://catalog` لأول عنوان مطابق بالترتيب المطلوب.\nالمنافذ عشوائية عن قصد → تقدر تشغّل نسختين من النظام في نفس الوقت بلا تصادم.\n\n**في Kubernetes:** نفس الاسم بيتحل بـDNS (`catalog.namespace.svc.cluster.local`) — **الكود ما بيتغيرش**.\nده جوهر discovery: الكود بيتعامل مع اسم منطقي، وآلية الحل بتختلف حسب البيئة.\n\n**لغات تانية (Go/Python/TS/Java):** اقرأ المتغير مباشرة:\n```bash\nCATALOG_URL=\"${services__catalog__https__0}\"\n```\n\n**لـYARP (درس 5.1.4):** `AddServiceDiscoveryDestinationResolver()` + clusters بـ`\"https://orders\"` بدل عناوين ثابتة.\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المشكلة قبل Aspire",
+        "الحل بعده",
+        "الأثر على الفريق"
+      ],
+      "rows": [
+        [
+          "5 أوامر تشغيل + ترتيب يدوي",
+          "`dotnet run` في AppHost",
+          "onboarding من يوم لـ5 دقايق"
+        ],
+        [
+          "منافذ ثابتة في appsettings → تصادم",
+          "منافذ عشوائية + discovery بالاسم",
+          "نسختين من النظام جنب بعض"
+        ],
+        [
+          "`localhost:5432` مكتوب في كل خدمة",
+          "`ConnectionStrings__shopdb` محقون",
+          "نقل البيئة بلا تعديل كود"
+        ],
+        [
+          "الخدمة تبدأ قبل ما DB تجهز → crash loop",
+          "`WaitFor(shopdb)` + health check",
+          "تشغيل حتمي (deterministic)"
+        ],
+        [
+          "كل خدمة بتكوّن OTel لوحدها",
+          "`AddServiceDefaults()` سطر واحد",
+          "تتبّع موحّد عبر الخدمات"
+        ],
+        [
+          "كل خدمة بتكوّن resilience لوحدها",
+          "`AddStandardResilienceHandler()` افتراضيًا",
+          "لا خدمة «نسيت» retry/timeout"
+        ],
+        [
+          "أسرار في appsettings.Development.json",
+          "`AddParameter(secret: true)` + user-secrets",
+          "لا تسريب في git"
+        ],
+        [
+          "`docker-compose` للبنية و`launchSettings` للخدمات (مصدرين)",
+          "نموذج واحد ككود",
+          "مراجعة التوبولوجيا في PR واحد"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "حدود Aspire — افهمها قبل ما تعتمد عليه",
+      "md": "\n- **أداة تطوير وتنسيق محلي** في الأساس. النشر للإنتاج بيتم عبر targets (`Kubernetes`, `Azure Container Apps`,\n  `Docker Compose` publish mode) — **تعلّم K8s نفسه** (المرحلة 7) ولا تعتمد على Aspire إنه «يفهمك» الإنتاج.\n- **حزم `Aspire.Hosting.*` لا تُشحن مع خدماتك** — هي للـAppHost بس. اللي بيتشحن مع الخدمة:\n  `Aspire.*` client integrations + `Microsoft.Extensions.ServiceDiscovery`.\n- **المنافذ العشوائية** بتكسر أي حاجة بتفترض منفذ ثابت: اختبارات بتربط بـ`localhost:5000`،\n  قواعد CORS ثابتة، أدوات خارجية. استخدم `CreateHttpClient(\"name\")` في الاختبارات (درس 5.3.3).\n- **`WithHttpHealthCheck` يتطلب endpoint فعّال** — لو الخدمة مش بتعمل map لـ`/health`،\n  المورد هيفضل «غير صحي» وكل المعتمدين عليه هيعلقوا في `WaitFor`.\n- **التكاملات المجتمعية** (مثل `Aspire.MassTransit.RabbitMQ`) مش من Microsoft —\n  قيّم الجودة والدعم قبل الاعتماد؛ الكود اليدوي اللي فوق بيشتغل بلا أي تكامل إضافي.\n- **الإصدارات بتتحرك بسرعة** (13.0 → 13.6 في سنة): ثبّت الإصدار في كل الحزم،\n  وراجع release notes عند الترقية — فيه تغييرات أسماء (مثل `services__x__<endpoint>` → `services__x__<scheme>`).\n"
+    },
+    {
+      "type": "steps",
+      "title": "أضف Aspire لحل قائم في 7 خطوات",
+      "items": [
+        {
+          "title": "أنشئ AppHost + ServiceDefaults",
+          "md": "`dotnet new aspire-apphost` و`dotnet new aspire-servicedefaults`، وأضف ProjectReferences للخدمات في AppHost.csproj.",
+          "code": "dotnet new aspire-apphost -n Shop.AppHost -o src/Shop.AppHost\ndotnet new aspire-servicedefaults -n Shop.ServiceDefaults -o src/Shop.ServiceDefaults"
+        },
+        {
+          "title": "ارفع كل خدمة لـServiceDefaults",
+          "md": "في كل خدمة: ProjectReference لـServiceDefaults + `builder.AddServiceDefaults();` + `app.MapDefaultEndpoints();`. احذف تكوين OTel المكرر.",
+          "code": "builder.AddServiceDefaults();\n// …\napp.MapDefaultEndpoints();"
+        },
+        {
+          "title": "انقل البنية التحتية لموارد",
+          "md": "بدّل `docker-compose` بـ`AddPostgres`/`AddRedis`/`AddRabbitMQ` مع `WithDataVolume` و`WithLifetime(ContainerLifetime.Persistent)`.",
+          "code": "var postgres = builder.AddPostgres(\"postgres\", password: pgPassword).WithDataVolume();\nvar shopdb = postgres.AddDatabase(\"shopdb\");"
+        },
+        {
+          "title": "استبدل الـconnection strings الثابتة",
+          "md": "احذف `ConnectionStrings` من `appsettings.Development.json` واعتمد على `WithReference` — مع fallback لقيمة محلية لو الخدمة شغالة بره AppHost.",
+          "code": "// ✓ fallback آمن للتشغيل المنفرد\nvar cs = builder.Configuration.GetConnectionString(\"shopdb\")\n         ?? \"Host=localhost;Port=5432;Database=shopdb;Username=postgres;Password=local\";"
+        },
+        {
+          "title": "حوّل النداءات بين الخدمات لـdiscovery",
+          "md": "أي `BaseAddress` فيه `localhost:port` → اسم المورد. وأضف `WithReference(otherService)` في AppHost عشان يحقن العنوان.",
+          "code": "client.BaseAddress = new Uri(\"https+http://catalog\");"
+        },
+        {
+          "title": "رتّب الإقلاع بالصحة",
+          "md": "`WithHttpHealthCheck(\"/health\")` لكل خدمة + `WaitFor` لكل اعتماد + `WaitForCompletion(seeder)`.",
+          "code": "var orders = builder.AddProject<Projects.Shop_Orders>(\"orders\")\n    .WithHttpHealthCheck(\"/health\")\n    .WithReference(shopdb).WaitFor(shopdb);"
+        },
+        {
+          "title": "وثّق وشغّل",
+          "md": "حدّث README بأمر تشغيل واحد، وثبّت إصدارات الحزم، وراجع `docs/services.md` (أسماء الموارد = أسماء discovery).",
+          "code": "# التشغيل المحلي\ndotnet run --project src/Shop.AppHost"
+        }
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أكتب AppHost يصف البنية التحتية والخدمات والتبعيات والأسرار ككود، وأشغّل النظام بأمر واحد.",
+        "أستخدم `WithReference` + `WaitFor` + `WithHttpHealthCheck` لترتيب إقلاع حتمي بناءً على الصحة.",
+        "أستبدل URLs الثابتة بـservice discovery (`https+http://catalog`) وأفهم المتغيرات المحقونة (`services__*`, `ConnectionStrings__*`).",
+        "أرفع الخدمات لـServiceDefaults (OTel + health + discovery + resilience) بسطر واحد في كل خدمة.",
+        "أعرف حدود Aspire: أداة تطوير، مش بديل منصة الإنتاج، ومش بيُشحن مع الخدمات."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "في Aspire 13، إزاي يتحدد SDK للـAppHost؟",
+          "options": [
+            "`<Project Sdk=\"Microsoft.NET.Sdk\">` + `<Sdk Name=\"Aspire.AppHost.Sdk\" />`",
+            "مباشرة في وسم المشروع: `<Project Sdk=\"Aspire.AppHost.Sdk/13.6.0\">` — والـSDK بيشمل `Aspire.Hosting.AppHost` تلقائيًا",
+            "PackageReference لـ`Aspire.Hosting`",
+            "global tool فقط"
+          ],
+          "answer": 1,
+          "explain": "دي صيغة 13.x الجديدة (الصيغة الأولى هي 9.x القديمة). حزم `Aspire.Hosting.*` للموارد (Postgres/Redis/RabbitMQ) لسه محتاجة PackageReference."
+        },
+        {
+          "q": "خدمة بتنادي `https+http://catalog`. إيه اللي بيحصل؟",
+          "options": [
+            "DNS عادي",
+            "service discovery بيحل الاسم لعنوان فعلي من متغيرات البيئة المحقونة (`services__catalog__https__0`) مع تفضيل https",
+            "يقرأ appsettings",
+            "يفشل لو المنفذ مش ثابت"
+          ],
+          "answer": 1,
+          "explain": "الصيغة `https+http://` = محلل schemes: جرّب https الأول، ولو مش متاح استخدم http. محليًا Aspire بيحقن العناوين؛ في K8s بيتحل بـDNS."
+        },
+        {
+          "q": "فرق `WaitFor(x)` عن مجرد إضافة `x` قبل الخدمة في الكود؟",
+          "options": [
+            "مفيش فرق",
+            "`WaitFor` بيأجل بدء الخدمة لحد ما `x` يبقى **صحي** (health check عدى) — مش بس إن العملية اشتغلت",
+            "بيعمل restart",
+            "بيمنع `x` من التوقف"
+          ],
+          "answer": 1,
+          "explain": "بلا health check + WaitFor، الخدمة تبدأ وتحاول توصيل لـDB لسه بتتهيّأ → فشل وصخب وإعادة محاولة. الترتيب في الكود مالوش أي أثر."
+        },
+        {
+          "q": "متغير البيئة اللي بيحقنه `WithReference(shopdb)`؟",
+          "options": [
+            "`ConnectionStrings__postgres`",
+            "`ConnectionStrings__shopdb` — اسم **قاعدة البيانات** (المورد اللي عملته بـ`AddDatabase`) هو المفتاح",
+            "`services__shopdb__https__0`",
+            "`Database__shopdb`"
+          ],
+          "answer": 1,
+          "explain": "`AddPostgres(\"postgres\").AddDatabase(\"shopdb\")` بيعمل موردين؛ الـconnection string بيتحقن باسم قاعدة البيانات. وده اللي بيقراه `AddNpgsqlDbContext<>(\"shopdb\")`."
+        },
+        {
+          "q": "إيه اللي **ما ينفعش** تحطه في AppHost؟",
+          "options": [
+            "`AddParameter(secret: true)`",
+            "منطق أعمال وقراءة تكوين الخدمات وحسابات — AppHost يصف التوبولوجيا فقط",
+            "`WithBindMount`",
+            "`WithReplicas(2)`"
+          ],
+          "answer": 1,
+          "explain": "AppHost = وصف النظام (موارد/تبعيات/أسرار/منافذ). أي منطق يخص سلوك الخدمة مكانه جوه الخدمة نفسها."
+        },
+        {
+          "q": "خدمة HTTP في AppHost مع `WithHttpHealthCheck(\"/health\")` لكنها ما بتعملش map للمسار. النتيجة؟",
+          "options": [
+            "كله عادي",
+            "المورد يفضل غير صحي، وأي خدمة معتمدة عليه بـ`WaitFor` تعلق في الانتظار (timeout في النهاية)",
+            "404 وفقط",
+            "اللوحة تتعطل"
+          ],
+          "answer": 1,
+          "explain": "لهذا `MapDefaultEndpoints()` جزء إلزامي من رفع كل خدمة لـServiceDefaults: `/health` و`/alive`."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "AppHost يشغّل نظامك بأمر واحد",
+          "md": "أنشئ `Shop.AppHost` + `Shop.ServiceDefaults` لمشروعك الحالي، وانقل كل البنية التحتية (DB/cache/وسيط) لموارد Aspire، وارفع كل الخدمات لـServiceDefaults مع health checks وترتيب إقلاع. احذف `docker-compose` من مسار التطوير (خليه للنشر/CI) واحذف الـURLs الثابتة.",
+          "criteria": [
+            "`dotnet run --project src/Shop.AppHost` يشغّل النظام كاملًا بلا أي أمر إضافي",
+            "كل مورد بنية تحتية بـ`WithDataVolume` + `WithLifetime(ContainerLifetime.Persistent)` (البيانات تبقى بين التشغيلات)",
+            "كل الأسرار عبر `AddParameter(secret: true)` — `git grep` مفيهوش كلمة سر",
+            "كل خدمة HTTP: `AddServiceDefaults()` + `MapDefaultEndpoints()` + `WithHttpHealthCheck(\"/health\")` في AppHost",
+            "كل اعتماد عليه `WaitFor` (و`WaitForCompletion` لو فيه seeder)",
+            "مفيش `localhost:<port>` ثابت في أي `BaseAddress` — كل النداءات بين الخدمات بأسماء الموارد",
+            "`docs/services.md` فيه جدول: اسم المورد × النوع × الاعتمادات × الـenv المحقون"
+          ],
+          "hint": "لو خدمة لازم تشتغل بره AppHost (اختبار وحدة/CI سريع)، خلي قراءة الـconnection string بـfallback: `GetConnectionString(\"shopdb\") ?? \"Host=localhost;…\"`.",
+          "solution": "",
+          "resources": [
+            {
+              "label": "Aspire: Build your first app",
+              "url": "https://aspire.dev/get-started/first-app/"
+            },
+            {
+              "label": "Add Aspire to an existing app",
+              "url": "https://aspire.dev/get-started/add-aspire-existing-app/"
+            },
+            {
+              "label": "Migrate from Docker Compose to Aspire",
+              "url": "https://aspire.dev/app-host/migrate-from-docker-compose/"
+            }
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "discovery + resilience في نداء بين خدمتين",
+          "md": "خلّي خدمة تنادي خدمة تانية بالاسم عبر `HttpClient` مُسجَّل بـ`AddHttpClient<T>` مع discovery وstandard resilience، وطبّق fallback مُعلَن عند الفشل، وأثبت بـAspire إنك تقدر توقف الخدمة المعتمدة عليها والنظام يفضل يرد (بـdegradation).",
+          "criteria": [
+            "`BaseAddress` بصيغة `https+http://<resource>` (بلا منفذ)",
+            "`WithReference(target).WaitFor(target)` في AppHost",
+            "resilience مطبّق (افتراضيًا عبر ServiceDefaults أو pipeline مسمّى من درس 5.2.4)",
+            "fallback مُعلَن: header `X-Degraded` + مقياس + لوج — بلا استثناء يطير للمستخدم",
+            "إثبات عملي: أوقف الخدمة المعتمدة (من اللوحة) → الخدمة الأولى بترد 200 مع degraded، وبتتعافى لما ترجع",
+            "توثيق ميزانية المهلة: timeout العميل < timeout الطرف الأمامي (جدول من `docs/timeout-budget.md`)"
+          ],
+          "solution": "",
+          "resources": [
+            {
+              "label": "Aspire service discovery",
+              "url": "https://aspire.dev/fundamentals/service-discovery/"
+            },
+            {
+              "label": "Scheme selectors (aka.ms/dotnet/sdschemes)",
+              "url": "https://aka.ms/dotnet/sdschemes"
+            },
+            {
+              "label": "C# Service Defaults",
+              "url": "https://aspire.dev/get-started/csharp-service-defaults/"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": ".NET Aspire docs",
+          "url": "https://aspire.dev/"
+        },
+        {
+          "label": "Aspire health checks and readiness gates",
+          "url": "https://aspire.dev/fundamentals/health-checks/"
+        },
+        {
+          "label": "Console & worker apps in Aspire",
+          "url": "https://aspire.dev/app-host/console-apps/"
+        },
+        {
+          "label": ".NET Aspire on Microsoft Learn",
+          "url": "https://learn.microsoft.com/dotnet/aspire/"
+        },
+        {
+          "label": "HTTP resilience in .NET",
+          "url": "https://learn.microsoft.com/dotnet/core/resilience/http-resilience"
+        },
+        {
+          "label": "eShop sample (Aspire + microservices)",
+          "url": "https://github.com/dotnet-architecture/eShop"
+        }
+      ]
+    }
+  ]
+}

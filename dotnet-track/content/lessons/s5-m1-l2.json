@@ -1,0 +1,470 @@
+{
+  "id": "s5-m1-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nلو فصلت خدمات وخليتهم **يشاركوا نفس قاعدة البيانات** → ما عملتش ميكروسيرفيسز،\nعملت monolith موزّع: نفس الاقتران، زائد تكلفة الشبكة. ده أشهر غلط وأصعب واحد يتراجع عنه.\n\nالدرس ده عن الحاجة اللي بتحدد نجاح التقسيم فعلًا: **حدود الخدمات وملكية البيانات**.\nهنغطي: Bounded Contexts وخريطة السياق (context map)، ملكية البيانات وقواعد عدم المشاركة،\nإزاي تتعامل مع الحاجة الطبيعية لبيانات من خدمة تانية (5 أنماط)،\nوالمعاملات العابرة للخدمات (Sagas بالتعويض)، وإصدار العقود.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Bounded Context",
+          "def": "حدود لغوية ونموذجية: كلمة «منتج» معناها مختلف في الكتالوج عنه في الشحن عنه في المحاسبة. كل سياق له نموذجه الخاص."
+        },
+        {
+          "term": "Context Map",
+          "def": "رسم للعلاقات بين السياقات (مَن يعتمد على مَن وبأي نمط) — أهم وثيقة معمارية في الأنظمة الموزعة."
+        },
+        {
+          "term": "Database per Service",
+          "def": "كل خدمة تملك مخزنها الخاص (قاعدة أو schema). لا خدمة تانية تقرأ منه مباشرة."
+        },
+        {
+          "term": "Shared Database (anti-pattern)",
+          "def": "قاعدة مشتركة → أي تغيير مخطط يتطلب تنسيق نشر بين كل الخدمات = اقتران كامل."
+        },
+        {
+          "term": "Anti-Corruption Layer (ACL)",
+          "def": "طبقة ترجمة بين سياقك وسياق خارجي/قديم — تحمي نموذجك من تلوث نموذجهم."
+        },
+        {
+          "term": "Open Host Service / Published Language",
+          "def": "خدمة تعرض مجموعة بروتوكولات/عقود موثقة يستهلكها كثيرون (مثل API عام بصيغة قياسية)."
+        },
+        {
+          "term": "Customer-Supplier",
+          "def": "علاقة بين فريقين حيث المستهلك له صوت في أولويات المزوّد (عقد متفاوض عليه)."
+        },
+        {
+          "term": "Conformist",
+          "def": "المستهلك يتبنى نموذج المزوّد بالكامل (بلا تفاوض) — مناسب لمزوّد خارجي لا يتغير."
+        },
+        {
+          "term": "Saga",
+          "def": "سلسلة عمليات محلية عبر خدمات، كل واحدة لها **إجراء تعويضي**. نوعان: orchestration (منسّق مركزي) وchoreography (أحداث متسلسلة)."
+        },
+        {
+          "term": "Compensating Action",
+          "def": "إجراء يعكس أثر خطوة سابقة (إلغاء حجز، رد مبلغ) — بديل الـrollback في الأنظمة الموزعة."
+        },
+        {
+          "term": "API Composition",
+          "def": "خدمة/بوابة تجمع نتائج نداءات متعددة في استجابة واحدة (للواجهات)."
+        },
+        {
+          "term": "Data Duplication",
+          "def": "نسخ البيانات المطلوبة محليًا (عبر أحداث) — ثمن الاستقلالية، ويحتاج استراتيجية اتساق."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) رسم الحدود: Bounded Contexts"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "filename": "docs/context-map.md",
+      "title": "خريطة السياق (وثيقة حية)",
+      "code": "\n# Context Map — نظام المتجر\n\n## السياقات (Bounded Contexts)\n| السياق | اللغة الخاصة به | «المنتج» هنا يعني | المالك (فريق) | المخزن |\n|---|---|---|---|---|\n| Catalog | Product, Category, Attribute, Price | عنصر قابل للبيع بوصف وصور وسعر | فريق المنصة | catalog (Postgres) |\n| Orders | Order, OrderLine, Total, Status | سطر مُسعَّر في طلب (اسم + سعر منسوخ) | فريق التجارة | orders (Postgres) |\n| Shipping | Shipment, Parcel, Carrier, Weight | عنصر له وزن وأبعاد يُشحن | فريق اللوجستيات | shipping (Postgres) |\n| Payments | Invoice, Charge, Refund, PSP | مبلغ مستحق/محصل | فريق المدفوعات | payments (Postgres + PSP) |\n| Notifications | Message, Template, Channel, Delivery | محتوى + وجهة | فريق المنصة | notifications (Postgres) |\n| Identity | User, Role, Tenant, Session | مستخدم له صلاحيات | فريق الأمان | identity (Postgres) |\n\n★ لاحظ: «المنتج» له 3 معانٍ مختلفة في 3 سياقات. ده **صحيح** — مش تكرار يجب توحيده.\n\n## العلاقات بين السياقات (أنماط Context Mapping)\n| من | إلى | النمط | العقد | ملاحظات |\n|---|---|---|---|---|\n| Orders | Catalog | **Customer-Supplier** | `ICatalogModule` (سعر/مخزون لحظي) | Orders له أولوية في طلبات التغيير |\n| Orders | Shipping | **Published Language** (أحداث) | `order.placed@2`, `order.cancelled@2` | عقد موثق + إصدارات |\n| Shipping | Orders | **Conformist** | يقرأ `OrderSnapshot` كما هو | بلا تفاوض — الشحن يتكيف |\n| Payments | PSP خارجي | **Anti-Corruption Layer** | مترجم داخلي `IPaymentGateway` | لا تسريب نموذج Stripe لجوه |\n| Notifications | كل السياقات | **Open Host** (اشتراك في أحداث) | يستهلك أي `IIntegrationEvent` | يضيف نفسه بلا تغيير المصدر |\n| Identity | الكل | **Shared Kernel** (محدود) | `UserId`, `TenantId` فقط | ★ صغير ومتفق عليه ومراجع |\n| Reporting | الكل | **CDC / نسخ** | جداول read-only في warehouse | بلا نداءات وقت التشغيل |\n\n## قواعد لا تُكسر\n1. لا خدمة تقرأ جداول خدمة تانية (ولا view ولا join).\n2. كل ما تحتاجه خدمة من أخرى: نداء عقد متزامن (للقراءة الفورية) أو حدث (للأثر الجانبي).\n3. أي تكرار بيانات له مالك واحد (المصدر) وخطة اتساق مكتوبة.\n4. Shared Kernel مقصور على معرّفات وأنواع قيمة — ممنوع منطق عمل.\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "إزاي تلاقي الحدود الصح (مش بالتخمين)",
+      "md": "\n**4 إشارات تستخدمها معًا:**\n1. **اللغة**: لو نفس الكلمة لها معنيان («منتج» في الكتالوج مقابل الشحن) → حدود.\n   ولو كلمتان مختلفتان لنفس المعنى → سياق واحد.\n2. **معدل التغيير**: الأشياء اللي بتتغير معًا تسكن معًا. قِس churn من git (درس 5.1.1).\n3. **الـinvariants**: القواعد اللي لازم تكون صحيحة لحظيًا تحدد حدود المعاملة (aggregate/خدمة).\n   القواعد اللي تتحمل تأخيرًا → عبر الأحداث.\n4. **الملكية التنظيمية**: مين هيوصل on-call لده؟ حدود بلا مالك = حدود وهمية (Conway's law).\n\n**اختبار سريع:** لو تخيّلت إن الجزء ده فشل تمامًا لمدة ساعة — أنهي ميزة بتقع؟\nلو الإجابة «ميزة واحدة واضحة» → حد محتمل جيد. لو «كل شيء» → إنت لسه في monolith ذهنيًا.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) ملكية البيانات: القواعد والبدائل"
+    },
+    {
+      "type": "table",
+      "head": [
+        "النموذج",
+        "الوصف",
+        "الحكم",
+        "متى"
+      ],
+      "rows": [
+        [
+          "**قاعدة لكل خدمة**",
+          "خادم/قاعدة مستقلة لكل خدمة",
+          "✓ الهدف النهائي",
+          "خدمات حقيقية بفرق منفصلة"
+        ],
+        [
+          "**schema لكل خدمة** (نفس الخادم)",
+          "خدمة واحدة Postgres، schemas معزولة وصلاحيات محدودة",
+          "✓★ خطوة انتقالية ممتازة",
+          "modular monolith → فصل تدريجي"
+        ],
+        [
+          "جداول مشتركة بين خدمتين",
+          "خدمتان تقرأان/تكتبان نفس الجدول",
+          "✗ مرفوض",
+          "أبدًا (ده monolith موزّع)"
+        ],
+        [
+          "قاعدة واحدة + «كل خدمة تشوف جداولها» بالاتفاق",
+          "عزل بالاتفاق لا بالصلاحيات",
+          "✗ ينهار",
+          "أبدًا (أول deadline بيكسره)"
+        ],
+        [
+          "مخزن متخصص لكل خدمة",
+          "Postgres للطلبات، Mongo للكتالوج، OpenSearch للبحث",
+          "✓ لو مبرر",
+          "polyglot persistence (درس 3.3.2)"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "db/service-ownership.sql",
+      "title": "عزل فعلي بالصلاحيات (مش بالاتفاق)",
+      "code": "\n-- ① مستخدم قاعدة لكل خدمة بصلاحيات على schema الخاص بها فقط\nCREATE ROLE orders_svc  LOGIN PASSWORD :'orders_pw';\nCREATE ROLE catalog_svc LOGIN PASSWORD :'catalog_pw';\nCREATE ROLE shipping_svc LOGIN PASSWORD :'shipping_pw';\n\nGRANT USAGE ON SCHEMA orders  TO orders_svc;\nGRANT ALL     ON ALL TABLES IN SCHEMA orders  TO orders_svc;\nALTER DEFAULT PRIVILEGES IN SCHEMA orders GRANT ALL ON TABLES TO orders_svc;\n\nGRANT USAGE ON SCHEMA catalog TO catalog_svc;\nGRANT ALL     ON ALL TABLES IN SCHEMA catalog TO catalog_svc;\n\n-- ★ العزل الحقيقي: خدمة الشحن لا تستطيع قراءة جداول الطلبات إطلاقًا\n-- (ما فيهوش GRANT لـshipping_svc على orders) → أي محاولة تفشل بـpermission denied\n\n-- ② قراءة عبر عقد فقط: لو الشحن محتاج بيانات طلب، ياخدها من API/حدث — مش من الجدول\n\n-- ③ فحص الانتهاكات: هل فيه كائن في schema خدمة بيمتلكه مستخدم خدمة تانية؟\nSELECT table_schema, table_name, grantee, privilege_type\nFROM information_schema.role_table_grants\nWHERE table_schema IN ('orders','catalog','shipping','payments')\nORDER BY table_schema, grantee;\n\n-- ④ مراقبة: هل فيه استعلام بيلمس أكثر من schema؟ (مؤشر كسر حدود)\nSELECT calls, left(query, 140) AS query\nFROM pg_stat_statements\nWHERE query ~* '\\\\borders\\\\.' AND query ~* '\\\\b(catalog|shipping|payments)\\\\.'\nORDER BY calls DESC LIMIT 20;\n\n-- ⑤ عند الفصل النهائي: انقل البيانات بأداة نسخ + تحقق من العدد/المجاميع\n--    (pg_dump --schema=orders | pg_restore -d orders_db) ثم قارن:\n--    SELECT count(*), sum(total_amount) FROM orders.orders;   على الطرفين\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3) الحاجة الطبيعية لبيانات خدمة تانية — 6 أنماط"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الحاجة",
+        "النمط",
+        "الاتساق",
+        "التكلفة",
+        "مثال"
+      ],
+      "rows": [
+        [
+          "بيانات لحظية لاتخاذ قرار في نفس الطلب",
+          "**نداء عقد متزامن** (gRPC/REST) + timeout + circuit breaker",
+          "قوي",
+          "اقتران وقت التشغيل (فشل مزوّد = فشلك)",
+          "التحقق من المخزون قبل تأكيد الطلب"
+        ],
+        [
+          "بيانات تُعرض معًا (واجهة)",
+          "**API composition** في الـgateway/BFF",
+          "قوي (لحظي)",
+          "نداءات متعددة + زمن",
+          "صفحة تفاصيل الطلب (طلب + شحن + دفع)"
+        ],
+        [
+          "بيانات تُستخدم كتيرًا محليًا",
+          "**نسخة محلية محدَّثة بالأحداث** (denormalized copy)",
+          "eventual",
+          "تخزين مكرر + نافذة اتساق",
+          "اسم المنتج وسعره في سطر الطلب"
+        ],
+        [
+          "بحث/فلترة عبر مجالات",
+          "**خدمة بحث** تُبنى من أحداث (OpenSearch)",
+          "eventual",
+          "بنية إضافية + إعادة فهرسة",
+          "بحث في الكتالوج بخصائص من سياقات متعددة"
+        ],
+        [
+          "تقارير وتحليلات",
+          "**CDC/ETL لمخزن بيانات** (warehouse)",
+          "eventual (دقائق)",
+          "بنية تحليلات",
+          "تقرير مبيعات شهري عبر 4 مجالات"
+        ],
+        [
+          "تنفيذ عملية عبر خدمات",
+          "**Saga** بإجراءات تعويضية",
+          "eventual + تعويض",
+          "تعقيد منطق التعويض",
+          "طلب = خصم مخزون + دفع + شحن"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Infrastructure/CatalogAcl.cs",
+      "title": "Anti-Corruption Layer + نسخة محلية من بيانات الكتالوج",
+      "code": "\n// ═══ المشكلة: خدمة الكتالوج بترجع نموذجها الخاص (ProductDto بحقول كتير وأسماء مختلفة) ═══\n// لو Orders استخدمته مباشرة: أي تغيير في الكتالوج بيكسر Orders، ونموذج الكتالوج بيتسرب لجوه.\n\n// ── ① نموذجنا الداخلي (ما نحتاجه فعلًا فقط) ──\npublic readonly record struct CatalogItemRef(\n    Guid ProductId, string DisplayName, Money UnitPrice, int AvailableStock, bool IsSellable);\n\n// ── ② منفذ (بلا تفاصيل النقل) ──\npublic interface ICatalogGateway\n{\n    Task<IReadOnlyList<CatalogItemRef>> GetItemsAsync(IReadOnlyList<Guid> productIds, CancellationToken ct);\n}\n\n// ── ③ الـACL: يترجم نموذجهم لنموذجنا، ويتعامل مع الفشل بصراحة ──\npublic static class Metrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Orders.acl\", \"1.0.0\");\n    public static readonly Counter<long> StaleCatalogReads =\n        Meter.CreateCounter<long>(\"catalog.stale_reads\");        // ⚠ أي زيادة = الكتالوج غير متاح\n}\n\npublic sealed class CatalogAcl(\n    ICatalogClient client,                  // gRPC/HTTP client مولّد من عقد الكتالوج\n    IRedisCacheService cache,\n    ILogger<CatalogAcl> log) : ICatalogGateway\n{\n    private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(20);\n\n    public async Task<IReadOnlyList<CatalogItemRef>> GetItemsAsync(\n        IReadOnlyList<Guid> productIds, CancellationToken ct)\n    {\n        var ids = productIds.Distinct().ToList();\n\n        // ✓ نسخة محلية قصيرة العمر (كاش) — تقلل الاقتران الزمني والزمن\n        return await cache.GetOrSetAsync(\n            $\"orders:catalog:{string.Join(',', ids.OrderBy(x => x))}\",\n            async token =>\n            {\n                try\n                {\n                    var response = await client.GetProductsAsync(new GetProductsRequest(ids), token);\n\n                    // ★ الترجمة هنا: أسماء مختلفة، وحدات مختلفة، حالات مختلفة\n                    return response.Items.Select(i => new CatalogItemRef(\n                        ProductId: i.Id,\n                        DisplayName: i.Title,                                   // هم Title، إحنا DisplayName\n                        UnitPrice: new Money(i.PriceMinorUnits / 100m, i.CurrencyCode),  // ★ وحدات أصغر → Money\n                        AvailableStock: i.Stock?.Available ?? 0,                  // هم nullable، إحنا صفر افتراضي\n                        IsSellable: i.Status == \"ACTIVE\" && (i.Stock?.Available ?? 0) > 0))\n                        .ToList();\n                }\n                catch (Exception ex) when (ex is not OperationCanceledException)\n                {\n                    // ✓ فشل المزوّد لا يفشلنا بالكامل: نسخة قديمة معلنة أو فشل صريح\n                    log.LogWarning(ex, \"catalog unavailable for {Count} ids\", ids.Count);\n                    // (GetAsync<T> جزء من تجريد الكاش — أضفه لـIRedisCacheService من درس 3.3.1:\n                    //  قراءة بلا حساب، ترجع null لو المفتاح غير موجود)\n                    var stale = await cache.GetAsync<IReadOnlyList<CatalogItemRef>?>(\n                        \"orders:catalog:stale\", token);\n\n                    if (stale is not null)\n                    {\n                        Metrics.StaleCatalogReads.Add(1);\n                        return stale;                       // ⚠ مقبول فقط للأسعار غير الحرجة\n                    }\n                    throw new DependencyUnavailableException(\"catalog\");   // → 503 بلا كذب\n                }\n            }, Ttl, ct);\n    }\n}\n\n// ── ④ نسخة محلية دائمة (لما تكون البيانات مطلوبة في كل طلب ولا تتحمل زمن الشبكة) ──\n// جدول orders.catalog_snapshots (product_id PK, name, price, updated_at)\n// يُحدَّث من حدث `product.price_changed` (مستهلك idempotent) — مش من نداء متزامن.\npublic sealed class CatalogSnapshotProjector(OrdersDbContext db, ILogger<CatalogSnapshotProjector> log)\n    : INotificationHandler<IntegrationEventEnvelope<ProductPriceChanged>>\n{\n    public async Task Handle(IntegrationEventEnvelope<ProductPriceChanged> e, CancellationToken ct)\n    {\n        await db.Database.ExecuteSqlInterpolatedAsync($\"\"\"\n            INSERT INTO orders.catalog_snapshots (product_id, name, price_minor, currency, updated_at)\n            VALUES ({e.Event.ProductId}, {e.Event.Title}, {e.Event.PriceMinorUnits}, {e.Event.CurrencyCode}, {e.Event.OccurredAt})\n            ON CONFLICT (product_id) DO UPDATE\n            SET name = EXCLUDED.name, price_minor = EXCLUDED.price_minor, currency = EXCLUDED.currency,\n                updated_at = EXCLUDED.updated_at\n            WHERE orders.catalog_snapshots.updated_at < EXCLUDED.updated_at\n            \"\"\", ct);                                          // ★ شرط يمنع تطبيق حدث أقدم (ترتيب معكوس)\n\n        log.LogDebug(\"catalog snapshot updated for {ProductId}\", e.Event.ProductId);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) المعاملات عبر الخدمات: Sagas"
+    },
+    {
+      "type": "table",
+      "head": [
+        "النوع",
+        "كيف يعمل",
+        "المزايا",
+        "العيوب",
+        "إمتى"
+      ],
+      "rows": [
+        [
+          "**Orchestration** (منسّق مركزي)",
+          "خدمة/مكوّن واحد يقرر الخطوات وينادي كل خدمة ويعوّض عند الفشل",
+          "التدفق واضح ومركزي، سهل الاختبار والتتبع، سهل إضافة خطوات",
+          "المنسّق نقطة مركزية (لكن بلا منطق عمل)",
+          "★ أغلب الحالات — خصوصًا العمليات الحرجة"
+        ],
+        [
+          "**Choreography** (أحداث متسلسلة)",
+          "كل خدمة تستمع لحدث وتنفذ خطوتها وتنشر الحدث التالي",
+          "اقتران منخفض، بلا مركز",
+          "التدفق مشتت — صعب الفهم/الاختبار/تتبع الحالات، وحلقات فشل محتملة",
+          "تدفقات بسيطة (2-3 خطوات) بلا تعويض معقد"
+        ],
+        [
+          "2PC / معاملات موزعة",
+          "التزام على مرحلتين عبر خدمات",
+          "اتساق قوي",
+          "✗ أقفال طويلة، فشل المنسّق، غير مدعوم عمليًا عبر خدمات مستقلة",
+          "تقريبًا أبدًا"
+        ],
+        [
+          "Best-effort (بلا saga)",
+          "نداءات متسلسلة بلا تعويض",
+          "بسيط",
+          "حالة غير متسقة عند أي فشل (خصم مخزون بلا طلب!)",
+          "نموذج أولي فقط"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Sagas/PlaceOrderSaga.cs",
+      "title": "منسّق صريح: خطوات + تعويضات + مهلات + حالات",
+      "code": "\n/// <summary>\n/// Saga بتنسيق مركزي (بلا اعتماد على مكتبة — نفس الفكرة في MassTransit/Wolverine، درس 5.2.3).\n/// ★ الحالات تُحفظ في قاعدة الخدمة (state machine دائم) عشان نقدر نستأنف بعد انهيار.\n/// </summary>\npublic static class SagaMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Orders.sagas\", \"1.0.0\");\n    public static readonly Counter<long> Started = Meter.CreateCounter<long>(\"sagas.started\");\n    public static readonly Counter<long> Completed = Meter.CreateCounter<long>(\"sagas.completed\");\n    public static readonly Counter<long> Compensations = Meter.CreateCounter<long>(\"sagas.compensations\");\n    public static readonly Counter<long> CompensationFailures =\n        Meter.CreateCounter<long>(\"sagas.compensation_failures\");   // ★ تنبيه حرج لو زاد عن صفر\n}\n\npublic sealed class PlaceOrderSaga(\n    ICatalogGateway catalog, IPaymentsClient payments, IShippingClient shipping,\n    SagaStore store, ILogger<PlaceOrderSaga> log, TimeProvider time)\n{\n    private static readonly TimeSpan StepTimeout = TimeSpan.FromSeconds(15);\n    private static readonly TimeSpan SagaTimeout = TimeSpan.FromMinutes(5);\n\n    public async Task<SagaResult> RunAsync(PlaceOrderRequest request, CancellationToken ct)\n    {\n        SagaMetrics.Started.Add(1);\n        var saga = await store.CreateAsync<SagaState>(new SagaState\n        {\n            Id = Guid.NewGuid(), OrderId = request.OrderId, Status = SagaStatus.Started,\n            StartedAt = time.GetUtcNow(), Deadline = time.GetUtcNow() + SagaTimeout,\n        }, ct);\n\n        try\n        {\n            // ── الخطوة 1: حجز المخزون (قابل للتعويض) ──\n            saga = await store.MarkStepAsync(saga.Id, SagaStep.ReserveStock, ct);\n            var stock = await catalog.ReserveAsync(request.OrderId, request.Lines, StepTimeout, ct);\n            saga.ReservationId = stock.ReservationId;\n\n            // ── الخطوة 2: تحصيل الدفع (قابل للتعويض) ──\n            saga = await store.MarkStepAsync(saga.Id, SagaStep.CapturePayment, ct);\n            var payment = await payments.CaptureAsync(request.OrderId, stock.Total, request.IdempotencyKey, StepTimeout, ct);\n            saga.PaymentId = payment.ChargeId;\n\n            // ── الخطوة 3: جدولة الشحن (آخر خطوة — تعويضها اختياري) ──\n            saga = await store.MarkStepAsync(saga.Id, SagaStep.ScheduleShipment, ct);\n            await shipping.ScheduleAsync(request.OrderId, stock.ShippingAddress, StepTimeout, ct);\n\n            await store.CompleteAsync(saga.Id, ct);\n            SagaMetrics.Completed.Add(1);\n            log.LogInformation(\"saga {SagaId} completed for {OrderId}\", saga.Id, request.OrderId);\n            return SagaResult.Completed(request.OrderId);\n        }\n        catch (Exception ex) when (ex is not OperationCanceledException)\n        {\n            log.LogError(ex, \"saga {SagaId} failed at step; compensating\", saga.Id);\n            await CompensateAsync(saga, ex, ct);\n            return SagaResult.Failed(request.OrderId, saga.CurrentStep, ex.Message);\n        }\n    }\n\n    /// <summary>التعويض **بالترتيب العكسي**، وكل خطوة تعويض مستقلة (فشلها لا يوقف الباقي).</summary>\n    private async Task CompensateAsync(SagaState saga, Exception cause, CancellationToken ct)\n    {\n        // ③ الشحن — ★ >= مش >: لو فشلنا **أثناء** الجدولة، ما نعرفش لو تمت → حاول الإلغاء\n        //   (والإلغاء لازم يكون idempotent: إلغاء شحنة غير موجودة = نجاح صامت)\n        if (saga.CurrentStep >= SagaStep.ScheduleShipment)\n            await TryAsync(() => shipping.CancelAsync(saga.OrderId, ct), \"cancel-shipment\", ct);\n\n        // ② الدفع → رد المبلغ (الأهم: لا تترك تحصيلًا بلا طلب!)\n        if (saga.PaymentId is not null)\n            await TryAsync(() => payments.RefundAsync(saga.PaymentId!.Value, \"saga-compensation\", ct), \"refund\", ct);\n\n        // ① المخزون → تحرير الحجز\n        if (saga.ReservationId is not null)\n            await TryAsync(() => catalog.ReleaseAsync(saga.ReservationId!.Value, ct), \"release-stock\", ct);\n\n        await store.CompensatedAsync(saga.Id, cause.Message, ct);\n        SagaMetrics.Compensations.Add(1, new(\"step\", saga.CurrentStep.ToString()));\n    }\n\n    private async Task TryAsync(Func<Task> action, string name, CancellationToken ct)\n    {\n        try { await action(); }\n        catch (Exception ex)\n        {\n            // ★ فشل التعويض = حالة تحتاج تدخلًا بشريًا (لا تبتلعها!)\n            log.LogCritical(ex, \"compensation '{Name}' failed for saga — requires manual resolution\", name);\n            SagaMetrics.CompensationFailures.Add(1, new(\"step\", name));\n            await store.MarkNeedsManualAsync(name, ex.Message, ct);\n        }\n    }\n}\n\npublic enum SagaStep { Started = 0, ReserveStock = 1, CapturePayment = 2, ScheduleShipment = 3 }\npublic enum SagaStatus { Started, Running, Completed, Compensating, Compensated, NeedsManual }\npublic enum SagaResultKind { Completed, Failed }\n\npublic sealed record SagaResult(SagaResultKind Kind, Guid OrderId, SagaStep? FailedStep = null, string? Error = null)\n{\n    public static SagaResult Completed(Guid orderId) => new(SagaResultKind.Completed, orderId);\n    public static SagaResult Failed(Guid orderId, SagaStep step, string error) =>\n        new(SagaResultKind.Failed, orderId, step, error);\n}\n\npublic sealed class SagaState\n{\n    public Guid Id { get; set; }\n    public Guid OrderId { get; set; }\n    public SagaStatus Status { get; set; }\n    public SagaStep CurrentStep { get; set; }\n    public Guid? ReservationId { get; set; }\n    public Guid? PaymentId { get; set; }\n    public DateTimeOffset StartedAt { get; set; }\n    public DateTimeOffset Deadline { get; set; }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "5 قواعد Sagas اللي بتفرق بين نظام شغال وكارثة",
+      "md": "\n1. **كل خطوة لازم تكون idempotent** — المنسّق هيعيد المحاولة (timeout/انهيار)، فالتكرار متوقع.\n2. **الحالة تُحفظ قبل النداء**، لا بعده — لو انهرت بين النداء والحفظ، هتنسى إن الخطوة تمت.\n3. **مهلة لكل خطوة + مهلة للـsaga كله** — بلا مهلة، saga بيتعلّق للأبد ويحجز موارد.\n4. **فشل التعويض = تنبيه حرج** (مش log وتحريك) — ده معناه فلوس/مخزون في حالة غير معروفة.\n5. **لا تنفذ منطق عمل في المنسّق** — المنسّق يرتّب الخطوات فقط؛ القواعد في الخدمات.\n\nوكمان: **صمّم الخطوات بحيث تكون التعويضات نادرة** — ابدأ بأرخص/أسهل خطوة قابلة للفشل\n(تحقق، حجز) واختم بالخطوات الأصعب في الرجوع (تحصيل مالي).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) إصدار العقود (Contracts): قواعد التوافق"
+    },
+    {
+      "type": "table",
+      "head": [
+        "التغيير",
+        "الحكم",
+        "الطريقة الآمنة"
+      ],
+      "rows": [
+        [
+          "إضافة حقل اختياري للحدث",
+          "✓ متوافق خلفيًا",
+          "أضف بقيمة افتراضية؛ المستهلكون القدامى يتجاهلوه"
+        ],
+        [
+          "إضافة حدث جديد",
+          "✓ متوافق",
+          "المستهلك بيتجاهل الأنواع غير المعروفة (لا يفشل)"
+        ],
+        [
+          "إضافة endpoint جديد",
+          "✓ متوافق",
+          "—"
+        ],
+        [
+          "حذف حقل من الحدث",
+          "✗ كاسر",
+          "أوقف استخدامه أولًا (deprecated) → انتظر كل المستهلكين → احذف في إصدار جديد"
+        ],
+        [
+          "إعادة تسمية حقل",
+          "✗ كاسر",
+          "أضف الجديد، انسخ القيم في الاثنين، هاجِر المستهلكين، احذف القديم"
+        ],
+        [
+          "تغيير نوع حقل (int → string)",
+          "✗ كاسر",
+          "حقل جديد + فترة انتقال + upcasting"
+        ],
+        [
+          "تغيير دلالة حقل (السعر شامل الضريبة)",
+          "✗✗ أخطر نوع (كسر صامت)",
+          "حقل جديد باسم مختلف (`priceWithTax`) — لا تغيّر دلالة اسم موجود أبدًا"
+        ],
+        [
+          "تغيير مسار/اسم endpoint",
+          "✗ كاسر",
+          "إصدار مسار (`/v2/…`) ودعم الاثنين لفترة معلنة"
+        ],
+        [
+          "إضافة حالة جديدة لـenum",
+          "△ خطر على المستهلكين",
+          "المستهلك لازم يتعامل مع `default` (لا استثناء)"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "اختبار توافق العقد (يمنع الكسر في CI)",
+      "code": "\n/// <summary>\n/// Contract test: يثبت إن الحدث المنشور **اليوم** لسه قابل للقراءة بالمستهلك القديم،\n/// وإن شكل الـpayload ما اتغيرش تغييرًا كاسرًا (snapshot للعقد).\n/// </summary>\n[UsesVerify]                                  // Verify.Xunit\npublic class OrderPlacedContractTests\n{\n    /// <summary>إعدادات تسلسل ثابتة للعقد (ترتيب خصائص مستقر — عشان الـsnapshot يكون قابلًا للمقارنة).</summary>\n    private static class ContractJson\n    {\n        public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)\n        {\n            WriteIndented = true,\n            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never,\n        };\n    }\n\n    [Fact]\n    public Task Payload_shape_is_unchanged()\n    {\n        var evt = new OrderPlaced(\n            new OrderId(Guid.Parse(\"11111111-1111-1111-1111-111111111111\")),\n            Guid.Parse(\"22222222-2222-2222-2222-222222222222\"),\n            new Money(250.50m, \"EGP\"),\n            new Address(\"12 Tahrir\", \"Cairo\", \"EG\"),\n            new DateTimeOffset(2026, 10, 22, 10, 0, 0, TimeSpan.Zero));\n\n        // Verify بيحفظ snapshot معتمد؛ أي تغيير في الشكل يفشل الاختبار ويستدعي مراجعة\n        return Verify(JsonSerializer.Serialize(evt, ContractJson.Options))\n            .UseFileName(\"contracts/order.placed.v2\");\n    }\n\n    [Fact]\n    public void Old_consumer_can_read_current_payload()\n    {\n        // ★ نسخة قديمة من المستهلك (نوع v1) تقرأ الـpayload الحالي\n        const string CurrentPayload = \"\"\"\n            {\"orderId\":\"11111111-1111-1111-1111-111111111111\",\"total\":{\"amount\":250.50,\"currency\":\"EGP\"},\n             \"shippingAddress\":{\"line1\":\"12 Tahrir\",\"city\":\"Cairo\",\"country\":\"EG\"},\"occurredAt\":\"2026-10-22T10:00:00Z\",\n             \"newFieldInV2\":\"whatever\"}\n            \"\"\";\n\n        var v1 = JsonSerializer.Deserialize<OrderPlacedV1>(CurrentPayload, ContractJson.Options);\n\n        v1.Should().NotBeNull();\n        v1!.Total.Amount.Should().Be(250.50m);\n        v1.ShippingAddress.City.Should().Be(\"Cairo\");     // الحقول القديمة لسه موجودة بنفس الدلالة\n    }\n\n    [Fact]\n    public void Unknown_enum_state_does_not_throw()\n    {\n        var act = () => JsonSerializer.Deserialize<ShipmentStatusHolder>(\n            \"\"\"{\"status\":\"DRONE_DELIVERED\"}\"\"\", ContractJson.Options);\n\n        act.Should().NotThrow(\"المستهلك لازم يتعامل مع حالات جديدة من المزوّد\");\n    }\n\n    private sealed record OrderPlacedV1(Guid OrderId, Money Total, AddressV1 ShippingAddress, DateTimeOffset OccurredAt);\n    private sealed record AddressV1(string Line1, string City, string Country);\n    private sealed record ShipmentStatusHolder(string Status);\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أرسم Bounded Contexts بأدلة (اللغة، churn، invariants، الملكية) وأوثق العلاقات في context map.",
+        "أفرض ملكية البيانات فعليًا (schema/قاعدة لكل خدمة + صلاحيات + فحوصات على القاعدة).",
+        "أختار نمط الوصول للبيانات بحسب الحاجة (نداء متزامن/نسخة محلية/تركيب/بحث/CDC/Saga) وأوثق اتساقه.",
+        "أنفّذ Sagas بمنسّق صريح: خطوات idempotent، حالة محفوظة، مهلات، تعويض بالترتيب العكسي، وتنبيه عند فشل التعويض."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "خدمتان بتقرأا وتكتبا في نفس الجدول. التقييم؟",
+          "options": [
+            "كفاءة (بلا نداءات شبكة)",
+            "anti-pattern: اقتران كامل — أي تغيير مخطط يحتاج تنسيق نشر بين الخدمتين، وده يسلب كل ميزة للفصل",
+            "مسموح لو الخدمتان صغيرتان",
+            "يحتاج فهرسًا"
+          ],
+          "answer": 1,
+          "explain": "البديل: مالك واحد للجدول + نداء عقد للقراءة الفورية أو نسخة محلية محدَّثة بالأحداث."
+        },
+        {
+          "q": "خدمة الشحن محتاجة اسم المنتج وسعره مع كل شحنة. أفضل نمط؟",
+          "options": [
+            "join على جدول الكتالوج",
+            "نسخة محلية (snapshot) محدَّثة من أحداث الكتالوج + قراءة فورية عبر العقد عند الحاجة القصوى",
+            "نداء متزامن لكل شحنة",
+            "تخزينه في Redis مشترك"
+          ],
+          "answer": 1,
+          "explain": "النسخة المحلية بتقلل الاقتران الزمني والزمن، بشرط: المالك واحد للبيانات الأصلية وخطة اتساق مكتوبة (ومنع تطبيق حدث أقدم)."
+        },
+        {
+          "q": "ليه orchestration مفضل على choreography في أغلب الحالات؟",
+          "options": [
+            "أسرع",
+            "التدفق والحالات في مكان واحد → أسهل في الفهم والاختبار والتتبع ومعالجة الفشل والتعويض",
+            "بلا حاجة لأحداث",
+            "مطلب MassTransit"
+          ],
+          "answer": 1,
+          "explain": "choreography أقصر في التدفقات البسيطة، لكن مع 4+ خطوات وتعويضات بيصير مستحيل التتبع («فين الوقفة؟»)."
+        },
+        {
+          "q": "فشل إجراء التعويض (رد المبلغ) في saga. التصرف؟",
+          "options": [
+            "سجّل warning وكمل",
+            "تنبيه حرج + حالة `NeedsManual` + سجل كامل — ده معناه أموال/مخزون في حالة غير معروفة",
+            "أعد تشغيل الخدمة",
+            "احذف الـsaga"
+          ],
+          "answer": 1,
+          "explain": "فشل التعويض أخطر من فشل الخطوة الأصلية. لازم يبقى ظاهر (تنبيه + لوحة + أداة معالجة يدوية)."
+        },
+        {
+          "q": "خدمة غيّرت معنى `price` من «بدون ضريبة» لـ«شامل الضريبة» بلا تغيير الاسم. الحكم؟",
+          "options": [
+            "تغيير متوافق",
+            "أخطر أنواع الكسر (كسر صامت): المستهلكون القدامى هيحسبوا أرقامًا خاطئة بلا أي خطأ تقني",
+            "يحتاج فهرسًا",
+            "مسموح مع إصدار جديد"
+          ],
+          "answer": 1,
+          "explain": "القاعدة: لا تغيّر دلالة اسم موجود. أضف `priceWithTax` وخلي الاثنين لفترة، وهاجِر المستهلكين."
+        },
+        {
+          "q": "إيه دور Anti-Corruption Layer؟",
+          "options": [
+            "تشفير البيانات",
+            "ترجمة نموذج خدمة/نظام خارجي لنموذجك الداخلي — يمنع تسرب مفاهيمهم ويحصر تغييرهم في مكان واحد",
+            "منع الهجمات",
+            "ضغط الاستجابات"
+          ],
+          "answer": 1,
+          "explain": "بدونه: `PriceMinorUnits` و`Status == \"ACTIVE\"` تنتشر في كل كودك، وأي تغيير عندهم يكسر 20 مكانًا."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "خريطة سياق + ملكية بيانات",
+          "md": "ارسم context map لنظامك (أو لمشروع المرحلة 4 كخدمات افتراضية): السياقات، اللغة الخاصة بكل واحد، نمط العلاقة بين كل زوجين، والمخزن المملوك. ثم طبّق ملكية البيانات فعليًا (schemas + صلاحيات + فحص انتهاكات).",
+          "criteria": [
+            "≥ 5 سياقات بجدول (اللغة/معنى «المنتج»/المالك/المخزن)",
+            "جدول العلاقات بنمط مسمى لكل زوج (7 أنماط معروفة)",
+            "قواعد لا تُكسر مكتوبة (4 قواعد على الأقل)",
+            "SQL يطبّق الصلاحيات ويكشف الانتهاكات (فحص `role_table_grants` + `pg_stat_statements`)",
+            "اختبار/فحص يثبت إن خدمة ما تقدرش تقرأ جداول خدمة تانية (محاولة مفترضة تفشل)"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "Saga واحد بتعويضات واختبارات فشل",
+          "md": "نفّذ saga لعمليه عبر خدمتين/موديولين (مثل: حجز مخزون → تحصيل → جدولة شحن) بمنسّق صريح وحالة محفوظة ومهلات وتعويضات. اختبر كل حالات الفشل.",
+          "criteria": [
+            "الحالة تُحفظ **قبل** كل نداء (اختبار: انهيار محاكى بعد النداء → الاستئناف صحيح)",
+            "كل خطوة idempotent (اختبار إعادة تنفيذ خطوة)",
+            "مهلة لكل خطوة + مهلة للـsaga (اختبار timeout → تعويض)",
+            "فشل خطوة وسطى → تعويض بالترتيب العكسي (اختبار يثبت نداء التعويضات)",
+            "فشل تعويض → حالة NeedsManual + تنبيه (اختبار)",
+            "مقياس لعدد الـsagas المكتملة/المعوَّضة/المعلقة"
+          ],
+          "hint": "لو اختبار الاستئناف صعب: اجعل المنسّق يبدأ من `CurrentStep` المحفوظة، وافحص في بداية كل خطوة «هل تمت فعلًا؟» عبر معرّف العملية (idempotency key)."
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Microservices.io — Database per service",
+          "url": "https://microservices.io/patterns/data/database-per-service.html"
+        },
+        {
+          "label": "Saga pattern",
+          "url": "https://microservices.io/patterns/data/saga.html"
+        },
+        {
+          "label": "API Composition",
+          "url": "https://microservices.io/patterns/data/api-composition.html"
+        },
+        {
+          "label": "DDD — Context mapping (MS Learn)",
+          "url": "https://learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/ddd-oriented-microservice"
+        },
+        {
+          "label": "Anti-corruption layer (Azure Architecture)",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/anti-corruption-layer"
+        },
+        {
+          "label": "Consumer-driven contract testing (Pact)",
+          "url": "https://docs.pact.io/"
+        },
+        {
+          "label": "Verify (snapshot testing)",
+          "url": "https://github.com/VerifyTests/Verify"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,645 @@
+{
+  "id": "s8-m1-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "إعلانات وظائف .NET كتير بتطلب «يفهم الواجهة» — مش «يكون Frontend Engineer»، بل يقدر يقرا كود React/Blazor Hybrid، يعدّل فيه، ويبني صفحة إدارية من غير ما يستنى فريق. الدرس ده **جسر من C# إلى JavaScript/TypeScript**: نفس المفاهيم اللي انت عارفها (async/await · null safety · generics · LINQ · DI) بمقابلها في JS/TS، مع **الفخوخ اللي بتوقع مطوري الـBackend** بالتحديد (event loop · `this` · الأرقام كلها double · floating promises · `==`). وفي الآخر: إعداد مشروع حديث (Node 24/26 · TypeScript 7 · Vite 8) وتكتب أول typed client. الهدف مش إنك تبقى خبير واجهة — الهدف إنك **تقرا وتعدّل وتبني بثقة** وما تضيعش أسبوع في حاجات اللي في الفريق عارفها."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس (بمقابلها في C#)",
+      "items": [
+        {
+          "term": "Event loop",
+          "def": "حلقة تنفيذ واحدة (thread واحد للكود بتاعك) بتعالج المهام بالطابور: **call stack → microtasks (الـPromises) → macrotasks (المؤقتات/الأحداث)**. مقابلها التقريبي في .NET هو الـthread pool + `SynchronizationContext`، بس هنا مفيش threads للكود — فأي شغل متزامن كبير **بيجمّد الواجهة**."
+        },
+        {
+          "term": "Promise",
+          "def": "مقابل `Task`: قيمة لسه مش متاحة (pending → fulfilled/rejected). `await` بتشتغل نفس فكرة C#، بس **مفيش `ConfigureAwait`** (لا يوجد سياق تزامن متنقل بين الـthreads) و**مفيش deadlock** بالمعنى المعروف في .NET."
+        },
+        {
+          "term": "Floating promise",
+          "def": "تنادي دالة async من غير `await` ولا `.catch()` — الخطأ بيضيع وبيتحول لـ`unhandledRejection`. المقابل في C#: «fire and forget» بدون `Task.Run`/معالجة — بس هنا أشيع وأخطر."
+        },
+        {
+          "term": "ESM (module)",
+          "def": "نظام الوحدات الرسمي: `import`/`export` (مقابل `using`/`public`). الملفات `.mjs` أو `\"type\": \"module\"` في `package.json`. فيه كمان CommonJS القديم (`require`) — وهتشوفه في مشاريع قديمة ومكتبات."
+        },
+        {
+          "term": "TypeScript",
+          "def": "JS + أنواع **وقت التصميم فقط** (بتتمسح في الناتج). المقابل: C# أنواعها وقت التشغيل كمان. يعني الأنواع هنا **مش ضمان** — أي JSON جاي من API ممكن يخالفها، فالتحقق وقت التشغيل (validation) لسه مطلوب."
+        },
+        {
+          "term": "`strict: true`",
+          "def": "أهم إعداد في `tsconfig.json`: بيفعّل `strictNullChecks` و`noImplicitAny` وغيرها. من غيره TS بيضيع معظم قيمته (شبيه بـ`<Nullable>enable</Nullable>` + analyzers)."
+        },
+        {
+          "term": "`any` مقابل `unknown`",
+          "def": "`any` = «أوقف فحص الأنواع» (زي `dynamic` بس أسوأ لأنه صامت). `unknown` = «مش عارف النوع» ولازم **تضيّقه** قبل الاستخدام. القاعدة: `unknown` دايمًا، و`any` ممنوع إلا بـ`eslint-disable` مكتوب السبب جنبه."
+        },
+        {
+          "term": "Discriminated union",
+          "def": "أنواع متمايزة بحقل مشترك (`kind: 'loading' | 'error' | 'success'`) — أقوى طريقة لتمثيل حالات الواجهة (8.1.4). مقابلها في C#: records مع `switch` expression أو hierarchy."
+        },
+        {
+          "term": "Narrowing (تضييق)",
+          "def": "TS بيضيّق النوع تلقائيًا بعد فحص: `if (x === null) return;` فبعدها `x` مش nullable. مقابل pattern matching في C#."
+        },
+        {
+          "term": "`undefined` مقابل `null`",
+          "def": "`undefined` = «ما اتحددش أصلًا» (خاصية غير موجودة) · `null` = «قيمة فاضية مقصودة». الاتنين falsy، و`x == null` بتغطّي الاتنين (الاستثناء الوحيد المقبول لـ`==`)."
+        },
+        {
+          "term": "Closure",
+          "def": "دالة محتفظة بمتغيرات النطاق اللي اتعملت فيه. مقابلها lambda بتقبض على متغيرات في C# — بس في JS بتستخدم كتير لإخفاء الحالة (بلا `private` fields)."
+        },
+        {
+          "term": "Destructuring",
+          "def": "`const { id, name } = user;` أو `const [first, ...rest] = list;` — استخراج مختصر. بتقابلها tuples/deconstruction في C# بس أشيع بكتير هنا (خصوصًا في الـprops)."
+        },
+        {
+          "term": "Bundler",
+          "def": "أداة بتجمع ملفاتك وتبعياتك في حزم للمتصفح (Vite/esbuild/Rollup/Rolldown). مقابلها: `dotnet publish` + bundling/minification للـassets."
+        },
+        {
+          "term": "Tree-shaking",
+          "def": "حذف الكود غير المستخدم من الحزمة النهائية — بيعتمد على ESM (imports ثابتة). مقابل تقريبي: trimming في .NET (بس هنا على مستوى الدوال)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① جدول الترجمة: من C# إلى TS في 15 سطرًا"
+    },
+    {
+      "type": "table",
+      "caption": "المفهوم × في C# × في JS/TS × الفخّ",
+      "head": [
+        "المفهوم",
+        "في C#",
+        "في JS/TS",
+        "الفخّ اللي بيقع فيه مطور الـBackend"
+      ],
+      "rows": [
+        [
+          "الأنواع الاختيارية",
+          "`string?` + `<Nullable>enable</Nullable>`",
+          "`string | undefined` + `strictNullChecks`",
+          "من غير `strict: true` الأنواع شكلية — فعّلها من أول يوم"
+        ],
+        [
+          "غير المتزامن",
+          "`Task<T>` / `ValueTask<T>`",
+          "`Promise<T>`",
+          "`Promise` بيبدأ التنفيذ **فورًا** (مش زي `Task` اللي ممكن يتأجل بـ`Func<Task>`)"
+        ],
+        [
+          "الانتظار",
+          "`await task`",
+          "`await promise`",
+          "نسيان `await` = floating promise وخطأ ضائع (بلا تحذير مترجم افتراضيًا)"
+        ],
+        [
+          "التوازي",
+          "`Task.WhenAll(a, b)`",
+          "`Promise.all([a, b])`",
+          "`Promise.all` بترفض **بأول خطأ** وتسيب الباقي شغال — استخدم `allSettled` لو محتاج كل النتائج"
+        ],
+        [
+          "الإلغاء",
+          "`CancellationToken`",
+          "`AbortSignal` / `AbortController`",
+          "مفيش إلغاء تلقائي عند خروج النطاق — لازم تمرر الـsignal بنفسك"
+        ],
+        [
+          "الاستثناءات",
+          "`throw new Exception` + أنواع",
+          "`throw` **أي قيمة** (string/object/undefined)",
+          "`catch (e)` بياخد `unknown` في TS الحديث — ضيّقه قبل ما تستخدمه"
+        ],
+        [
+          "التحقق من النوع",
+          "`is` / `as` / pattern matching",
+          "`typeof` / `instanceof` / `in` / narrowing",
+          "`typeof null === 'object'` — خطأ تاريخي لازم تعرفه"
+        ],
+        [
+          "المساواة",
+          "`==` (قيم) و`Equals`",
+          "`===` (صارم) و`==` (بتحوّل الأنواع)",
+          "`'0' == 0` → true · استخدم `===` دايمًا (والاستثناء الوحيد: `x == null`)"
+        ],
+        [
+          "المجموعات",
+          "`List<T>` / `IEnumerable<T>` + LINQ",
+          "`Array<T>` + `map/filter/reduce/find/some/every`",
+          "`sort()` **بيعدّل المصفوفة الأصلية** — استخدم `[...arr].sort()`"
+        ],
+        [
+          "القواميس",
+          "`Dictionary<K,V>`",
+          "`Map` أو كائن عادي `{}`",
+          "الكائن العادي بيقع في مشاكل prototype و`__proto__` — استخدم `Map` للمفاتيح الديناميكية"
+        ],
+        [
+          "الثوابت",
+          "`readonly` / `init`",
+          "`const` (الربط) و`readonly` في TS",
+          "`const arr = []` **لا يمنع** `arr.push(1)` — `const` بيثبّت الربط مش القيمة"
+        ],
+        [
+          "الـnull-safety",
+          "`?.` و`??`",
+          "`?.` و`??` (نفس الشكل)",
+          "`??` للـnull/undefined فقط · `||` بيتعامل مع `0` و`''` و`false` كفاضي"
+        ],
+        [
+          "الـDI",
+          "`IServiceCollection` + constructor injection",
+          "مفيش مدمج: modules + closures + (اختياريًا) مكتبات",
+          "الحالة المشتركة بتتعمل بـmodule-level singleton — انتبه للاختبارات"
+        ],
+        [
+          "التعبئة",
+          "NuGet + `csproj`",
+          "npm/pnpm + `package.json`",
+          "`package-lock.json` لازم يُلتزم (زي `packages.lock.json` في 7.2.2)"
+        ],
+        [
+          "البناء/التحليل",
+          "MSBuild + Roslyn analyzers",
+          "Vite/esbuild + ESLint + `tsc --noEmit`",
+          "`tsc` في المشاريع الحديثة **بيفحص بس ما يترجمش** — الترجمة للـbundler"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② Event loop: الفرق الجوهري اللي بيغيّر طريقة تفكيرك"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "النموذج الذهني (احفظه — بيفسر 90% من الاستغراب)",
+      "filename": "docs/js-event-loop.txt",
+      "code": "   كودك (ملف TS/JS)\n        │\n        ▼\n   ┌─────────────┐   1) ينفَّذ حتى النهاية (run-to-completion)\n   │  Call Stack │      ─ لا مقاطعات، لا threads للكود\n   └──────┬──────┘      ─ أي شغل متزامن طويل = تجميد الواجهة\n          │ فاضي\n          ▼\n   ┌─────────────┐   2) Microtask queue (أولوية قصوى)\n   │ Microtasks  │      ─ استكمال كل await / then\n   └──────┬──────┘      ─ بيتفضى بالكامل قبل أي حاجة تانية\n          │ فاضي\n          ▼\n   ┌─────────────┐   3) Macrotask queue (مهمة واحدة لكل دورة)\n   │ Macrotasks  │      ─ setTimeout/setInterval · أحداث DOM · I/O\n   └──────┬──────┘      ─ fetch: الاستجابة microtask بعد وصولها\n          │\n          └──────────▶ دورة جديدة (loop)\n\n   ▲ الرسم في المتصفح بيضيف: paint/layout بعد كل دورة —\n     فالشغل المتزامن الطويل بيأخر الرسم (الواجهة «تعلق»).\n\n   ▲ في Node: نفس الفكرة + libuv thread pool للـI/O (fs/DNS/crypto).\n\n   ترتيب المخرجات في المثال ده:\n     console.log('1');                     // 1  (متزامن)\n     setTimeout(() => log('4'), 0);        // 4  (macrotask)\n     Promise.resolve().then(() => log('3'));// 3  (microtask)\n     log('2');                             // 2  (متزامن)\n   ⇒ 1, 2, 3, 4\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "ثلاث نتائج عملية للنموذج ده",
+      "md": "**① مفيش سباقات (races) في الكود المتزامن**: الدالة بتنفذ لآخرها قبل أي حاجة تانية — فمفيش حاجة زي `lock` للكود العادي. بس فيه **سباقات ترتيب** بين عمليات async (طلبات بتوصل بترتيب مختلف).\n**② الشغل التقيل بيجمّد الواجهة**: معالجة 100 ألف صف في الـmain thread بتوقف الرسم. الحلول: تقسيم على دفعات · `requestIdleCallback` · Web Worker (مقابل تقريبي: نقل الشغل لـthread تاني).\n**③ `setTimeout(fn, 0)` مش «فورًا»**: دي macrotask — بتتنفذ بعد كل الـmicrotasks. عشان كده الترتيب في المثال فوق 1,2,3,4."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ الأدوات في 2026 — وإصدارات تثبّت عليها"
+    },
+    {
+      "type": "table",
+      "caption": "الحالة في أكتوبر 2026 (تحقق قبل التثبيت — الأرقام بتتحرك بسرعة)",
+      "head": [
+        "الأداة",
+        "الإصدار/الحالة",
+        "ملاحظة عملية"
+      ],
+      "rows": [
+        [
+          "**Node.js**",
+          "24.x «Krypton» = LTS في وضع **Maintenance من 20 أكتوبر 2026** (دعم حتى 30 أبريل 2028) · 26.x = Current و**بيبقى Active LTS في 28 أكتوبر 2026** · 22.x صيانة حتى 30 أبريل 2027",
+          "لمشروع جديد: **Node 24** (آمن ومستقر) وخطّط للانتقال لـ26 بعد 28 أكتوبر. **إصدار أمني 21 أكتوبر 2026** (10 CVEs منها Brotli RCE) → حدّث لـ24.22.1 / 26.12.1 / 22.23.4"
+        ],
+        [
+          "**TypeScript**",
+          "**7.0.2** مستقر (أغسطس 2026) — المترجم اتكتب بلغة Go (أسرع بكثير) · **7.1 beta** صدرت في 20 أكتوبر 2026 والمستهدف نوفمبر",
+          "لا تعتمد على سلوك إصدار nightly. لو أدواتك (ESLint/مكتبات) لسه مش متوافقة مع 7.x، ثبّت 5.x الأحدث مؤقتًا ووثّق القرار"
+        ],
+        [
+          "**Vite**",
+          "8.x (إصدار أكتوبر 2026)",
+          "dev server سريع + build بـRollup/Rolldown. البديل لو فريقك بيستخدم Next.js/Nuxt: خليكم على أداتهم"
+        ],
+        [
+          "**Tailwind CSS**",
+          "4.3.x — **CSS-first** (بلا `tailwind.config.js` افتراضيًا)",
+          "التفاصيل في 8.1.3"
+        ],
+        [
+          "**ESM مقابل CJS**",
+          "ESM هو الافتراضي في الأدوات الجديدة",
+          "`\"type\": \"module\"` في `package.json` — وشوف 7.2.2 للـlockfile"
+        ],
+        [
+          "**تشغيل TS في Node**",
+          "**type stripping مستقر** في Node 24.12+/25.2+ (مفعّل افتراضيًا من 23.6/22.18)",
+          "`node app.ts` يشتغل **للقابل للمسح فقط** (بلا enum/namespace/parameter properties) وبلا فحص أنواع — `--no-strip-types` للتعطيل، و`--experimental-transform-types` اتشال في Node 26"
+        ],
+        [
+          "**الاختبار**",
+          "Vitest (أو Jest للمشاريع الأقدم)",
+          "`describe/it/expect` — نفس فلسفة xUnit · التغطية بـ`@vitest/coverage-v8` (مقابل coverlet في 1.2.6)"
+        ],
+        [
+          "**الـlinter/formatter**",
+          "ESLint 9 + typescript-eslint · Prettier",
+          "ESLint = analyzers (قواعد) · Prettier = `dotnet format` (شكل فقط) — لا تخليهم يتعارضوا"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "الفرق اللي لازم تستوعبه: الأنواع بتتمسح",
+      "md": "في C# النوع جزء من الـruntime (`is`/`as`/reflection بتشتغل عليه). في TypeScript **كل الأنواع بتتمسح** في الناتج:\n\n• `interface Order { total: number }` مش موجودة وقت التشغيل — فـ`JSON.parse(text) as Order` **مش تحقق**، ده ادعاء.\n• أي بيانات جاية من API/مستخدم/ملف = **غير موثوقة** حتى لو النوع قال كده.\n• الحل زي ما في الـBackend بالظبط: **تحقق وقت الحدود** (zod/valibot/ajv — أو FluentValidation في الخادم). ده نفس مبدأ «لا تثق في المدخلات» من 1.1.4 و2.2.1.\n• لو محتاج أنواع من الـAPI: ولّدها من OpenAPI (2.1.1) بدل ما تكتبها بإيدك — بس لسه تحقّق وقت التشغيل للبيانات الحرجة."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ TypeScript: الأنواع اللي بتخدمك فعلًا"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "src/api/types.ts — أنماط أنواع هتستخدمها كل يوم",
+      "filename": "src/api/types.ts",
+      "code": "// ── 1) interface مقابل type alias ─────────────────────────────────────\n// interface: للكائنات اللي ممكن تتوسّع (declaration merging) — مثل عقود الـAPI\nexport interface Order {\n  readonly id: string;\n  readonly customerId: string;\n  readonly total: string;        // المال نص (decimal) — لا number (كل الأرقام double)\n  readonly currency: \"EGP\" | \"USD\";\n  readonly status: OrderStatus;\n  readonly placedAt: string;     // ISO 8601 من الخادم\n  readonly items: readonly OrderItem[];   // readonly يمنع إعادة التعيين فقط\n}\n\nexport interface OrderItem {\n  readonly sku: string;\n  readonly name: string;\n  readonly qty: number;\n  readonly unitPrice: string;    // decimal كنص\n}\n\n// type alias: للاتحادات والدوال والأنواع المشتقة\nexport type OrderStatus = \"draft\" | \"placed\" | \"paid\" | \"shipped\" | \"cancelled\";\nexport type OrderId = string & { readonly __brand: \"OrderId\" };  // nominal typing خفيف\n\n// ── 2) الحالات كـdiscriminated union (أقوى نمط في الواجهة — 8.1.4) ────\nexport type Remote<T> =\n  | { readonly kind: \"idle\" }\n  | { readonly kind: \"loading\" }\n  | { readonly kind: \"error\"; readonly error: ApiError }\n  | { readonly kind: \"success\"; readonly data: T };\n\n// ── 3) أخطاء موحدة مطابقة لـProblemDetails (RFC 9457 / 2.2.3) ─────────\nexport interface ApiError {\n  readonly status: number;                 // 0 = شبكة\n  readonly title: string;\n  readonly detail?: string;\n  readonly type?: string;\n  readonly instance?: string;\n  readonly correlationId?: string;         // للربط بالسجلات (7.1.3)\n  readonly fieldErrors?: Readonly<Record<string, readonly string[]>>;\n  readonly retryAfterSeconds?: number;     // من 429\n}\n\n// ── 4) generics مع قيود (زي where T : class في C#) ─────────────────────\nexport interface Page<T> {\n  readonly items: readonly T[];\n  readonly nextCursor?: string | null;     // cursor pagination (2.2.2)\n}\n\nexport function firstOf<T>(items: readonly T[]): T | undefined {\n  return items[0];\n}\n\n// ── 5) أنواع مشتقة من البيانات (تقليل التكرار) ─────────────────────────\nexport type OrderDto = Omit<Order, \"items\"> & { items: OrderItem[] };\nexport type OrderPatch = Partial<Pick<OrderDto, \"status\" | \"items\">>;\nexport type StatusLabels = Record<OrderStatus, string>;\n\n// ── 6) تضييق الأنواع (narrowing) بدل أي cast ───────────────────────────\nexport function isApiError(value: unknown): value is ApiError {\n  return (\n    typeof value === \"object\" &&\n    value !== null &&\n    \"status\" in value &&\n    typeof (value as { status?: unknown }).status === \"number\"\n  );\n}\n\n// ── 7) satisfies: تحقق من الشكل من غير توسيع النوع ─────────────────────\nexport const statusLabels = {\n  draft: \"مسودة\",\n  placed: \"تم الطلب\",\n  paid: \"مدفوع\",\n  shipped: \"تم الشحن\",\n  cancelled: \"ملغي\",\n} satisfies StatusLabels;      // خطأ إملائي في مفتاح = خطأ ترجمة فورًا\n"
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "title": "tsconfig.json — الإعدادات اللي تفعّلها من أول يوم",
+      "filename": "tsconfig.json",
+      "code": "{\n  \"compilerOptions\": {\n    \"target\": \"ES2023\",\n    \"lib\": [\"ES2023\", \"DOM\", \"DOM.Iterable\"],\n    \"module\": \"ESNext\",\n    \"moduleResolution\": \"bundler\",\n    \"types\": [\"vite/client\"],\n\n    \"strict\": true,\n    \"noUncheckedIndexedAccess\": true,\n    \"exactOptionalPropertyTypes\": true,\n    \"noImplicitOverride\": true,\n    \"noFallthroughCasesInSwitch\": true,\n    \"noUnusedLocals\": true,\n    \"noUnusedParameters\": true,\n\n    \"verbatimModuleSyntax\": true,\n    \"isolatedModules\": true,\n    \"erasableSyntaxOnly\": true,\n\n    \"noEmit\": true,\n    \"skipLibCheck\": true,\n    \"forceConsistentCasingInFileNames\": true\n  },\n  \"include\": [\"src\"]\n}\n"
+    },
+    {
+      "type": "table",
+      "caption": "إعدادات tsconfig — لماذا كل واحد (لا تنسخها بدون فهم)",
+      "head": [
+        "الإعداد",
+        "القيمة",
+        "السبب"
+      ],
+      "rows": [
+        [
+          "`strict`",
+          "`true`",
+          "بيفعّل `strictNullChecks`/`noImplicitAny` وغيرها — من غيره TS تقريبًا بلا قيمة"
+        ],
+        [
+          "`noUncheckedIndexedAccess`",
+          "`true`",
+          "`arr[i]` نوعه `T | undefined` — بيمنع أشهر خطأ runtime في القوائم"
+        ],
+        [
+          "`exactOptionalPropertyTypes`",
+          "`true`",
+          "بيفرّق بين `x?: string` و`x: string | undefined` — أدق مع عقود الـAPI"
+        ],
+        [
+          "`erasableSyntaxOnly`",
+          "`true`",
+          "بتمنع syntax ما يقدرش Node يشغله مباشرة (enum/namespace/parameter properties) — توافق مع type stripping"
+        ],
+        [
+          "`verbatimModuleSyntax`",
+          "`true`",
+          "`import type` صريح — بيمنع استيراد قيم بالخطأ ويحسّن الـtree-shaking"
+        ],
+        [
+          "`isolatedModules`",
+          "`true`",
+          "كل ملف يُترجم مستقلًا — شرط لأدوات زي Vite/esbuild"
+        ],
+        [
+          "`noEmit`",
+          "`true`",
+          "`tsc` للفحص فقط؛ البناء على الـbundler (زي `dotnet build` مقابل analyzers)"
+        ],
+        [
+          "`moduleResolution`",
+          "`bundler`",
+          "الأدق لمشاريع Vite/Webpack الحديثة"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ async وfetch: المقابل المباشر لـHttpClient"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "src/api/orders.ts — client بسيط وصحيح (يتطور في 8.1.2)",
+      "filename": "src/api/orders.ts",
+      "code": "import type { ApiError, Order, Page } from \"./types\";\n\nconst BASE = import.meta.env.VITE_API_BASE ?? \"/api\";\n\n/**\n * مقابل HttpClient في .NET — بس بأخطاء واضحة وإلغاء صريح.\n * القواعد:\n *   • fetch لا يرمي على 4xx/5xx — لازم تفحص res.ok بنفسك.\n *   • الإلغاء/المهلة عبر AbortSignal (مقابل CancellationToken).\n *   • لا نثق في النوع: نتحقق من الشكل قبل الإرجاع (8.1.1 ③).\n */\nexport async function listOrders(\n  cursor: string | null,\n  options: { signal?: AbortSignal; timeoutMs?: number } = {},\n): Promise<Page<Order>> {\n  const { signal, timeoutMs = 8_000 } = options;\n\n  // جمع إشارة المستخدم مع مهلة الطلب (مثل CancellationTokenSource.CreateLinkedTokenSource)\n  const combined = signal\n    ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])\n    : AbortSignal.timeout(timeoutMs);\n\n  // نبني الاستعلام بـURLSearchParams (لا ندمج نصوصًا يدويًا — 2.2.1)\n  const qs = new URLSearchParams({ limit: \"20\" });\n  if (cursor) qs.set(\"cursor\", cursor);\n\n  let res: Response;\n  try {\n    res = await fetch(`${BASE}/orders?${qs}`, {\n      method: \"GET\",\n      headers: { Accept: \"application/json\" },\n      credentials: \"include\",          // كوكيز الجلسة في نمط BFF (8.1.2)\n      signal: combined,\n    });\n  } catch (err) {\n    throw toNetworkError(err);         // شبكة/مهلة/إلغاء — لا HTTP\n  }\n\n  if (!res.ok) {\n    throw await toApiError(res);       // 4xx/5xx → خطأ موحّد\n  }\n\n  const body: unknown = await res.json();\n  return parsePage(body);\n}\n\n/** يحوّل استجابة غير ناجحة إلى ApiError من ProblemDetails (2.2.3). */\nasync function toApiError(res: Response): Promise<ApiError> {\n  const correlationId = res.headers.get(\"X-Correlation-Id\") ?? undefined;\n  const retryAfter = res.headers.get(\"Retry-After\");\n\n  let body: unknown = undefined;\n  try {\n    body = await res.json();\n  } catch {\n    // جسم غير JSON (وسيط/بوابة) — نتعامل مع الحالة وحدها\n  }\n\n  const pd = (typeof body === \"object\" && body !== null ? body : {}) as Record<string, unknown>;\n  return {\n    status: res.status,\n    title: typeof pd.title === \"string\" ? pd.title : defaultTitle(res.status),\n    detail: typeof pd.detail === \"string\" ? pd.detail : undefined,\n    type: typeof pd.type === \"string\" ? pd.type : undefined,\n    instance: typeof pd.instance === \"string\" ? pd.instance : undefined,\n    correlationId: (typeof pd.instance === \"string\" ? pd.instance : undefined) ?? correlationId,\n    fieldErrors: extractFieldErrors(pd.errors),\n    retryAfterSeconds: retryAfter ? Number.parseInt(retryAfter, 10) || undefined : undefined,\n  };\n}\n\nfunction extractFieldErrors(errors: unknown): Record<string, readonly string[]> | undefined {\n  if (typeof errors !== \"object\" || errors === null) return undefined;\n  const out: Record<string, string[]> = {};\n  for (const [field, messages] of Object.entries(errors as Record<string, unknown>)) {\n    out[field] = Array.isArray(messages)\n      ? messages.filter((m): m is string => typeof m === \"string\")\n      : [];\n  }\n  return out;\n}\n\nfunction toNetworkError(err: unknown): ApiError {\n  const isTimeout = err instanceof DOMException && err.name === \"TimeoutError\";\n  const isAbort = err instanceof DOMException && err.name === \"AbortError\";\n  return {\n    status: 0,\n    title: isAbort ? \"أُلغي الطلب\" : isTimeout ? \"انتهت مهلة الاتصال\" : \"تعذر الوصول إلى الخادم\",\n    detail: isAbort || isTimeout ? undefined : \"تحقق من الاتصال بالإنترنت ثم أعد المحاولة.\",\n  };\n}\n\nfunction defaultTitle(status: number): string {\n  if (status === 401) return \"انتهت الجلسة — سجّل الدخول مرة أخرى\";\n  if (status === 403) return \"ليس لديك صلاحية لهذا الإجراء\";\n  if (status === 404) return \"العنصر غير موجود\";\n  if (status === 409) return \"تعارض مع حالة أحدث — حدّث البيانات\";\n  if (status === 429) return \"عدد كبير من الطلبات — حاول بعد قليل\";\n  if (status >= 500) return \"خطأ في الخادم\";\n  return `طلب غير ناجح (${status})`;\n}\n\n/**\n * تحقق وقت التشغيل من شكل الصفحة (الأنواع بتتمسح — 8.1.1 ③).\n * اصطلاح المشروع: نرمي كائن ApiError (لا Error) عشان الواجهة تتعامل مع\n * كل الفشل بشكل واحد — وده يتطلب isApiError() في كل catch (ضيق النوع أولًا).\n */\nfunction parsePage(body: unknown): Page<Order> {\n  if (typeof body !== \"object\" || body === null || !Array.isArray((body as { items?: unknown }).items)) {\n    throw { status: 0, title: \"استجابة غير متوقعة من الخادم\" } satisfies ApiError;\n  }\n  return body as Page<Order>;\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "`AbortSignal` = `CancellationToken` — استخدمها بنفس الانضباط",
+      "md": "• **كل طلب لازم له إلغاء**: مكوّن اتفك (unmount) · المستخدم غيّر الصفحة · طلب جديد ألغى القديم. من غير ده هتحصل على «تحديثات أشباح» (بيانات قديمة بتوصل بعد ما المستخدم مشي).\n• **`AbortSignal.timeout(ms)`** = مهلة لكل طلب (مقابل `HttpClient.Timeout`). بلا مهلة، الطلب ممكن يعلق للأبد.\n• **`AbortSignal.any([...])`** بيدمج إشارات (مقابل linked token sources).\n• **`AbortError` مش خطأ**: هو إلغاء مقصود — لا تعرضه للمستخدم كخطأ ولا تسجله كحادث.\n• في الخادم عندك نفس الشيء: مرّر `CancellationToken` للـ`HttpClient`/EF Core — الـclient والـserver بيتكلموا نفس اللغة."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑥ عشرة فخوخ بتوقع مطوري .NET بالتحديد"
+    },
+    {
+      "type": "table",
+      "caption": "الفخّ × لماذا يحدث × الإصلاح",
+      "head": [
+        "#",
+        "الفخّ",
+        "لماذا يقع فيه مطور C#",
+        "الإصلاح"
+      ],
+      "rows": [
+        [
+          "1",
+          "`==` بدل `===`",
+          "في C# `==` واضح السلوك",
+          "`===` دايمًا؛ الاستثناء الوحيد `x == null` (يغطي null وundefined)"
+        ],
+        [
+          "2",
+          "floating promise (نسيان `await`)",
+          "المترجم في C# بيحذر (CS4014)",
+          "ESLint `no-floating-promises` + `await` صريح + `.catch()` لو متعمد"
+        ],
+        [
+          "3",
+          "`Array.sort()` يعدّل الأصل",
+          "LINQ `OrderBy` بيرجع نسخة جديدة",
+          "`const sorted = [...arr].sort((a, b) => a.name.localeCompare(b.name))` — و`sort()` بلا مقارنة بترتب كنصوص!"
+        ],
+        [
+          "4",
+          "الأرقام كلها `double`",
+          "`decimal` للمال في C#",
+          "**المال كنص** (`\"199.99\"`) أو أصغر وحدة (قروش) — لا `number` أبدًا؛ `0.1 + 0.2 !== 0.3`"
+        ],
+        [
+          "5",
+          "`this` بيتغير حسب طريقة النداء",
+          "`this` ثابت في C#",
+          "استخدم arrow functions (بتحتفظ بـ`this`) · أو `class` مع private fields · تجنّب الاعتماد على `this` في الوحدات"
+        ],
+        [
+          "6",
+          "`JSON.parse` بيرمي على نص فاسد",
+          "`JsonSerializer` بيرمي كمان بس بنتوقعه",
+          "`try/catch` حوالين كل `JSON.parse` لمدخل خارجي + تحقق من الشكل بعدها"
+        ],
+        [
+          "7",
+          "`const` مش immutability",
+          "`readonly` بيمنع التعديل عميقًا",
+          "`const` بيثبّت الربط فقط — استخدم `readonly` في الأنواع و`Object.freeze` أو مكتبات (Immer) للحالة"
+        ],
+        [
+          "8",
+          "`catch (e)` نوعه `unknown`",
+          "`catch (Exception ex)` معروف النوع",
+          "ضيّق النوع قبل الاستخدام (`isApiError(e)` من أنواعنا) — وإلا `e.message` خطأ ترجمة"
+        ],
+        [
+          "9",
+          "closure داخل loop بـ`var`",
+          "ما يقابله شيء مباشر في C#",
+          "`let`/`const` في كل دورة — `var` بتشارك نفس المتغير (أشهر سؤال مقابلات قديم)"
+        ],
+        [
+          "10",
+          "معالجة 100 ألف صف في الـmain thread",
+          "بنعملها في thread تاني",
+          "الواجهة بتتجمد: دفعات (`requestAnimationFrame`) · Web Worker · أو نقل المعالجة للخادم"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑦ إعداد مشروع حديث في 6 أوامر"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "إعداد + أوامر يومية (Node 24 · Vite 8 · TypeScript 7)",
+      "filename": "terminal/setup.sh",
+      "code": "# 0) تأكد من إصدار Node (24.x LTS أو 26.x بعد 28 أكتوبر 2026)\nnode --version\nnpm --version\n\n# 1) مشروع Vite بقالب TypeScript\nnpm create vite@latest shop-admin -- --template vanilla-ts\ncd shop-admin\n\n# 2) ثبّت التبعيات واقفل النسخ (زي packages.lock.json — 7.2.2)\nnpm install\nnpm pkg set scripts.typecheck=\"tsc --noEmit\"\nnpm pkg set scripts.lint=\"eslint src --max-warnings=0\"\n\n# 3) أدوات الجودة (ESLint + Prettier)\nnpm install -D eslint @eslint/js typescript-eslint prettier\n\n# 4) اختبار (Vitest — نفس فلسفة xUnit: describe/it/expect)\nnpm install -D vitest @vitest/coverage-v8\nnpm pkg set scripts.test=\"vitest run\"\n\n# 5) التشغيل\nnpm run dev        # خادم تطوير مع HMR\nnpm run typecheck  # فحص الأنواع (tsc --noEmit)\nnpm run build      # إنتاج\nnpm run preview    # معاينة الناتج المبني\n\n# 6) لو عندك API .NET محلي: وكّل الطلبات لتجنب CORS (vite.config.ts)\ncat > vite.config.ts <<'EOF'\nimport { defineConfig } from \"vite\";\n\nexport default defineConfig({\n  server: {\n    port: 5173,\n    proxy: {\n      // الطلبات لـ/api تذهب لخادم ASP.NET Core على 8080 (بلا CORS في التطوير)\n      \"/api\": { target: \"http://localhost:8080\", changeOrigin: true },\n    },\n  },\n  build: { sourcemap: true, target: \"es2023\" },\n});\nEOF\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "خريطة الأدوات: .NET مقابل منظومة JS",
+      "md": "`csproj` ↔ `package.json` · `dotnet restore` ↔ `npm install` · `packages.lock.json` ↔ `package-lock.json` · NuGet ↔ npm · MSBuild/`dotnet build` ↔ Vite build · Roslyn analyzers ↔ ESLint · `dotnet format` ↔ Prettier · xUnit ↔ Vitest · coverlet ↔ `@vitest/coverage-v8` · `appsettings.json` ↔ `.env` + `import.meta.env` · `IConfiguration` ↔ env vars وقت البناء.\n\n**فرق جوهري واحد**: `.env` بيُدمج وقت **البناء** (مش وقت التشغيل) — فمفيش «تغيير إعدادات من غير إعادة نشر» زي ما عندك في App Configuration/Key Vault. أي سر في `.env` بيظهر في الحزمة النهائية: **لا أسرار في الـfrontend أبدًا** (زي ما قلنا في 6.2.3)."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أشرح event loop (call stack → microtasks → macrotasks) وأتنبأ بترتيب مخرجات مثال بسيط.",
+        "أترجم مفاهيم C# لمقابلها: `Task`→`Promise` · `CancellationToken`→`AbortSignal` · LINQ→`map/filter/reduce` · `?.`/`??` نفسها.",
+        "أعرف إن أنواع TS **بتتمسح** وقت التشغيل، فأتحقق من البيانات الخارجية وقت الحدود.",
+        "أكتب أنواعًا مفيدة: interfaces للعقود · discriminated union للحالات · `unknown` بدل `any` · generics · `satisfies`.",
+        "أفعّل `strict` + `noUncheckedIndexedAccess` + `erasableSyntaxOnly` وأفهم سبب كل واحد.",
+        "أستخدم `fetch` صح: أفحص `res.ok` · أحوّل الأخطاء لـProblemDetails · مهلة وإلغاء بـ`AbortSignal`.",
+        "أتجنب الفخوخ العشرة: `===` · floating promises · `sort()` المعدِّل · المال كنص · `this` · `JSON.parse` في try/catch.",
+        "أعرف إصدارات أكتوبر 2026 (Node 24/26 · TS 7.0.2 · Vite 8) وإزاي أثبّت المشروع وأتحقق من الأنواع."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "8 أسئلة على JS/TS من منظور مطور .NET.",
+      "questions": [
+        {
+          "q": "ما ترتيب المخرجات؟ `console.log('1'); setTimeout(() => console.log('4'), 0); Promise.resolve().then(() => console.log('3')); console.log('2');`",
+          "options": [
+            "1, 2, 3, 4",
+            "1, 4, 3, 2",
+            "1, 2, 4, 3",
+            "1, 3, 2, 4"
+          ],
+          "answer": 0,
+          "explain": "المتزامن أولًا (1 ثم 2)، ثم **microtasks** (الـPromise → 3) لأن الطابور ده بيتفضى بالكامل قبل أي macrotask، وبعدين `setTimeout` (4) حتى لو المهلة صفر."
+        },
+        {
+          "q": "`const items = [3, 1, 2]; items.sort();` — ما الناتج ولماذا؟",
+          "options": [
+            "[1, 2, 3] نسخة جديدة والأصل لم يتغير",
+            "[1, 2, 3] مع تعديل المصفوفة الأصلية",
+            "[3, 1, 2] لأن sort لا يعمل على الأرقام",
+            "خطأ ترجمة"
+          ],
+          "answer": 1,
+          "explain": "`sort()` **بتعدّل المصفوفة الأصلية** (عكس LINQ `OrderBy`) وبترجع نفس المرجع. ولأن `const` بيثبّت الربط مش المحتوى، التعديل مسموح. للأرقام استخدم `(a, b) => a - b` وإلا الترتيب بيكون كنصّي (`10` قبل `9`)."
+        },
+        {
+          "q": "وصلك `total: 199.99` من الـAPI. ما التمثيل الآمن في TS؟",
+          "options": [
+            "`number` مع `toFixed(2)` عند العرض",
+            "`string` (decimal كنص) أو أصغر وحدة كعدد صحيح (قروش)، مع تحويل في الخادم",
+            "`double` لأن JS لا يملك decimal",
+            "`bigint` دائمًا"
+          ],
+          "answer": 1,
+          "explain": "كل أرقام JS `double` فـ`0.1 + 0.2 !== 0.3` — الحسابات المالية بتتلف. الحل: الخادم يرسل decimal كنص (أو أصغر وحدة)، والواجهة تعرض من غير حساب، والحساب في الخادم (زي ما عملنا في 5.1.3 بوحدات صغرى)."
+        },
+        {
+          "q": "لماذا `JSON.parse(text) as Order` غير كافٍ؟",
+          "options": [
+            "لأن as بطيء",
+            "لأن أنواع TS تُمسح وقت التشغيل — التحويل ادعاء بلا تحقق، فالبيانات قد تخالف النوع",
+            "لأن JSON.parse يرجع string",
+            "لأنه يحتاج await"
+          ],
+          "answer": 1,
+          "explain": "النوع مش موجود وقت التشغيل، فـ`as` مجرد ادعاء. تحقق من الشكل عند الحدود (دالة parse أو مكتبة zod/valibot) — نفس مبدأ «لا تثق في المدخلات» في 1.1.4."
+        },
+        {
+          "q": "`await` مفقودة قبل `api.save(order)` داخل دالة async. ما الخطر؟",
+          "options": [
+            "لا خطر، JS ينتظر تلقائيًا",
+            "floating promise: الأخطاء تضيع كـunhandledRejection والتنفيذ يكمل قبل انتهاء الحفظ",
+            "خطأ ترجمة دائمًا",
+            "يسبب deadlock"
+          ],
+          "answer": 1,
+          "explain": "الكود بيكمل فورًا، وأي رفض بيطلع كـunhandledRejection (ممكن تُنهي العملية في Node). فعّل ESLint `no-floating-promises` — ده المقابل لتحذير CS4014 في C#."
+        },
+        {
+          "q": "مقابل `CancellationToken` في JS؟",
+          "options": [
+            "`Promise.cancel()`",
+            "AbortController / AbortSignal",
+            "`CancelationToken`",
+            "`signal: true` في fetch"
+          ],
+          "answer": 1,
+          "explain": "`AbortController` بينشئ `AbortSignal` بتمرره لـfetch (أو `AbortSignal.timeout(ms)` للمهلة، و`AbortSignal.any([...])` للدمج). و`AbortError` إلغاء مقصود مش خطأ — لا تعرضه للمستخدم."
+        },
+        {
+          "q": "لماذا `unknown` أفضل من `any` في `catch (e)`؟",
+          "options": [
+            "أسرع في التنفيذ",
+            "يجبرك على تضييق النوع قبل الاستخدام فيمنع أخطاء runtime، بينما any يوقف الفحص صامتًا",
+            "unknown يسمح بأي عملية",
+            "لا فرق"
+          ],
+          "answer": 1,
+          "explain": "`any` = «أوقف فحص الأنواع» (زي `dynamic` بس صامت)، فـ`e.foo.bar` يمر من المترجم وينفجر وقت التشغيل. `unknown` بيفرض فحصًا (`isApiError(e)` أو `instanceof`) — وده بالظبط سلوك `strict` في TS الحديث."
+        },
+        {
+          "q": "تشغيل TypeScript مباشرة في Node (`node app.ts`) في 2026؟",
+          "options": [
+            "مستحيل، يجب الترجمة دائمًا",
+            "يعمل افتراضيًا عبر type stripping (مستقر في Node 24.12+/25.2+) لكن للقابل للمسح فقط وبلا فحص أنواع",
+            "يعمل فقط مع --experimental-transform-types",
+            "يعمل مع فحص أنواع كامل"
+          ],
+          "answer": 1,
+          "explain": "Node بيستبدل صياغة TS بمسافات (بلا فحص أنواع) — فـenum/namespace/parameter properties ما تشتغلش (ولذلك `erasableSyntaxOnly: true` في tsconfig مفيد). `--experimental-transform-types` اتشال في Node 26، والتعطيل بـ`--no-strip-types`."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "أساس قابل للتشغيل + أنماط أنواع صحيحة.",
+      "items": [
+        {
+          "id": "s8-m1-l1-t1",
+          "title": "مهمة 1: مشروع TS حديث + client مكتوب صح",
+          "md": "أنشئ مشروع Vite بـTypeScript، اضبط `tsconfig.json` بالإعدادات الصارمة، واكتب client للـAPI بتاعك (Shop من المرحلة 2/5) فيه: أنواع العقود · `Remote<T>` كـdiscriminated union · `ApiError` من ProblemDetails · مهلة وإلغاء بـ`AbortSignal` · دالة parse تتحقق من الشكل. وأضف اختبارين بـVitest.",
+          "criteria": [
+            "`package.json` فيه scripts: `dev` · `build` · `typecheck` (tsc --noEmit) · `lint` · `test` — و`package-lock.json` مُلتزم في الريبو.",
+            "`tsconfig.json` فيه `strict` + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes` + `erasableSyntaxOnly` + `verbatimModuleSyntax` + `noEmit`.",
+            "`npm run typecheck` و`npm run lint` **ناجحان بصفر تحذيرات** (`--max-warnings=0`).",
+            "ملف أنواع فيه: `Order`/`OrderItem` (بـ`readonly` والمال كنص) · `OrderStatus` اتحاد · `Remote<T>` بأربع حالات · `ApiError` مطابق لـProblemDetails · `Page<T>` بـcursor.",
+            "client فيه: `listOrders(cursor, { signal, timeoutMs })` · فحص `res.ok` · تحويل الأخطاء (ProblemDetails + `X-Correlation-Id` + `Retry-After`) · `toNetworkError` بتمييز timeout/abort/network · `AbortSignal.any` لدمج الإشارات.",
+            "**دالة parse** تتحقق من الشكل وقت التشغيل وترفض الاستجابة غير المتوقعة (بلا `as` أعمى).",
+            "اختباران بـVitest: واحد لتحويل 401/429 إلى `ApiError` بالعنوان الصحيح و`retryAfterSeconds` · وواحد لرفض جسم غير متوقع (mock لـfetch).",
+            "ملف `docs/js-vs-cs.md` فيه 10 مقارنات من جدول الدرس **بأمثلة من كودك** (مش نسخ)."
+          ],
+          "hint": "للاختبارات: `vi.stubGlobal('fetch', mock)` في Vitest أو `vi.spyOn(globalThis, 'fetch')` مع إرجاع `new Response(JSON.stringify(...), { status: 429, headers: { 'Retry-After': '30' } })`. ولو الـAPI مش شغال، استخدم `vite.config.ts` proxy أو mock — بس خلي الاختبار على دالة التحويل نفسها (أنقى وأسرع). وخلي بالك: `Response.json()` بيرجع `Promise<any>` فحوّله لـ`unknown` قبل التحقق.",
+          "solution": "الأخطاء النموذجية: (1) `noUncheckedIndexedAccess` بيكشف إن `items[0]` نوعه `T | undefined` — فكل مكان كنت بتفترض وجود عنصر بيتصلح (وده مطلوب). (2) `exactOptionalPropertyTypes` بيمنع `x: undefined` في حقل اختياري — الحل `delete` أو إعادة تصميم النوع. (3) `erasableSyntaxOnly` بترفض `enum` — استبدلها باتحاد نصوص + كائن `as const` للقيم (أفضل للـtree-shaking). (4) الناس بتنسى إن `fetch` **ما بيرميش** على 404/500 — فالاختبار اللي بيتوقع `throw` على 401 بيفشل لحد ما تضيف فحص `res.ok`. (5) `AbortSignal.any` متاح في المتصفحات الحديثة وNode 20+ — لو مستهدف أقدم، ادمج يدويًا بـcontroller. النتيجة المتوقعة: client ~120 سطرًا، واختباران يعديان، و`typecheck` نضيف.",
+          "resources": [
+            "https://www.typescriptlang.org/docs/handbook/",
+            "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
+            "https://vite.dev/guide/",
+            "https://vitest.dev/guide/",
+            "https://nodejs.org/api/typescript.html"
+          ]
+        },
+        {
+          "id": "s8-m1-l1-t2",
+          "title": "مهمة 2: event loop و«الفخوخ» بتجارب قابلة للتشغيل",
+          "md": "اكتب 6 تجارب صغيرة (كل واحدة ملف أو اختبار) تثبت السلوك اللي اتعلمته: ترتيب microtask/macrotask · تعديل `sort()` للأصل · أخطاء المال العائمة · floating promise وunhandledRejection · `this` في دالة عادية مقابل arrow · إغلاق (closure) داخل دورة. لكل تجربة: توقع مكتوب أولًا، ثم المخرج الفعلي، ثم سطر يشرح الفرق عن C#.",
+          "criteria": [
+            "6 تجارب، كل واحدة بـ**توقع قبل التشغيل** ومخرج فعلي محفوظ.",
+            "تجربة الترتيب بتثبت إن microtasks بتتنفذ كلها قبل أول macrotask (حتى مع `setTimeout(…, 0)`).",
+            "تجربة `sort()` بتثبت تعديل الأصل + إن الترتيب بلا مقارنة كنصّي (`[10, 9, 1]` → `[1, 10, 9]`).",
+            "تجربة المال بتثبت `0.1 + 0.2 !== 0.3` وتعرض الحل (نص/أصغر وحدة) بأمر حسابي صحيح.",
+            "تجربة floating promise بتظهر `unhandledRejection` (في Node: `process.on('unhandledRejection', …)`) وتوضح كيف يمنعه `await`/`.catch()`.",
+            "تجربة `this` بتقارن دالة عادية (تفقد السياق) بـarrow (تحتفظ به) في حالة واقعية (event handler أو method).",
+            "تجربة closure بتفرّق `var` و`let` داخل دورة، وتشرح لماذا `let` يعطي قيمة لكل دورة.",
+            "لكل تجربة سطر «مقابل هذا في C#: …» — ولو لا يوجد مقابل مباشر، اكتب ذلك صراحة.",
+            "خلاصة نصف صفحة: أي الفخوخ تتوقع أن يقع فيه زميلك في الفريق، وما القاعدة/الأداة التي تمنعه (ESLint rule / إعداد tsconfig)."
+          ],
+          "hint": "نفّذ التجارب في Node مباشرة (`node exp1.ts` — type stripping مستقر في Node 24.12+) أو في المتصفح بـconsole. ولـunhandledRejection في Node: `process.on('unhandledRejection', (r) => console.log('UNHANDLED', r))` قبل التجربة. ولإثبات إن `sort` كنصّي: `[10, 9, 1].sort()` — الناتج `[1, 10, 9]` لأن المقارنة الافتراضية بتحوّل لـstring.",
+          "solution": "المخرجات النموذجية: تجربة الترتيب بتدي `1 2 3 4`. تجربة الـsort بتدي `[1, 10, 9]` والمصفوفة الأصلية اتغيرت. تجربة المال بتدي `0.30000000000000004`. تجربة floating promise بتطبع `UNHANDLED` بعد نهاية الكود المتزامن (مش في اللحظة) — ودي أهم ملاحظة: **الخطأ بيتأخر** فبيبقى صعب الربط بالسبب. تجربة `this`: دالة عادية كـcallback بتدي `undefined` (في strict mode) أو الكائن العام، وarrow بتدي الكائن المتوقع. تجربة closure بـ`var`: ثلاث نسخ بتطبع نفس القيمة (3)، وبـ`let`: 0,1,2. الخلاصة العملية: أغلب الفخوخ دي بيمنعها ESLint (`eqeqeq` · `no-floating-promises` · `prefer-const`) + `strict` في tsconfig — فالاستثمار الحقيقي مش في الحفظ بل في ضبط الأدوات مرة واحدة.",
+          "resources": [
+            "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Event_loop",
+            "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/sort",
+            "https://nodejs.org/api/process.html",
+            "https://typescript-eslint.io/rules/",
+            "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Closures"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "MDN: JavaScript",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript"
+        },
+        {
+          "label": "MDN: Event loop",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Event_loop"
+        },
+        {
+          "label": "TypeScript Handbook",
+          "url": "https://www.typescriptlang.org/docs/handbook/"
+        },
+        {
+          "label": "Node.js: تشغيل TypeScript",
+          "url": "https://nodejs.org/api/typescript.html"
+        },
+        {
+          "label": "Vite: الدليل",
+          "url": "https://vite.dev/guide/"
+        },
+        {
+          "label": "ESLint + typescript-eslint",
+          "url": "https://typescript-eslint.io/"
+        },
+        {
+          "label": "Vitest",
+          "url": "https://vitest.dev/"
+        },
+        {
+          "label": "MDN: AbortSignal",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal"
+        }
+      ]
+    }
+  ]
+}

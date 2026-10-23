@@ -1,0 +1,330 @@
+{
+  "id": "s5-m2-l5",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nفي الأنظمة الموزعة، **التكرار هو القاعدة مش الاستثناء**: العميل بيعيد المحاولة بعد timeout،\nالـgateway بيعيد المحاولة، الوسيط بيعيد التسليم (at-least-once)، الـsaga بيعوّض ويعيد،\nوأسوأ حالة: **مش عارف هل العملية تمت ولا لأ** (النداء انقطع بعد التنفيذ وقبل الرد).\n\nالحل الوحيد العملي: خلّي العمليات **idempotent** — تنفيذها مرة أو عشر مرات له نفس الأثر.\nالدرس ده بيغطي المستويين: **idempotency طبيعية** في المنطق (الأفضل والأرخص)،\nو**مفاتيح idempotency** للعمليات اللي مستحيل تكون طبيعية (خصم مبلغ، إنشاء كيان).\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Idempotent Operation",
+          "def": "عملية تنفيذها N مرة له نفس أثر تنفيذها مرة واحدة. `PUT /orders/1 {status:'cancelled'}` idempotent؛ `POST /orders` لأ."
+        },
+        {
+          "term": "Idempotency-Key",
+          "def": "معرّف يولّده **العميل** لكل عملية منطقية، والخادم يخزنه مع النتيجة — التكرار يرجع نفس الاستجابة بلا تنفيذ."
+        },
+        {
+          "term": "Request Fingerprint (hash)",
+          "def": "بصمة جسم الطلب المخزنة مع المفتاح: لو نفس المفتاح وصل بجسم مختلف → 409 (استخدام خاطئ للمفتاح)."
+        },
+        {
+          "term": "Dedup Window",
+          "def": "المدة اللي بنحتفظ فيها بالمفاتيح. لازم تغطي أقصى فترة إعادة تسليم/محاولة (وإلا التكرار المتأخر ينفذ تاني)."
+        },
+        {
+          "term": "Natural Idempotency",
+          "def": "العملية نفسها لا تتأثر بالتكرار (upsert، تحديث شرطي، انتقال حالة مرفوض لو تم) — ★ الأفضل: بلا جداول إضافية."
+        },
+        {
+          "term": "Conditional Update",
+          "def": "`UPDATE … WHERE version = @v` أو `WHERE status = 'placed'` → التكرار يؤثر في 0 صفوف (يمكن اكتشافه)."
+        },
+        {
+          "term": "Inbox Pattern",
+          "def": "جدول عند المستهلك يسجل معرّفات الرسائل المعالَجة — إلغاء تكرار على مستوى الرسائل (درس 4.2.3)."
+        },
+        {
+          "term": "In-Flight Request",
+          "def": "مفتاح مُسجَّل لكن العملية لسه بتتنفذ → التكرار المتزامن لازم ينتظر أو ياخد 409 (لا تنفيذ موازٍ)."
+        },
+        {
+          "term": "Poison Retry",
+          "def": "إعادة محاولة عملية نجحت فعلًا لأن الرد ضاع — سبب أشهر مشاكل الدفع والمخزون."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) الدلالات: أنهي عملية idempotent بطبيعتها؟"
+    },
+    {
+      "type": "table",
+      "head": [
+        "العملية",
+        "idempotent؟",
+        "السبب / إزاي تخليها"
+      ],
+      "rows": [
+        [
+          "`GET`",
+          "✓",
+          "قراءة بلا أثر"
+        ],
+        [
+          "`PUT /orders/{id}` (المورد كامل)",
+          "✓",
+          "استبدال الحالة — التكرار يوصل لنفس النتيجة"
+        ],
+        [
+          "`DELETE /orders/{id}`",
+          "✓ (دلاليًا)",
+          "الحالة النهائية واحدة؛ لكن ارجع 404 أو 204 consistently (وثّق الاختيار)"
+        ],
+        [
+          "`PATCH` (تعديل جزئي ثابت)",
+          "✓",
+          "`{status:'cancelled'}` نعم · `{quantity: '+1'}` ✗ (تراكمي!)"
+        ],
+        [
+          "`POST /orders` (إنشاء)",
+          "✗",
+          "يحتاج idempotency key أو مفتاح عمل فريد (مثل `reference`)"
+        ],
+        [
+          "خصم مبلغ / تحصيل",
+          "✗",
+          "idempotency key + البوابة غالبًا بتدعمها (Stripe: `Idempotency-Key`)"
+        ],
+        [
+          "نقص مخزون بكمية",
+          "✗ (تراكمي)",
+          "اجعله مطلقًا (`SET stock = 8 WHERE stock = 10`) أو بمعرّف عملية"
+        ],
+        [
+          "إرسال إيميل/إشعار",
+          "✗",
+          "معرّف رسالة فريد + جدول تسليم (أو قبول التكرار كـ«أثر جانبي مقبول»)"
+        ],
+        [
+          "نشر حدث",
+          "△",
+          "الحدث نفسه يتكرر — المستهلك لازم يكون idempotent"
+        ],
+        [
+          "`UPDATE … SET status='cancelled' WHERE id=@id`",
+          "✓",
+          "تحديث مطلق (مش `status = status + 1`)"
+        ],
+        [
+          "`INSERT … ON CONFLICT DO NOTHING`",
+          "✓",
+          "upsert بمفتاح فريد — ★ الأنسب للمستهلكين"
+        ],
+        [
+          "زيادة عدّاد (`+1`)",
+          "✗",
+          "استخدم مفتاح حدث: `INSERT … ON CONFLICT DO NOTHING` ثم عدّ"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "القاعدة الأولى: ابحث عن idempotency طبيعية قبل ما تبني جدول مفاتيح",
+      "md": "\n**3 أسئلة تحسم أغلب الحالات:**\n1. هل الأثر **مطلق** ولا **تراكمي**؟ (`SET total = 100` مقابل `total = total + 100`) — المطلق idempotent.\n2. هل فيه **قيد فريد طبيعي** يمكن الاعتماد عليه؟ (`OrderId` في جدول الشحنات، `InvoiceNumber`، `(TenantId, Email)`) —\n   `ON CONFLICT DO NOTHING` بيحل التكرار في عبارة واحدة.\n3. هل **انتقال الحالة** مرفوض لو تم؟ (`Cancel()` على طلب ملغى = لا أثر) — ده idempotency من الـDomain (درس 4.2.1).\n\nلو الإجابة «نعم» لأي واحدة → استخدمها. جدول المفاتيح حل للعمليات اللي **مالهاش مفتاح طبيعي** (مدفوعات، إنشاء موارد).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) idempotency طبيعية بكود"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Shipping/IdempotentOperations.cs",
+      "title": "3 طرق عملية (بلا جدول مفاتيح)",
+      "code": "\n// ═══ ① قيد فريد + upsert (الأبسط والأقوى) ═══\npublic sealed class ShipmentScheduler(ShippingDbContext db)\n{\n    public async Task<Guid> ScheduleAsync(Guid orderId, Address address, CancellationToken ct)\n    {\n        // ★ التكرار مستحيل بنيويًا: (order_id) فريد في جدول الشحنات\n        // (Shipment كيان بسيط: Id/OrderId/Address/Status — من درس 4.2.1)\n        var shipment = Shipment.Schedule(orderId, address);\n\n        await db.Database.ExecuteSqlInterpolatedAsync($\"\"\"\n            INSERT INTO shipping.shipments (id, order_id, address_json, status, created_at)\n            VALUES ({shipment.Id}, {orderId}, {JsonSerializer.Serialize(address)}::jsonb, 'Scheduled', now())\n            ON CONFLICT (order_id) DO NOTHING\n            \"\"\", ct);\n\n        // ✓ ارجع المعرّف الفعلي (الموجود أو الجديد) — لا تفترض إن INSERT نجح\n        var existingId = await db.Shipments.Where(s => s.OrderId == orderId)\n                                           .Select(s => s.Id).FirstOrDefaultAsync(ct);\n        return existingId;\n    }\n}\n\n// ═══ ② تحديث شرطي (conditional update) — يكتشف التكرار بعدد الصفوف ═══\npublic sealed class StockService(CatalogDbContext db)\n{\n    /// <summary>خصم **مطلق** بشرط الحالة — التكرار يؤثر في 0 صفوف.</summary>\n    public async Task<bool> DeductAsync(Guid productId, int fromQuantity, int toQuantity, CancellationToken ct)\n    {\n        var affected = await db.Database.ExecuteSqlInterpolatedAsync($\"\"\"\n            UPDATE catalog.stock\n            SET quantity = {toQuantity}, updated_at = now()\n            WHERE product_id = {productId} AND quantity = {fromQuantity}\n            \"\"\", ct);\n\n        return affected == 1;      // ✓ 0 = حد تاني سبقك أو العملية تمت فعلًا (تحقق من الحالة)\n    }\n\n    /// <summary>إلغاء حجز بمعرّف الحجز (idempotent: إلغاء غير الموجود = نجاح).</summary>\n    public async Task ReleaseAsync(Guid reservationId, CancellationToken ct)\n    {\n        var affected = await db.Database.ExecuteSqlInterpolatedAsync($\"\"\"\n            UPDATE catalog.reservations SET status = 'Released', released_at = now()\n            WHERE id = {reservationId} AND status = 'Held'\n            \"\"\", ct);\n\n        if (affected == 0)\n            Log.Debug(\"reservation {ReservationId} already released — idempotent no-op\", reservationId);\n    }\n}\n\n// ═══ ③ حارس انتقال الحالة في الـDomain (درس 4.2.1) ═══\npublic partial class Order\n{\n    public void Cancel(string reason, IClock clock)\n    {\n        if (Status == OrderStatus.Cancelled) return;         // ✓ تكرار = لا أثر (بدل استثناء)\n        if (Status is OrderStatus.Shipped or OrderStatus.Delivered)\n            throw new OrderCannotBeCancelledException(Id, Status);\n        // … باقي المنطق\n    }\n}\n\n// ═══ ④ إلغاء تكرار الرسائل في Redis (للمستهلكين بلا جدول inbox) ═══\n// requires: using StackExchange.Redis;\npublic sealed class RedisDeduplicator(IConnectionMultiplexer mux)\n{\n    /// <summary>\n    /// SET NX EX: ذرّي — يرجع true لأول مرة فقط خلال نافذة إلغاء التكرار.\n    /// ★ النافذة لازم تغطي أقصى فترة إعادة تسليم (وإلا تكرار متأخر ينفذ).\n    /// </summary>\n    public Task<bool> TryClaimAsync(string messageId, TimeSpan window) =>\n        mux.GetDatabase().StringSetAsync($\"dedup:{messageId}\", \"1\", window, When.NotExists);\n\n    public Task ReleaseAsync(string messageId) =>\n        mux.GetDatabase().KeyDeleteAsync($\"dedup:{messageId}\");\n}\n\n// ── الاستخدام في مستهلك MassTransit ──\npublic sealed class OrderPlacedConsumer(RedisDeduplicator dedup, ILogger<OrderPlacedConsumer> log)\n    : IConsumer<OrderPlaced>\n{\n    public async Task Consume(ConsumeContext<OrderPlaced> context)\n    {\n        var messageId = context.MessageId?.ToString() ?? context.Message.OrderId.ToString();\n        var ct = context.CancellationToken;\n\n        if (!await dedup.TryClaimAsync(messageId, TimeSpan.FromHours(24)))\n        {\n            log.LogInformation(\"duplicate {MessageId} — acked without processing\", messageId);\n            return;                                          // ✓ ack بلا أثر\n        }\n\n        try\n        {\n            await HandleAsync(context.Message, ct);\n        }\n        catch\n        {\n            // ⚠ حرّر المفتاح بعد الفشل — وإلا إعادة التسليم لن تعالج الرسالة أبدًا\n            await dedup.ReleaseAsync(messageId);\n            throw;\n        }\n    }\n\n    private Task HandleAsync(OrderPlaced message, CancellationToken ct) => Task.CompletedTask;   // منطقك\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) مفاتيح idempotency (للعمليات اللي ملهاش مفتاح طبيعي)"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "db/030_idempotency_keys.sql",
+      "title": "الجدول والقيود",
+      "code": "\nCREATE TABLE IF NOT EXISTS orders.idempotency_keys (\n    idempotency_key text        NOT NULL,\n    tenant_id       uuid        NOT NULL,           -- ★ عزل المستأجرين (مفتاح واحد من مستأجرين مختلفين!)\n    endpoint        text        NOT NULL,           -- يمنع استخدام نفس المفتاح على مسار مختلف\n    request_hash    text        NOT NULL,           -- بصمة الجسم (كشف إعادة استخدام المفتاح بجسم مختلف)\n    status          text        NOT NULL DEFAULT 'in_progress',   -- in_progress | completed | failed\n    status_code     int         NULL,\n    response_body   jsonb       NULL,\n    created_at      timestamptz NOT NULL DEFAULT now(),\n    completed_at    timestamptz NULL,\n    expires_at      timestamptz NOT NULL,           -- ★ نافذة إلغاء التكرار\n\n    PRIMARY KEY (tenant_id, endpoint, idempotency_key)\n);\n\n-- التنظيف الدوري\nCREATE INDEX ix_idempotency_expires ON orders.idempotency_keys (expires_at);\n\n-- ⚠ ملاحظات تصميم:\n-- ① المفتاح **يولّده العميل** (UUID) — لو ولّده الخادم، كل إعادة محاولة تاخد مفتاح جديد (بلا فائدة)\n-- ② `expires_at` لازم يغطي أقصى فترة إعادة محاولة (عادة 24 ساعة للمدفوعات)\n-- ③ `request_hash` يمنع: نفس المفتاح بجسم مختلف → 409 (خطأ عميل، مش تكرار)\n-- ④ لا تخزن أسرار/بيانات حساسة في request_hash أو response_body بلا تشفير\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Infrastructure/IdempotencyFilter.cs",
+      "title": "endpoint filter كامل: حجز → تنفيذ → تخزين الرد → إعادة تشغيل",
+      "code": "\npublic static class IdempotencyEndpointFilter\n{\n    private const string HeaderName = \"Idempotency-Key\";\n    private static readonly TimeSpan Window = TimeSpan.FromHours(24);\n\n    /// <summary>\n    /// يُستخدم على المسارات غير idempotent: `.AddEndpointFilter(IdempotencyEndpointFilter.Create())`\n    /// </summary>\n    public static IEndpointFilter Create(string endpointName) => new Filter(endpointName);\n\n    private sealed class Filter(string endpointName) : IEndpointFilter\n    {\n        public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext ctx, EndpointFilterDelegate next)\n        {\n            var http = ctx.HttpContext;\n            var ct = http.RequestAborted;\n            var db = ctx.HttpContext.RequestServices.GetRequiredService<AppDbContext>();\n            var log = ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Filter>>();\n\n            // ① المفتاح اختياري لكن موصى به بشدة — لو مفقود، نفّذ عادي (وسجّل)\n            if (!http.Request.Headers.TryGetValue(HeaderName, out var keyValues) ||\n                string.IsNullOrWhiteSpace(keyValues.FirstOrDefault()))\n            {\n                log.LogDebug(\"no idempotency key for {Endpoint}\", endpointName);\n                return await next(ctx);\n            }\n\n            var key = keyValues.First()!.Trim();\n            if (key.Length is < 8 or > 128)\n                return Results.Problem(statusCode: 400, title: \"InvalidIdempotencyKey\",\n                                       detail: \"طول المفتاح يجب أن يكون بين 8 و128 حرفًا\");\n\n            var tenantId = http.User.FindFirst(\"tenant_id\")?.Value ?? \"anonymous\";\n            var body = await ReadBodyAsync(http.Request, ct);\n            var requestHash = ComputeHash(body);\n\n            // ② هل المفتاح موجود؟\n            var existing = await db.IdempotencyKeys.FirstOrDefaultAsync(\n                k => k.TenantId == tenantId && k.Endpoint == endpointName && k.Key == key, ct);\n\n            if (existing is not null)\n            {\n                // ③ نفس المفتاح بجسم مختلف → استخدام خاطئ (لا تخمين!)\n                if (existing.RequestHash != requestHash)\n                    return Results.Json(new\n                    {\n                        error = \"idempotency_key_reused_with_different_body\",\n                        detail = \"استخدم مفتاحًا جديدًا لكل عملية منطقية مختلفة\",\n                    }, statusCode: StatusCodes.Status409Conflict);\n\n                // ④ لسه بتتنفذ → طلب متزامن (لا تنفيذ موازٍ)\n                if (existing.Status == \"in_progress\")\n                    return Results.Problem(statusCode: StatusCodes.Status409Conflict,\n                        title: \"RequestInProgress\",\n                        detail: \"الطلب الأصلي لسه بيتنفذ — أعد المحاولة بعد قليل\",\n                        extensions: new Dictionary<string, object?> { [\"retryAfterSeconds\"] = 2 });\n\n                // ⑤ ★ اكتملت قبل كده → أرجع **نفس الاستجابة** بلا تنفيذ\n                if (existing.Status == \"completed\" && existing.ResponseBody is not null)\n                {\n                    log.LogInformation(\"idempotent replay for {Key}\", key);\n                    IdempotencyMetrics.Replays.Add(1, new(\"endpoint\", endpointName));\n\n                    // ✓ نكتب الاستجابة المخزنة حرفيًا — بلا تنفيذ للمنطق\n                    http.Response.StatusCode = existing.StatusCode ?? 200;\n                    http.Response.ContentType ??= \"application/json; charset=utf-8\";\n                    await http.Response.WriteAsync(existing.ResponseBody, ct);\n                    return Results.Empty;\n                }\n\n                // ⑥ فشلت قبل كده → اسمح بإعادة التنفيذ (لا نخزن الفشل للأبد)\n                await db.IdempotencyKeys.Where(k => k.Key == key && k.TenantId == tenantId)\n                                        .ExecuteDeleteAsync(ct);\n            }\n\n            // ⑦ احجز المفتاح **قبل** التنفيذ (قيد فريد يمنع التنفيذ المتوازي)\n            try\n            {\n                db.IdempotencyKeys.Add(new IdempotencyKeyEntity(tenantId, endpointName, key, requestHash,\n                    \"in_progress\", DateTimeOffset.UtcNow + Window));\n                await db.SaveChangesAsync(ct);\n            }\n            catch (DbUpdateException ex) when (IsUniqueViolation(ex))\n            {\n                // ★ طلب متزامن سبقنا → 409 (لا تنفيذ مرتين)\n                return Results.Problem(statusCode: StatusCodes.Status409Conflict,\n                    title: \"ConcurrentDuplicate\", detail: \"طلب مطابق قيد التنفيذ\");\n            }\n\n            // ⑧ نفّذ العملية الفعلية\n            object? result;\n            try\n            {\n                result = await next(ctx);\n            }\n            catch (Exception ex)\n            {\n                await MarkFailedAsync(db, tenantId, endpointName, key, ct);\n                log.LogError(ex, \"idempotent operation failed for {Key}\", key);\n                throw;\n            }\n\n            // ⑨ التقط الاستجابة الفعلية (لأي نوع IHttpResult) ثم خزّنها واكتبها\n            var (statusCode, body) = await CaptureResponseAsync(result, http, ct);\n            await StoreResponseAsync(db, tenantId, endpointName, key, statusCode, body, ct);\n            IdempotencyMetrics.Executions.Add(1, new(\"endpoint\", endpointName));\n\n            http.Response.StatusCode = statusCode;\n            http.Response.ContentType ??= \"application/json; charset=utf-8\";\n            await http.Response.WriteAsync(body, ct);\n            return Results.Empty;\n        }\n\n        private static async Task<string> ReadBodyAsync(HttpRequest request, CancellationToken ct)\n        {\n            request.EnableBuffering();                                  // ✓ عشان نقدر نقرأ ونمرّر\n            using var reader = new StreamReader(request.Body, leaveOpen: true);\n            var body = await reader.ReadToEndAsync(ct);\n            request.Body.Position = 0;\n            return body;\n        }\n\n        private static string ComputeHash(string body) =>\n            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(body)));\n\n        private static bool IsUniqueViolation(DbUpdateException ex) =>\n            ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };\n\n        private static Task MarkFailedAsync(AppDbContext db, string tenant, string endpoint, string key, CancellationToken ct) =>\n            db.IdempotencyKeys.Where(k => k.TenantId == tenant && k.Endpoint == endpoint && k.Key == key)\n              .ExecuteUpdateAsync(s => s.SetProperty(k => k.Status, \"failed\")\n                                        .SetProperty(k => k.CompletedAt, DateTimeOffset.UtcNow), ct);\n\n        /// <summary>\n        /// ★ يشغّل الـIHttpResult داخل buffer لالتقاط **نفس** البايتات وكود الحالة\n        /// اللي كان العميل هيشوفهم — صحيح لكل الأنواع (Ok/Created/NoContent/Json/Problem).\n        /// </summary>\n        private static async Task<(int StatusCode, string Body)> CaptureResponseAsync(\n            object? result, HttpContext http, CancellationToken ct)\n        {\n            if (result is not IHttpResult httpResult)\n                return (StatusCodes.Status200OK, \"{}\");\n\n            var originalBody = http.Response.Body;\n            using var buffer = new MemoryStream();\n            http.Response.Body = buffer;\n            try\n            {\n                await httpResult.ExecuteAsync(http);          // ✓ يكتب في الـbuffer ويضبط StatusCode/ContentType\n            }\n            finally\n            {\n                http.Response.Body = originalBody;\n            }\n\n            return (http.Response.StatusCode, Encoding.UTF8.GetString(buffer.ToArray()));\n        }\n\n        private static Task StoreResponseAsync(AppDbContext db, string tenant, string endpoint, string key,\n                                               int statusCode, string body, CancellationToken ct) =>\n            db.IdempotencyKeys\n              .Where(k => k.TenantId == tenant && k.Endpoint == endpoint && k.Key == key)\n              .ExecuteUpdateAsync(s => s\n                  .SetProperty(k => k.Status, \"completed\")\n                  .SetProperty(k => k.StatusCode, statusCode)\n                  .SetProperty(k => k.ResponseBody, body)\n                  .SetProperty(k => k.CompletedAt, DateTimeOffset.UtcNow), ct);\n    }\n}\n\npublic static class IdempotencyMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Orders.idempotency\", \"1.0.0\");\n    public static readonly Counter<long> Replays = Meter.CreateCounter<long>(\"idempotency.replays\");\n    public static readonly Counter<long> Executions = Meter.CreateCounter<long>(\"idempotency.executions\");\n    public static readonly Counter<long> KeyConflicts = Meter.CreateCounter<long>(\"idempotency.key_conflicts\");\n}\n\n// ── الكيان ──\n// requires: using Microsoft.EntityFrameworkCore; using Npgsql; using System.Security.Cryptography;\n//           using System.Text;\npublic class IdempotencyKeyEntity\n{\n    public IdempotencyKeyEntity(string tenantId, string endpoint, string key, string requestHash,\n                                string status, DateTimeOffset expiresAt)\n    {\n        TenantId = tenantId;\n        Endpoint = endpoint;\n        Key = key;\n        RequestHash = requestHash;\n        Status = status;\n        ExpiresAt = expiresAt;\n        CreatedAt = DateTimeOffset.UtcNow;\n    }\n\n    public string TenantId { get; private set; }\n    public string Endpoint { get; private set; }\n    public string Key { get; private set; }\n    public string RequestHash { get; private set; }\n    public string Status { get; set; }\n    public int? StatusCode { get; set; }\n    public string? ResponseBody { get; set; }\n    public DateTimeOffset CreatedAt { get; private set; }\n    public DateTimeOffset? CompletedAt { get; set; }\n    public DateTimeOffset ExpiresAt { get; private set; }\n}\n\n// وفي DbContext:\n//   public DbSet<IdempotencyKeyEntity> IdempotencyKeys => Set<IdempotencyKeyEntity>();\n//   modelBuilder.Entity<IdempotencyKeyEntity>(b => {\n//       b.ToTable(\"idempotency_keys\", \"orders\");\n//       b.HasKey(k => new { k.TenantId, k.Endpoint, k.Key });          // ✓ مفتاح مركّب\n//       b.Property(k => k.ResponseBody).HasColumnType(\"jsonb\");\n//       b.HasIndex(k => k.ExpiresAt);\n//   });\n\n// ── التنظيف الدوري (درس 2.3.6) ──\npublic sealed class IdempotencyCleanup(IServiceScopeFactory scopes, ILogger<IdempotencyCleanup> log)\n    : BackgroundService\n{\n    protected override async Task ExecuteAsync(CancellationToken ct)\n    {\n        using var timer = new PeriodicTimer(TimeSpan.FromHours(1));\n        while (await timer.WaitForNextTickAsync(ct))\n        {\n            await using var scope = scopes.CreateAsyncScope();\n            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();\n            var deleted = await db.IdempotencyKeys\n                .Where(k => k.ExpiresAt < DateTimeOffset.UtcNow)\n                .ExecuteDeleteAsync(ct);\n            if (deleted > 0) log.LogInformation(\"purged {Count} expired idempotency keys\", deleted);\n        }\n    }\n}\n\n// ── الاستخدام ──\n// app.MapPost(\"/api/payments/capture\", CaptureHandler)\n//    .AddEndpointFilter(IdempotencyEndpointFilter.Create(\"payments.capture\"))\n//    .RequireAuthorization(\"Payments.Write\");\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "7 تفاصيل بتخلي idempotency تشتغل أو تنهار",
+      "md": "\n1. **المفتاح من العميل، لا الخادم** — لو الخادم ولّده، كل إعادة محاولة تاخد مفتاحًا جديدًا (صفر فائدة).\n   وثّق ده في العقد (OpenAPI: header مطلوب/موصى به + مثال).\n2. **نطاق المفتاح = عملية منطقية، مش طلب HTTP** — نفس المفتاح لعمليتين مختلفتين = 409.\n   ولا تعيد استخدام مفتاح بعد نجاح العملية لطلب جديد.\n3. **النافذة (TTL) لازم تغطي أقصى فترة إعادة محاولة** — لو العميل يعيد المحاولة لمدة ساعة وTTL 5 دقائق،\n   التكرار المتأخر هيتنفذ. للمدفوعات: 24 ساعة عادةً.\n4. **لا تخزن الفشل كاستجابة نهائية** — اسمح بإعادة التنفيذ بعد فشل (وإلا خطأ عابر يبقى دائمًا).\n5. **عزل المستأجرين في المفتاح** — `(tenant_id, endpoint, key)` مش `key` لوحده (وإلا تصادم بين مستأجرين).\n6. **التنفيذ المتزامن** — القيد الفريد + 409 (لا تنفيذين متوازيين). `SELECT` ثم `INSERT` بلا قيد = سباق.\n7. **التنظيف** — مهمة دورية تحذف المفاتيح المنتهية (وإلا الجدول بيكبر بلا حدود).\n\n⚠ **idempotency ≠ exactly-once delivery**: التسليم هيتكرر دايمًا؛ الأثر بس اللي بقى مرة واحدة.\nومتخليش idempotency يخفي bug: لو `Replays` مرتفع جدًا، فيه عميل بيعيد المحاولة بشكل مريض — حقق.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) الاختبارات (الحالات اللي بتظهر في الإنتاج)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.Orders.Tests/IdempotencyTests.cs",
+      "title": "5 حالات حرجة",
+      "code": "\npublic class IdempotencyTests(PostgresFixture db) : IClassFixture<PostgresFixture>\n{\n    private static string NewKey() => Guid.NewGuid().ToString(\"N\");\n    private static object Payload(decimal amount = 1000) =>\n        new { order_id = Guid.NewGuid(), amount_minor = amount, currency = \"EGP\" };\n\n    /// <summary>\n    /// ★ HttpClient مفيهوش PostAsync(url, content, HttpRequestMessage) —\n    /// نبني الطلب ونرسله بـSendAsync عشان نضيف الهيدر.\n    /// </summary>\n    private static Task<HttpResponseMessage> PostAsync(HttpClient client, string? key, object body)\n    {\n        var request = new HttpRequestMessage(HttpMethod.Post, \"/api/payments/capture\")\n        {\n            Content = JsonContent.Create(body),\n        };\n        if (key is not null) request.Headers.Add(\"Idempotency-Key\", key);\n        return client.SendAsync(request);\n    }\n\n    // PostgresFixture من درس 5.2.1 (Testcontainers) + مساعدَين للاختبار:\n    //   db.CreateWebApplication()   → WebApplicationFactory مع قاعدة حقيقية\n    //   db.CountChargesAsync()      → عدد التحصيلات الفعلية (الأثر الحقيقي)\n    //   db.FailNextCapture          → يحفّز فشل بوابة الدفع مرة واحدة\n\n    [Fact]\n    public async Task Duplicate_post_executes_once_and_replays_same_response()\n    {\n        await using var app = db.CreateWebApplication();\n        var client = app.CreateClient();\n        var key = NewKey();\n\n        var first = await PostAsync(client, key, Payload());\n        var second = await PostAsync(client, key, Payload());\n        var third = await PostAsync(client, key, Payload());\n\n        first.StatusCode.Should().Be(HttpStatusCode.OK);\n        second.StatusCode.Should().Be(first.StatusCode);\n        third.StatusCode.Should().Be(first.StatusCode);\n\n        var firstBody = await first.Content.ReadAsStringAsync();\n        (await second.Content.ReadAsStringAsync()).Should().Be(firstBody);\n        (await third.Content.ReadAsStringAsync()).Should().Be(firstBody);\n\n        // ★ الأثر الحقيقي: تحصيل واحد فقط\n        (await db.CountChargesAsync()).Should().Be(1);\n    }\n\n    [Fact]\n    public async Task Same_key_with_different_body_is_rejected_409()\n    {\n        await using var app = db.CreateWebApplication();\n        var client = app.CreateClient();\n        var key = NewKey();\n\n        await PostAsync(client, key, Payload(amount: 1000));\n        var second = await PostAsync(client, key, Payload(amount: 5000));\n\n        second.StatusCode.Should().Be(HttpStatusCode.Conflict);\n        (await second.Content.ReadAsStringAsync())\n            .Should().Contain(\"idempotency_key_reused_with_different_body\");\n    }\n\n    [Fact]\n    public async Task Concurrent_duplicates_result_in_single_execution()\n    {\n        await using var app = db.CreateWebApplication();\n        var client = app.CreateClient();\n        var key = NewKey();\n\n        // ★ 5 طلبات متزامنة بنفس المفتاح (سيناريو العميل العصبي / إعادة محاولة الشبكة)\n        var responses = await Task.WhenAll(\n            Enumerable.Range(0, 5).Select(_ => PostAsync(client, key, Payload())));\n\n        responses.Count(r => r.StatusCode == HttpStatusCode.OK).Should().Be(1);\n        responses.Count(r => r.StatusCode == HttpStatusCode.Conflict).Should().Be(4);\n        (await db.CountChargesAsync()).Should().Be(1, \"التنفيذ المتوازي ممنوع بالقيد الفريد\");\n    }\n\n    [Fact]\n    public async Task Failed_operation_can_be_retried_with_same_key()\n    {\n        await using var app = db.CreateWebApplication();\n        var client = app.CreateClient();\n        var key = NewKey();\n        db.FailNextCapture = true;                            // ✓ فشل عابر من البوابة\n\n        var failed = await PostAsync(client, key, Payload());\n        failed.StatusCode.Should().Be(HttpStatusCode.BadGateway);\n\n        // ★ الفشل لا يُخزن كاستجابة نهائية → إعادة التنفيذ مسموحة\n        var retried = await PostAsync(client, key, Payload());\n        retried.StatusCode.Should().Be(HttpStatusCode.OK);\n        (await db.CountChargesAsync()).Should().Be(1);\n    }\n\n    [Fact]\n    public async Task Request_without_key_is_not_protected()\n    {\n        await using var app = db.CreateWebApplication();\n        var client = app.CreateClient();\n\n        await PostAsync(client, key: null, Payload());\n        await PostAsync(client, key: null, Payload());\n\n        (await db.CountChargesAsync()).Should().Be(2, \"بلا مفتاح = بلا حماية (ولهذا نوثّقه في OpenAPI)\");\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "وثّق الـidempotency في العقد (OpenAPI)",
+      "md": "\nidempotency بلا توثيق = عملاء ما يستخدموها. أضف في OpenAPI:\n- **اسم الهيدر** ووصفه («UUID يولّده العميل لكل عملية منطقية»).\n- **هل هو مطلوب أم موصى به**، وماذا يحدث بدونه.\n- **نافذة إلغاء التكرار** (24 ساعة).\n- **الاستجابات**: 200 (أول مرة)، 200 (إعادة تشغيل — نفس الجسم)، 409 (مفتاح مستخدم بجسم مختلف / طلب قيد التنفيذ).\n- **مثال كامل** بـcurl.\n\nوللاستهلاك الداخلي (خدمات تنادي بعضها): مرّر المفتاح تلقائيًا في `HttpClient` handler\n(من `Activity.Current?.Id` أو معرّف العملية) — ولا تعتمد على كل مطور يفتكر.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أفرّق بين idempotency طبيعية (الأفضل) ومفاتيح idempotency (للعمليات بلا مفتاح طبيعي).",
+        "أصمم عمليات مطلقة (لا تراكمية) وأستخدم قيودًا فريدة وتحديثات شرطية لكشف التكرار.",
+        "أنفّذ مفتاح idempotency بحجز قبل التنفيذ + بصمة للجسم + تخزين الاستجابة + عزل مستأجرين + تنظيف.",
+        "أختبر الحالات الخمس: تكرار، جسم مختلف، تزامن، فشل ثم إعادة، وبلا مفتاح — وأوثق السلوك في OpenAPI."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "`PATCH {\"quantity\": \"+1\"}` — idempotent؟",
+          "options": [
+            "نعم (PATCH idempotent)",
+            "لا — التعديل تراكمي: التكرار يزود الكمية كل مرة. اجعله مطلقًا (`{\"quantity\": 5}`) أو بمعرّف عملية",
+            "يعتمد على الخادم",
+            "نعم لو PUT"
+          ],
+          "answer": 1,
+          "explain": "دلالية HTTP بتقول PATCH مش idempotent بطبيعته. الأهم من الدلالية: هل الأثر تراكمي ولا مطلق؟"
+        },
+        {
+          "q": "مين يولّد الـidempotency key؟",
+          "options": [
+            "الخادم",
+            "العميل — لأنه الوحيد اللي يعرف إن الطلبين هما نفس العملية المنطقية (خصوصًا بعد timeout)",
+            "الوسيط",
+            "قاعدة البيانات"
+          ],
+          "answer": 1,
+          "explain": "لو الخادم ولّده، كل إعادة محاولة تاخد مفتاحًا جديدًا والتكرار يتنفذ. القاعدة: العميل يولّد UUID ويعيد استخدامه في الإعادة."
+        },
+        {
+          "q": "نفس المفتاح وصل بجسم مختلف. الرد؟",
+          "options": [
+            "نفّذ الطلب الجديد",
+            "409 مع خطأ واضح — ده استخدام خاطئ للمفتاح، والتنفيذ أو التخمين هيخفي bug عند العميل",
+            "أرجع الاستجابة القديمة",
+            "400"
+          ],
+          "answer": 1,
+          "explain": "البصمة (request_hash) موجودة لكشف ده بالظبط. 409 = تعارض مفهوم وقابل للتصحيح من العميل."
+        },
+        {
+          "q": "العملية فشلت (502 من بوابة الدفع) والمفتاح محفوظ. العميل أعاد بنفس المفتاح — التصرف؟",
+          "options": [
+            "أرجع الـ502 المخزنة",
+            "احذف/تجاهل السجل الفاشل ونفّذ من جديد — الفشل العابر لا يجب أن يصبح دائمًا",
+            "409",
+            "اطلب مفتاحًا جديدًا"
+          ],
+          "answer": 1,
+          "explain": "خزّن الاستجابات **الناجحة** فقط (أو خزّن الفشل بـTTL قصير جدًا). وإلا خطأ شبكة عابر يمنع العملية للأبد."
+        },
+        {
+          "q": "نافذة إلغاء التكرار 5 دقائق والعميل يعيد المحاولة لمدة ساعة. النتيجة؟",
+          "options": [
+            "لا مشكلة",
+            "التكرار المتأخر يُنفَّذ من جديد (المفتاح انتهت صلاحيته) — النافذة لازم تغطي أقصى فترة إعادة محاولة (24h للمدفوعات)",
+            "409",
+            "فشل دائم"
+          ],
+          "answer": 1,
+          "explain": "حدّد النافذة من سلوك عملائك الفعلي (أقصى retry window) + أقصى redelivery في الوسيط، وخد الأكبر."
+        },
+        {
+          "q": "مستهلك رسائل بيخصم مخزون. أحسن طريقة للـidempotency؟",
+          "options": [
+            "جدول مفاتيح في كل مستهلك",
+            "قيد فريد طبيعي (مثل `order_id` في الشحنات) + `ON CONFLICT DO NOTHING`، أو تحديث شرطي — أرخص وأقوى من جدول مفاتيح",
+            "تجاهل (at-least-once مقبول)",
+            "Redis فقط"
+          ],
+          "answer": 1,
+          "explain": "ابدأ دائمًا بالـidempotency الطبيعية. جدول المفاتيح/الـinbox لما مفيش مفتاح عمل فريد (زي العمليات الخارجية)."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "اجعل 5 عمليات idempotent",
+          "md": "جرّد العمليات غير idempotent في مشروعك (إنشاء، خصم، إشعار، نشر) وطبّق لكل واحدة أفضل آلية: طبيعية (قيد فريد/تحديث شرطي/حارس حالة) أو مفتاح idempotency. وثّق الاختيار لكل واحدة.",
+          "criteria": [
+            "جدول بالعمليات (≥ 5) × الآلية المختارة × السبب",
+            "3 عمليات على الأقل بـidempotency طبيعية (بلا جدول مفاتيح)",
+            "اختبار لكل عملية: تنفيذ مرتين → أثر واحد",
+            "لا عمليات تراكمية (`+1`) بلا مفتاح عملية",
+            "الـDomain بيرفض الانتقالات المكررة بلا استثناء (return مبكر) حيث يناسب"
+          ],
+          "hint": "لو عملية إشعار/إيميل: استخدم معرّف رسالة فريد + جدول تسليم بقيد فريد — التكرار يبقى «تم التسليم فعلًا» بدل إرسال مزدوج."
+        },
+        {
+          "id": "t2",
+          "title": "مفتاح idempotency كامل + توثيق",
+          "md": "نفّذ مفتاح idempotency لمسار كتابة حساس (دفع/إنشاء طلب) بالجدول والفلتر الكامل (حجز، بصمة، تخزين الاستجابة، عزل مستأجرين، تنظيف)، ووثّقه في OpenAPI، واختبر الحالات الخمس.",
+          "criteria": [
+            "جدول بـPK `(tenant_id, endpoint, key)` + `request_hash` + `expires_at` + فهرس للتنظيف",
+            "الحجز قبل التنفيذ (قيد فريد) + 409 عند التزامن (اختبار 5 طلبات متزامنة)",
+            "إعادة التشغيل ترجع **نفس** الاستجابة وكود الحالة (اختبار)",
+            "409 عند نفس المفتاح بجسم مختلف (اختبار)",
+            "الفشل لا يُخزن كاستجابة نهائية (اختبار إعادة بعد فشل)",
+            "مهمة تنظيف دورية + مقياس `Replays`/`Executions`/`KeyConflicts` مع إنذار لو Replays مرتفع",
+            "OpenAPI يوثق الهيدر والنافذة والاستجابات مع مثال curl"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Idempotent Receiver pattern",
+          "url": "https://microservices.io/patterns/communication-style/idempotent-receiver.html"
+        },
+        {
+          "label": "The Idempotency-Key HTTP header (IETF draft)",
+          "url": "https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/"
+        },
+        {
+          "label": "HTTP semantics — idempotent methods (RFC 9110)",
+          "url": "https://www.rfc-editor.org/rfc/rfc9110#name-idempotent-methods"
+        },
+        {
+          "label": "Stripe — Idempotent requests",
+          "url": "https://docs.stripe.com/api/idempotent_requests"
+        },
+        {
+          "label": "Designing data-intensive applications (ch. 12)",
+          "url": "https://dataintensive.net/"
+        },
+        {
+          "label": "Minimal APIs — Endpoint filters",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis/endpoint-filters"
+        }
+      ]
+    }
+  ]
+}

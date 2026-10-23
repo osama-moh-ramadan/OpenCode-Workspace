@@ -1,0 +1,364 @@
+{
+  "id": "s3-m3-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\n«حسّيت إنه أسرع» مش قياس. و`Stopwatch` حول كود صغير **بيكذب** بشكل منهجي: JIT بيسخّن، الكود الميت بيتحذف،\nالـGC بيشتغل في وقت عشوائي، والـCPU بيغيّر تردده.\n\nالدرس ده بيعلمك ثلاث أدوات لمستويات مختلفة: **BenchmarkDotNet** لكود محدد، **k6** لسلوك النظام تحت حمل،\nو**dotnet-counters/dotnet-trace/dotnet-dump** لتشخيص الإنتاج — وإزاي تقرأ p95/p99 بدل المتوسط اللي بيخفي كل حاجة.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Micro-benchmark",
+          "def": "قياس وحدة كود صغيرة بمعزل. صحيح فقط بأداة تتحكم في JIT/GC/التسخين (BenchmarkDotNet)."
+        },
+        {
+          "term": "Macro/Load test",
+          "def": "قياس النظام كله تحت حمل حقيقي (k6) — الأقرب لتجربة المستخدم."
+        },
+        {
+          "term": "Profiling",
+          "def": "أخذ عينات من العملية الجارية لمعرفة أين يُستهلك CPU/الذاكرة فعلًا (dotnet-trace)."
+        },
+        {
+          "term": "Dead Code Elimination",
+          "def": "المحرك يحذف حسابًا نتيجته غير مستخدمة → benchmark يقيس صفرًا. الحل: استهلك النتيجة."
+        },
+        {
+          "term": "Tiered Compilation / Dynamic PGO",
+          "def": ".NET بيترجم على مرحلتين ويحسّن بحسب الاستخدام الفعلي — سبب إضافي لعدم الثقة في أول تشغيل."
+        },
+        {
+          "term": "p50 / p95 / p99",
+          "def": "الوسيط والنسب المئوية للزمن. المتوسط بيخفي الذيل؛ p99 هو تجربة أسوأ المستخدمين."
+        },
+        {
+          "term": "Little's Law",
+          "def": "التزامن ≈ الإنتاجية × الزمن. أساس الربط بين VUs وRPS وlatency."
+        },
+        {
+          "term": "Saturation / Knee",
+          "def": "النقطة اللي بعدها زيادة الحمل ترفع الزمن وتنزل الإنتاجية — سعة النظام الحقيقية."
+        },
+        {
+          "term": "Allocation / Gen0",
+          "def": "الذاكرة المخصّصة لكل تشغيل وجمعيات GC الناتجة — مؤشر أداء رئيسي في .NET."
+        },
+        {
+          "term": "Thread Pool Starvation",
+          "def": "كل خيوط الـpool مشغولة بانتظار (sync-over-async) → طابور يطول وزمن يرتفع فجأة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) BenchmarkDotNet: قياس كود بطريقة صحيحة"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الإعداد والتشغيل",
+      "code": "\ndotnet new console -n Shop.Benchmarks && cd Shop.Benchmarks\ndotnet add package BenchmarkDotNet\n\n# ★ Release دائمًا، وبلا debugger، وعلى جهاز هادئ\ndotnet run -c Release -- --filter '*OrderPricing*'\ndotnet run -c Release -- --filter '*' --job short          # دورة سريعة أثناء التطوير\ndotnet run -c Release -- --runtimes net10.0 --exporters json html\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Benchmarks/PricingBenchmarks.cs",
+      "title": "قياس مقارن: قبل/بعد تحسين حقيقي",
+      "code": "\nusing BenchmarkDotNet.Attributes;\nusing BenchmarkDotNet.Configs;\nusing BenchmarkDotNet.Jobs;\n\n[MemoryDiagnoser]                                  // ★ يعرض Gen0/Gen1/Allocated — الأهم في .NET\n[GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByParams)]\n[SimpleJob(RuntimeMoniker.Net10_0, warmupCount: 3, iterationCount: 10)]\npublic class OrderPricingBenchmarks\n{\n    private Order[] _orders = default!;\n\n    [Params(100, 10_000)]                          // أحجام مختلفة: التحسين قد يختلف بحسب الحجم\n    public int Count;\n\n    [GlobalSetup]\n    public void Setup()\n    {\n        _orders = TestData.ManyOrders(Count).ToArray();     // بيانات واقعية وثابتة البذرة\n    }\n\n    [Benchmark(Baseline = true)]                   // ★ الأساس: كل نتيجة تُقاس كنسبة منه\n    public decimal Linq_SumWithAllocation()\n    {\n        // النمط الشائع: مجموعات وسيطة + إغلاق (closure) لكل عميل\n        return _orders\n            .GroupBy(o => o.Customer.Country)\n            .Select(g => new { Country = g.Key, Total = g.Sum(o => o.Total) })\n            .Where(x => x.Total > 1000m)\n            .Sum(x => x.Total);\n    }\n\n    [Benchmark]\n    public decimal SinglePass_Span()\n    {\n        Span<decimal> totals = stackalloc decimal[Countries.Count];   // ✓ بلا تخصيص على الكومة\n        for (var i = 0; i < _orders.Length; i++)\n        {\n            var idx = Countries.IndexOf(_orders[i].Customer.Country);\n            if (idx >= 0) totals[idx] += _orders[i].Total;\n        }\n\n        var result = 0m;\n        foreach (var t in totals) if (t > 1000m) result += t;\n        return result;                               // ★ استهلك النتيجة (منع Dead Code Elimination)\n    }\n\n    [Benchmark]\n    public decimal ForeachWithDictionary()\n    {\n        var map = new Dictionary<string, decimal>(8);\n        foreach (var o in _orders)\n            map[o.Customer.Country] = map.GetValueOrDefault(o.Customer.Country) + o.Total;\n\n        var result = 0m;\n        foreach (var kv in map) if (kv.Value > 1000m) result += kv.Value;\n        return result;\n    }\n}\n\n// مثال مخرجات (اتجاهي — أرقامك هتختلف):\n// | Method                | Count  | Mean      | Ratio | Gen0    | Allocated |\n// |---------------------- |------- |---------- |------ |-------- |---------- |\n// | Linq_SumWithAllocation| 10000  | 412.3 μs  |  1.00 | 38.0859 | 320.5 KB  |\n// | SinglePass_Span       | 10000  |  58.1 μs  |  0.14 |       - |      1 KB |\n// | ForeachWithDictionary | 10000  | 121.7 μs  |  0.30 |  3.9063 |  33.2 KB  |\n//\n// القراءة: Ratio < 1 = أسرع من الأساس؛ Allocated = التخصيص لكل تشغيل (المحرك الحقيقي لـGC).\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "قواعد benchmark لا تُكسر",
+      "md": "\n1. **Release فقط** — Debug بلا تحسينات، والنتائج بلا معنى.\n2. **استهلك النتيجة** (`return` أو حقل) — وإلا JIT يحذف الحساب وتقيس صفرًا.\n3. **بيانات واقعية وثابتة** — بيانات عشوائية لكل تشغيل = تباين لا يُفسَّر.\n4. **لا تقيس I/O كمicro-benchmark** — شبكة/قرص متغيرة؛ استخدم load test أو محاكاة.\n5. **سجّل البيئة** (CPU، RAM، إصدار .NET، OS) — benchmark بلا سياق غير قابل للمقارنة.\n6. **اهتم بـAllocated مثل Mean** — في خدمات عالية الحمل، التخصيص هو سبب الذيل (GC pauses).\n7. **كرر وشوف التباين** — `Error`/`StdDev` عاليين يعني البيئة مش هادية (VM/noisy neighbor).\n8. **لا تحسّن بلا macro** — micro-benchmark على كود مش في المسار الساخن = مضيعة وقت.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) k6: قياس النظام تحت حمل"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "filename": "load/scenarios.js",
+      "title": "4 سيناريوهات: smoke / load / stress / soak",
+      "code": "\nimport http from \"k6/http\";\nimport { check, sleep } from \"k6\";\nimport { Trend, Rate } from \"k6/metrics\";\n\n// مقاييس مخصصة تُظهر في الملخص مع المدمجة\nconst listOrders = new Trend(\"list_orders_duration\", true);\nconst authFailures = new Rate(\"auth_failures\");\n\nexport const options = {\n  scenarios: {\n    // ① smoke: يعمل كل شيء؟ (قبل أي حمل جاد)\n    smoke: { executor: \"per-vu-iterations\", vus: 3, iterations: 5, exec: \"browse\", tags: { phase: \"smoke\" } },\n\n    // ② load: الحمل المتوقع\n    load: {\n      executor: \"ramping-vus\", startVUs: 0, startTime: \"10s\",\n      stages: [\n        { duration: \"1m\", target: 20 },\n        { duration: \"3m\", target: 50 },\n        { duration: \"1m\", target: 0 },\n      ],\n      exec: \"browse\",\n    },\n\n    // ③ stress: أين نقطة الانهيار؟ (نُشغَّل منفصلًا)\n    // stress: { executor: \"ramping-arrival-rate\", startRate: 50,\n    //           stages: [{ duration: \"2m\", target: 200 }, { duration: \"2m\", target: 800 }],\n    //           preAllocatedVUs: 200, maxVUs: 1000, exec: \"browse\" },\n\n    // ④ soak: تسريب ذاكرة/تدهور؟ (ساعات)\n    // soak: { executor: \"constant-vus\", vus: 30, duration: \"2h\", exec: \"browse\" },\n  },\n\n  thresholds: {\n    http_req_failed: [\"rate<0.01\"],                       // أقل من 1% أخطاء\n    http_req_duration: [\"p(95)<300\", \"p(99)<800\"],        // ★ نسب مئوية، لا متوسط\n    list_orders_duration: [\"p(95)<250\"],\n    auth_failures: [\"rate<0.005\"],\n    checks: [\"rate>0.99\"],\n  },\n};\n\nconst BASE = __ENV.BASE_URL ?? \"http://localhost:8123\";\n\nexport function setup() {\n  const res = http.post(`${BASE}/api/auth/login`, JSON.stringify({\n    email: __ENV.EMAIL, password: __ENV.PASSWORD,\n  }), { headers: { \"Content-Type\": \"application/json\" } });\n\n  if (res.status !== 200) throw new Error(`login failed: ${res.status} ${res.body}`);\n  return { token: res.json(\"accessToken\") };\n}\n\nexport function browse(data) {\n  const headers = { Authorization: `Bearer ${data.token}` };\n\n  const list = http.get(`${BASE}/api/orders?size=20`, { headers, tags: { name: \"listOrders\" } });\n  listOrders.add(list.timings.duration);\n  check(list, { \"list 200\": (r) => r.status === 200, \"has items\": (r) => r.json(\"items\").length >= 0 });\n\n  const id = list.status === 200 ? list.json(\"items[0].id\") : null;\n  if (id) {\n    const detail = http.get(`${BASE}/api/orders/${id}`, { headers, tags: { name: \"getOrder\" } });\n    check(detail, { \"detail 200\": (r) => r.status === 200 });\n  }\n\n  sleep(1);                                               // ★ فكّر كمستخدم، لا كآلة ضغط\n}\n\n// ملخص قابل للحفظ والمقارنة (بدل الاعتماد على مخرجات الطرفية)\nexport function handleSummary(data) {\n  return {\n    \"results/summary.json\": JSON.stringify(data, null, 2),\n    stdout: textSummary(data, { indent: \" \", enableColors: true }),\n  };\n}\nfunction textSummary(data, opts) { return JSON.stringify(data.metrics.http_req_duration?.values ?? {}); }\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الرقم",
+        "معناه",
+        "إمتى تقلق"
+      ],
+      "rows": [
+        [
+          "p50 (الوسيط)",
+          "تجربة المستخدم النموذجي",
+          "ارتفاعه = تدهور عام"
+        ],
+        [
+          "p95",
+          "تجربة 5% الأبطأ — غالبًا هدف الـSLA",
+          "ارتفاعه قبل p50 = ذيل يبدأ (GC/قفل/استعلام)"
+        ],
+        [
+          "p99",
+          "أسوأ 1% — يكشف المشاكل المتقطعة",
+          "قفزات = stop-the-world GC، thread starvation، أو lock contention"
+        ],
+        [
+          "`http_req_failed`",
+          "نسبة الأخطاء",
+          "أي ارتفاع تحت الحمل = سعة/خطأ تصميم، مش «حظ»"
+        ],
+        [
+          "RPS (throughput)",
+          "العمليات المنجزة/ثانية",
+          "يتسطح رغم زيادة VUs = نقطة التشبع"
+        ],
+        [
+          "VUs (concurrency)",
+          "المستخدمون المتزامنون",
+          "زيادتها مع ثبات RPS = زمن يرتفع فقط"
+        ],
+        [
+          "`iteration_duration`",
+          "زمن السيناريو كاملًا",
+          "أدق لتجربة المستخدم من زمن طلب واحد"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "اقرأ منحنى السعة (لا رقم واحد)",
+      "md": "\nشغّل `ramping-arrival-rate` من 10 إلى 1000 طلب/ثانية وارسم العلاقة:\n- **منطقة خطية**: RPS يزيد والزمن ثابت تقريبًا → النظام تحت السعة.\n- **الركبة (knee)**: الزمن يبدأ يرتفع أسرع من الحمل → **دي سعة النظام الحقيقية**، خطط عليها.\n- **الانهيار**: RPS ينزل والأخطاء ترتفع → تشبع (اتصالات قاعدة، thread pool، ذاكرة).\n\nالهدف العملي: شغّل الإنتاج عند **60-70% من سعة الركبة** عشان تمتص الذ spikes والنشر المتدرج.\nولا تعمل load test على الإنتاج الحقيقي (استخدم نسخة معزولة ببيانات مشابهة في الحجم).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) التشخيص الحي: counters وtrace وdump"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الأدوات الثلاث",
+      "code": "\ndotnet tool install -g dotnet-counters dotnet-trace dotnet-dump dotnet-gcdump\n\n# ① عدادات حية (أول خطوة دائمًا — أرخص وأسرع إجابة)\ndotnet-counters monitor --process-id <PID> \\\n  --counters System.Runtime,Microsoft.AspNetCore.Hosting,Microsoft.EntityFrameworkCore,Npgsql\n\n# ② تتبع CPU/GC (لما counters تقول «CPU عالي» أو «GC كتير»)\ndotnet-trace collect --process-id <PID> --profile cpu-sampling --duration 00:00:30 --output cpu.nettrace\ndotnet-trace collect --process-id <PID> --profile gc-verbose --duration 00:00:20 --output gc.nettrace\n# افتح الملف في PerfView (Windows) أو حوّله لـspeedscope:\ndotnet-trace convert cpu.nettrace --format Speedscope\n\n# ③ ذاكرة (لما النمو مستمر = تسريب محتمل)\ndotnet-gcdump collect --process-id <PID> --output heap.gcdump\ndotnet-dump collect --process-id <PID> --output core.dump\ndotnet-dump analyze core.dump\n> dumpheap -stat            # أكثر الأنواع استهلاكًا للذاكرة\n> gcroot -all 0x7f...       # من يمسك هذا الكائن (جذر التسريب)\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "العدّاد",
+        "القيمة الصحية",
+        "لو مرتفعة → السبب المرجح"
+      ],
+      "rows": [
+        [
+          "`cpu-usage`",
+          "< 70% تحت الحمل المتوقع",
+          "كود غير كفء، GC مفرط، أو حمل زائد"
+        ],
+        [
+          "`time-in-gc`",
+          "< 5%",
+          "تخصيصات كثيفة → راجع `Allocated` في الـbenchmarks"
+        ],
+        [
+          "`gen-0-gc-count` / `gen-2`",
+          "Gen0 كثيرة مقبول؛ **Gen2 نادرة**",
+          "Gen2 متكررة = كائنات طويلة العمر/تسريب أو LOH"
+        ],
+        [
+          "`gc-heap-size`",
+          "مستقر (نمو ثم انخفاض دوري)",
+          "نمو مستمر بلا انخفاض = تسريب"
+        ],
+        [
+          "`threadpool-thread-count`",
+          "قريب من عدد الأنوية",
+          "ارتفاع مستمر = starvation (blocking/sync-over-async)"
+        ],
+        [
+          "`monitor-lock-contention-count`",
+          "منخفض",
+          "أقفال متنازع عليها → قلّل نطاق القفل أو غيّر التصميم"
+        ],
+        [
+          "`exception-count`",
+          "قريب من صفر",
+          "استثناءات في المسار الساخن (تكلفة + منطق خاطئ)"
+        ],
+        [
+          "ASP.NET `current-requests` / `failed-requests`",
+          "ثابت/منخفض",
+          "تراكم = تشبع في مورد (اتصالات/خيوط)"
+        ],
+        [
+          "EF/`Npgsql` active connections",
+          "أقل من حد الـpool",
+          "الاقتراب من الحد = pool صغير أو معاملات طويلة"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "منهجية التشخيص: من العرض للأداة",
+      "md": "\n| العرض | أول أداة | ما تبحث عنه |\n|---|---|---|\n| زمن مرتفع تحت حمل معين | k6 + `dotnet-counters` | نقطة التشبع، `threadpool-queue-length`، `time-in-gc` |\n| CPU عالي بلا حمل | `dotnet-trace --profile cpu-sampling` | الدوال الأعلى في flame graph (حلقة، regex، تسلسل) |\n| ذاكرة تنمو مع الوقت | `dotnet-counters` ثم `dotnet-gcdump`/`dump` | أنواع مهيمنة + `gcroot` لمعرفة من يمسكها |\n| توقفات دورية قصيرة (p99) | `dotnet-trace --profile gc-verbose` | Gen2 / LOH allocations / pause reasons |\n| استعلام بطيء | `pg_stat_statements` + `EXPLAIN ANALYZE` | (درس الفهارس) |\n| أخطاء متقطعة تحت الحمل | لوجات + metrics بالتوقيت نفسه | timeout، pool exhausted، deadlock، 429 |\n| بطء في الإقلاع فقط | `dotnet-trace` أثناء البدء + Startup probe | migrations، warm cache، JIT (فكّر في R2R/AOT) |\n\nالقاعدة: **عدّادات أولًا** (رخيصة وتحدد الاتجاه)، ثم تتبع/ذاكرة على المسار المحدد.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) إعدادات GC والتجميع (ضبط على مستوى المشروع)"
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "filename": "Shop.Api.csproj",
+      "title": "إعدادات runtime مؤثرة فعلًا",
+      "code": "\n<PropertyGroup>\n  <TargetFramework>net10.0</TargetFramework>\n\n  <!-- Server GC: أكثر خيوط جمع → إنتاجية أعلى للخوادم (على حساب ذاكرة أكبر) -->\n  <ServerGarbageCollection>true</ServerGarbageCollection>\n  <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>\n\n  <!-- DATAS (.NET 9+): يضبط حجم الكومة ديناميًا بحسب الحمل — مفيد للكثافة/الحاويات -->\n  <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>\n\n  <!-- تقليل زمن الإقلاع والذاكرة (ثمن: حجم نشر أكبر) -->\n  <TieredCompilation>true</TieredCompilation>\n  <TieredPGO>true</TieredPGO>\n  <PublishReadyToRun Condition=\"'$(Configuration)' == 'Release'\">true</PublishReadyToRun>\n\n  <!-- في حاويات: احترم حدود الذاكرة/الـCPU (وإلا GC يحسب سعة الجهاز المضيف) -->\n  <InvariantGlobalization>false</InvariantGlobalization>\n</PropertyGroup>\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أخطاء قياس بتضيّع أيام",
+      "md": "\n- **قياس على Debug أو مع debugger موصول** → أرقام بلا معنى.\n- **الاعتماد على المتوسط** → tail latency هو اللي بيكسر تجربة المستخدم والـSLA.\n- **قياس في بيئة مختلفة عن الإنتاج** (جهاز تطوير مقابل حاوية بـ2 vCPU) → الاستنتاجات ما تنتقلش.\n- **تحسين بلا قياس للحالة الأصلية** → ما تعرفش هل التحسن من تغييرك ولا من ظروف التشغيل.\n- **تغيير أكثر من متغير في المرة** → قياس غير قابل للتفسير.\n- **نسيان قاعدة البيانات** → 70% من زمن الاستجابة غالبًا في SQL/الشبكة، والكود مش هو الزجاجة.\n- **load test بلا بيانات بحجم الإنتاج** → حجم الجدول بيغير خطة التنفيذ والسلوك بالكامل.\n- **مقارنة أرقام من أجهزة مختلفة** → قارِن **النسب** (Ratio) على نفس الجهاز، لا القيم المطلقة.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أقيس كودًا حساسًا بـBenchmarkDotNet (Release، نتيجة مستهلَكة، بيانات واقعية، `MemoryDiagnoser`).",
+        "أشغّل اختبار حمل بـk6 بسيناريوهات وthresholds وأقرأ p95/p99 ونقطة التشبع.",
+        "أشخّص بـ`dotnet-counters` أولًا ثم `dotnet-trace`/`dotnet-gcdump` بحسب العرض.",
+        "أضبط إعدادات GC/التجميع عن وعي وأقيس أثرها، ولا أحسّن بلا قياس أساسي."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "benchmark رجّع 0.01 ns لعملية معقدة. السبب الأرجح؟",
+          "options": [
+            "الجهاز سريع",
+            "Dead Code Elimination: النتيجة غير مستهلَكة فحذف JIT الحساب",
+            "BenchmarkDotNet مخطئ",
+            "JIT سخّن الكود"
+          ],
+          "answer": 1,
+          "explain": "الحل: `return` النتيجة أو خزنها في حقل `[ThreadStatic]`. قاعدة ذهبية: أي benchmark بلا استهلاك للنتيجة مش موثوق."
+        },
+        {
+          "q": "p50 = 40ms لكن p99 = 1800ms. إيه التفسير الأرجح؟",
+          "options": [
+            "القياس غلط",
+            "مشكلة ذيل: Gen2 GC، thread pool starvation، lock contention، أو استعلام بطيء في حالات نادرة",
+            "الشبكة بطيئة",
+            "الحمل منخفض"
+          ],
+          "answer": 1,
+          "explain": "ذيل طويل مع وسيط جيد = حدث متقطع. `dotnet-counters` (time-in-gc, thread-count) ثم `dotnet-trace` يحددوه."
+        },
+        {
+          "q": "RPS توقف عند 400 رغم زيادة VUs لـ500 والزمن يرتفع. معنى ده؟",
+          "options": [
+            "k6 محدود",
+            "وصلت نقطة التشبع (السعة ≈ 400 RPS) — حدد المورد المختنق (اتصالات قاعدة/خيوط/CPU)",
+            "الخادم سريع",
+            "البيانات قليلة"
+          ],
+          "answer": 1,
+          "explain": "منحنى السعة: بعد الركبة، زيادة الحمل ترفع الزمن فقط. شخّص المورد المختنق بالـcounters."
+        },
+        {
+          "q": "Gen2 GC كل 30 ثانية في خدمة ويب — إيه أول ما تفحصه؟",
+          "options": [
+            "زيادة الـheap",
+            "تخصيصات كائنات طويلة العمر أو كبيرة (LOH) — مثل تحميل جداول كاملة أو buffers بلا ArrayPool",
+            "تغيير GC لـWorkstation",
+            "إعادة التشغيل الدوري"
+          ],
+          "answer": 1,
+          "explain": "Gen2 = stop-the-world غالبًا. استخدم `dotnet-gcdump`/`gc-verbose` لمعرفة الأنواع والأحجام المسيطرة."
+        },
+        {
+          "q": "تحسين جعل الكود أسرع 3 مرات في الـmicro-benchmark، لكن p95 في k6 ما اتغيرش. الاستنتاج؟",
+          "options": [
+            "k6 غير دقيق",
+            "الكود ليس في المسار الساخن (الزمن في SQL/الشبكة/التسلسل) — ارجع للـprofiling ووزّع الجهد صح",
+            "التحسين وهمي",
+            "يلزم حمل أعلى"
+          ],
+          "answer": 1,
+          "explain": "قانون أمدهل (Amdahl) عمليًا: حسّن ما يستهلك الزمن فعلًا. `dotnet-trace` flame graph يوريك النسب الحقيقية."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "بنشمارك لتحسين حقيقي",
+          "md": "اختار عملية حسابية/معالجة بيانات في مشروعك (تسعير، تجميع، تسلسل) واكتب benchmark يقارن التنفيذ الحالي بتنفيذ محسّن (Span/ArrayPool/single-pass). سجّل الجدول الناتج في ملف الأداء.",
+          "criteria": [
+            "`[MemoryDiagnoser]` مفعّل والجدول يحتوي Mean/Ratio/Gen0/Allocated",
+            "النتيجة مستهلَكة (لا DCE) والبيانات واقعية ببذرة ثابتة",
+            "`[Params]` بحجمين على الأقل (صغير/كبير) والنتائج مفسّرة",
+            "تشغيل في Release على جهاز هادئ، مع تسجيل البيئة (CPU/RAM/إصدار .NET)",
+            "استنتاج: هل التحسين يستحق التعقيد؟ (قرار مكتوب)"
+          ],
+          "hint": "لو النسبة قريبة من 1 رغم تحسين واضح: غالبًا البيانات صغيرة جدًا بحيث التخصيص لا يظهر — جرّب حجمًا أكبر أو شوف عمود Allocated."
+        },
+        {
+          "id": "t2",
+          "title": "اختبار حمل + تقرير تشخيص",
+          "md": "شغّل k6 بسيناريو `ramping-arrival-rate` على مسارين من API عندك حتى نقطة التشبع. في نفس الوقت راقب `dotnet-counters`. اكتب تقريرًا: السعة، p50/p95/p99، معدل الأخطاء، المورد المختنق، وتوصيتين.",
+          "criteria": [
+            "منحنى/جدول يوضح نقطة الركبة (سعة RPS)",
+            "thresholds معرّفة وممررة أو فشل موثق بسببه",
+            "لقطات من `dotnet-counters` (CPU، time-in-gc، threadpool-queue، connections) أثناء الحمل",
+            "تحديد المورد المختنق بدليل (مش تخمين)",
+            "توصيتان قابلتان للتنفيذ مع الأثر المتوقع"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "BenchmarkDotNet",
+          "url": "https://benchmarkdotnet.org/"
+        },
+        {
+          "label": "k6 documentation",
+          "url": "https://grafana.com/docs/k6/"
+        },
+        {
+          "label": ".NET diagnostics tools (counters/trace/dump)",
+          "url": "https://learn.microsoft.com/dotnet/core/diagnostics/"
+        },
+        {
+          "label": "Runtime metrics — System.Runtime counters",
+          "url": "https://learn.microsoft.com/dotnet/core/diagnostics/available-counters"
+        },
+        {
+          "label": "Garbage collection & DATAS",
+          "url": "https://learn.microsoft.com/dotnet/core/runtime-config/garbage-collector"
+        },
+        {
+          "label": "ASP.NET Core metrics",
+          "url": "https://learn.microsoft.com/aspnet/core/log-mon/metrics/metrics"
+        }
+      ]
+    }
+  ]
+}

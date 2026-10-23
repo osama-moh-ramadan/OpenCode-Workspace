@@ -1,0 +1,485 @@
+{
+  "id": "s6-m3-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "لو البنية التحتية اتعملت بالنقر في الـPortal، فإنت مش عندك بنية — عندك **حالة غير موثقة**. في الدرس ده: البنية ككود بـ**Bicep** (لغة Microsoft، بلا ملف حالة، دعم day-0 للموارد الجديدة) و**Terraform** (ملف حالة + lock + drift + multi-cloud). هتكتب نفس النظام (resource group · Container Apps env · PostgreSQL · Key Vault · Log Analytics) بالأداتين، وتفهم الفرق الجوهري: **ARM هو مصدر الحقيقة مقابل state file انت مسؤول عنه** — وإيه معنى `what-if` و`plan` وحدودهم، و**deployment stacks** اللي بتحذف الموارد اللي بطلت تصرّح بيها."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "IaC",
+          "def": "البنية كمصدر يُراجع ويُختبر ويُراجع تاريخه: نفس مبادئ الكود (PRs · اختبارات · إصدارات)."
+        },
+        {
+          "term": "Bicep",
+          "def": "لغة DSL بتُترجم إلى ARM templates. **بلا ملف حالة**: Azure Resource Manager بيقارن القالب بالواقع وقت النشر. دعم فوري (day-0) لأي مورد جديد."
+        },
+        {
+          "term": "ARM",
+          "def": "طبقة إدارة الموارد في Azure: كل عملية إنشاء/تعديل بتعدي عليها، وهي مصدر الحقيقة اللي Bicep بيعتمد عليها."
+        },
+        {
+          "term": "`targetScope`",
+          "def": "نطاق النشر في Bicep: `resourceGroup` (الأشهر) · `subscription` · `managementGroup` · `tenant`. لازم يُصرَّح به صراحةً."
+        },
+        {
+          "term": "`.bicepparam`",
+          "def": "ملف قيم المعاملات لكل بيئة (dev/prod) — بديل `parameters.json` وأسهل قراءةً."
+        },
+        {
+          "term": "`what-if`",
+          "def": "معاينة التغييرات قبل النشر: `+ Create` · `- Delete` · `~ Modify` · `= NoChange` · `* Deploy` · `Ignore`. مكافئ `terraform plan` — **بحدود** (أدناه)."
+        },
+        {
+          "term": "Deployment stack",
+          "def": "ميزة ARM بتجمّع الموارد اللي أنشأها نشر معًا وتدعم `--action-on-unmanage detach|delete`: يعني **حذف الموارد اللي بطلت تصرّح بيها** — بلا stacks الموارد بتتراكم (orphans)."
+        },
+        {
+          "term": "State file (Terraform)",
+          "def": "ملف `terraform.tfstate` بيسجل ما أنشأته الأداة وربطه بالواقع. **حساس** (قد يحتوي قيمًا سرية نصًا) ولا يُرفع لـGit أبدًا؛ يُخزَّن في backend (Azure Storage) مع **قفل**."
+        },
+        {
+          "term": "Drift",
+          "def": "فرق بين الكود والواقع (حد عدّل من الـPortal). Terraform بيكشفه في `plan`؛ Bicep بيكشفه في `what-if` (بحدود)."
+        },
+        {
+          "term": "Azure Verified Modules (AVM)",
+          "def": "وحدات Microsoft مُختبَرة لكل من Bicep وTerraform، منشورة في سجل عام: `br/public:avm/res/<provider>/<type>:<version>`."
+        },
+        {
+          "term": "السجل الخاص (Bicep)",
+          "def": "وحدات منشورة في **ACR** كـOCI artifacts: `br:myacr.azurecr.io/bicep/modules/storage:1.2.0`. النطاقات المسموحة: `*.azurecr.io` · `mcr.microsoft.com` · `ghcr.io`."
+        },
+        {
+          "term": "`@secure()` و`getSecret()`",
+          "def": "في Bicep: معامل سري لا يظهر في السجلات، وقراءة سر من Key Vault **كمرجع** وقت النشر (لا قيمة مكتوبة في الملف)."
+        },
+        {
+          "term": "OpenTofu",
+          "def": "فرع من Terraform بترخيص MPL متوافق معه — خيار لو الترخيص مشكلة عندك."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① Bicep مقابل Terraform: قرار 2026"
+    },
+    {
+      "type": "table",
+      "caption": "الاتنين بيشتغلوا مع OIDC وCI/CD — الفرق في نموذج الحالة والنطاق",
+      "head": [
+        "المعيار",
+        "Bicep",
+        "Terraform (azurerm 4.x)"
+      ],
+      "rows": [
+        [
+          "المصدر للحقيقة",
+          "**ARM نفسه** (بلا ملف حالة)",
+          "**state file** مخزّن في backend + قفل"
+        ],
+        [
+          "المسؤولية التشغيلية",
+          "أقل: مفيش backend ولا قفل ولا جراحة حالة",
+          "أكثر: backend + قفل + `state mv/rm/import` عند اللزوم"
+        ],
+        [
+          "دعم مورد جديد",
+          "**day-0** (مباشرة من ARM API)",
+          "ينتظر تحديث الـprovider (أو استخدم `azapi`)"
+        ],
+        [
+          "كشف الانحراف والحذف",
+          "`what-if` + **deployment stacks** للحذف عند إلغاء التصريح",
+          "`plan` بيكشف الانحراف **وبيحذف** الموارد المزالة من الكود (سلوك أساسي)"
+        ],
+        [
+          "النطاقات",
+          "4 نطاقات أصلية في ملف واحد (`targetScope`)",
+          "يحتاج provider blocks وإسناد أدوار لكل نطاق"
+        ],
+        [
+          "multi-cloud / مزودون خارجيون",
+          "Azure فقط (+ امتداد Microsoft Graph)",
+          "**أي مزود**: AWS/GCP/Cloudflare/GitHub/… (أكبر سجل وحدات)"
+        ],
+        [
+          "الوحدات",
+          "AVM (عام في MCR) + سجل خاص في ACR",
+          "AVM + Terraform Registry (أكبر بكتير)"
+        ],
+        [
+          "المعاينة قبل التطبيق",
+          "`az deployment group what-if` (فيه noise في بعض الموارد)",
+          "`terraform plan` — والمطبق **نفس الملف** المُراجَع (أدق)"
+        ],
+        [
+          "الأسرار",
+          "`@secure()` + `getSecret()` من Key Vault",
+          "variables حساسة + **state يحتوي قيمًا نصًا** → حماية مشددة"
+        ],
+        [
+          "منحنى التعلم لفريق .NET",
+          "أقرب (لغة Microsoft، تكامل مع az CLI)",
+          "HCL + مفاهيم الحالة والقفل"
+        ],
+        [
+          "الأنسب",
+          "**Azure-only ومشروع جديد** · فرق بتحب البساطة",
+          "**multi-cloud** · تكامل مع SaaS · بنية موجودة بالفعل على Terraform"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "قرار عملي (مش «الأفضل مطلقًا»)",
+      "md": "**Azure فقط ومشروع جديد → Bicep**: بلا backend ولا state ولا قفل، ودعم فوري للموارد الجديدة، وAVM بيغطيلك أغلب الأنماط. **عندك AWS/GCP أو مزودون خارجيون (Cloudflare/GitHub) أو بنية Terraform موجودة → خليك على Terraform**: تكلفة الترحيل أعلى من المكسب. **عندك ARM templates قديمة → `az bicep decompile`** لترقيتها. **الترخيص مشكلة → OpenTofu** (متوافق مع Terraform). والأهم: **اختار أداة واحدة والتزم بيها** — أداتين معًا = مصدرين للحقيقة = انحراف مؤكد."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② Bicep: نفس النظام كاملًا"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "infra/main.bicep",
+      "filename": "infra/main.bicep",
+      "code": "targetScope = 'resourceGroup'          // صرّح بالنطاق دائمًا\n\n// ── معاملات: موثقة ومقيدة ──\n@description('بادئة أسماء الموارد (حروف وأرقام، بلا شرطات في بعض الخدمات)')\n@minLength(3)\n@maxLength(12)\nparam namePrefix string\n\n@description('البيئة')\n@allowed([ 'dev', 'staging', 'prod' ])\nparam environment string = 'dev'\n\n@description('المنطقة — كل الموارد في منطقة واحدة لتقليل latency وegress')\nparam location string = resourceGroup().location\n\n@description('طبقة حوسبة PostgreSQL')\n@allowed([ 'Burstable', 'GeneralPurpose', 'MemoryOptimized' ])\nparam pgTier string = 'Burstable'\n\n@description('هل نفعّل HA (يضاخف الحوسبة تقريبًا — 6.2.4)')\nparam enableHa bool = false\n\n@description('مدة الاحتفاظ بالسجلات بالأيام')\n@minValue(7)\n@maxValue(730)\nparam logRetentionDays int = 30\n\n@description('معرّف كائن Entra ID لمدير قاعدة البيانات (مصادقة Entra بدل كلمة السر)')\nparam pgAdminObjectId string\n\n@secure()\n@description('مفتاح Log Analytics — يُمرَّر كمرجع Key Vault من ملف .bicepparam (getSecret)')\nparam laSharedKey string\n\n// ⚠ أسماء مخرجات وحدات AVM بتختلف بين الإصدارات (workspaceId / uri / resourceId):\n//   راجع README الوحدة المثبتة قبل ما تعتمد على اسم مخرج.\n// ⚠ getSecret() مكانها الموثّق = ملف المعاملات (.bicepparam)، لا القالب نفسه.\n\n// ── مشتقات (لا تكرر الأسماء يدويًا) ──\nvar suffix = '${namePrefix}-${environment}'\nvar commonTags = {\n  project: 'shop'\n  env: environment\n  owner: 'platform'\n  managedBy: 'bicep'                    // يوضح إن التعديل اليدوي = drift\n}\n\n// ── وحدات AVM من السجل العام (ثبّت الإصدار دائمًا) ──\n// تحقق من أحدث إصدار: https://aka.ms/avm أو سجل mcr.microsoft.com/bicep\nmodule logAnalytics 'br/public:avm/res/operational-insights/workspace:0.7.0' = {\n  name: 'logAnalytics'\n  params: {\n    name: 'la-${suffix}'\n    location: location\n    retentionInDays: logRetentionDays\n    tags: commonTags\n  }\n}\n\nmodule keyVault 'br/public:avm/res/key-vault/vault:0.10.1' = {\n  name: 'keyVault'\n  params: {\n    name: 'kv-${suffix}'\n    location: location\n    enableRbacAuthorization: true\n    enablePurgeProtection: true\n    softDeleteRetentionInDays: 90\n    tags: commonTags\n  }\n}\n\n// ── مورد خام (بدون AVM) — لاحظ تصريح API version والتحقق منها ──\n//   az provider show --namespace Microsoft.DBforPostgreSQL \\\n//     --query \"resourceTypes[?resourceType=='flexibleServers'].apiVersions[0]\" -o tsv\nresource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {\n  name: 'pg-${suffix}'\n  location: location\n  sku: pgTier == 'Burstable' ? {\n    name: 'Standard_B1ms'\n    tier: 'Burstable'\n  } : {\n    name: 'Standard_D2ds_v5'\n    tier: 'GeneralPurpose'\n  }\n  properties: {\n    version: '17'                       // تحقق من الإصدارات المدعومة حاليًا\n    storage: {\n      storageSizeGB: environment == 'prod' ? 128 : 32\n      autoGrow: 'Enabled'\n    }\n    backup: {\n      backupRetentionDays: environment == 'prod' ? 30 : 7\n      geoRedundantBackup: enableHa ? 'Enabled' : 'Disabled'\n    }\n    highAvailability: {\n      mode: enableHa ? 'ZoneRedundant' : 'Disabled'\n    }\n    administrators: [                   // مصادقة Entra ID بدل كلمة سر (6.2.3)\n      {\n        administratorType: 'ActiveDirectory'\n        login: 'deploy-mi'\n        sid: pgAdminObjectId\n        tenantId: tenant().tenantId\n      }\n    ]\n  }\n  tags: commonTags\n}\n\nresource containerAppsEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {\n  name: 'env-${suffix}'\n  location: location\n  properties: {\n    appLogsConfiguration: {\n      destination: 'log-analytics'\n      logAnalyticsConfiguration: {\n        customerId: logAnalytics.outputs.workspaceId\n        // سر يُقرأ من Key Vault كمرجع — لا قيمة في الملف:\n        sharedKey: laSharedKey\n      }\n    }\n  }\n  tags: commonTags\n}\n\n// ── موارد مشروطة: private endpoint للإنتاج فقط ──\nresource privateEndpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = if (environment == 'prod') {\n  name: 'pe-pg-${suffix}'\n  location: location\n  properties: {\n    subnet: { id: '/subscriptions/${subscription().subscriptionId}/resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/vnet-shop/subnets/snet-data' }\n    privateLinkServiceConnections: [\n      {\n        name: 'pg-connection'\n        properties: {\n          privateLinkServiceId: postgres.id\n          groupIds: [ 'postgresqlServer' ]\n        }\n      }\n    ]\n  }\n  tags: commonTags\n}\n\n// ── مخرجات: تُستخدم في CI (نشر التطبيق) — لا تُسرِّب قيمًا حساسة ──\noutput containerAppsEnvironmentId string = containerAppsEnv.id\noutput postgresFqdn string = postgres.properties.fqdn\noutput keyVaultUri string = keyVault.outputs.uri\noutput logAnalyticsWorkspaceId string = logAnalytics.outputs.workspaceId\n"
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "title": "infra/prod.bicepparam مقابل dev",
+      "filename": "infra/prod.bicepparam",
+      "code": "using './main.bicep'\n\nparam namePrefix = 'shop'\nparam environment = 'prod'\nparam location = 'westeurope'\nparam pgTier = 'GeneralPurpose'\nparam enableHa = true\nparam logRetentionDays = 90\n\n// قيمة سرية كمرجع Key Vault — getSecret() مكانها هنا (ملف المعاملات):\nparam laSharedKey = keyVault.getSecret('la-shared-key')\nparam pgAdminObjectId = '<OBJECT_ID_OF_DEPLOY_MI>'\n\n// ───────── dev.bicepparam ─────────\n// param environment = 'dev'\n// param pgTier = 'Burstable'\n// param enableHa = false          // لا HA في التطوير (6.2.4)\n// param logRetentionDays = 30     // احتفاظ أقل = أرخص (6.2.5)\n// param laSharedKey = keyVault.getSecret('la-shared-key')\n// param pgAdminObjectId = '<OBJECT_ID>'\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "infra/bicep-ops.sh — بناء · معاينة · نشر · stacks",
+      "filename": "infra/bicep-ops.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\nRG=rg-shop-prod\n\n# ═══ 1) الأدوات والتحليل الثابت ═══\naz bicep version\naz bicep install            # أو az bicep upgrade\n# الـlinter بيشتغل ضمن build (تحذيرات) وفي إضافة VS Code — مفيش أمر lint مستقل:\naz bicep build --file infra/main.bicep           # يولّد ARM JSON + أخطاء/تحذيرات التحليل\naz bicep generate-params --file infra/main.bicep --output-format bicepparam\naz bicep format --file infra/main.bicep          # تنسيق موحّد (زي dotnet format)\naz bicep version                                 # وثبّت الإصدار في CI: az bicep install --version …\n\n# ═══ 2) المعاينة قبل النشر — خطوة إلزامية في الإنتاج ═══\naz deployment group what-if \\\n  --resource-group \"$RG\" \\\n  --template-file infra/main.bicep \\\n  --parameters infra/prod.bicepparam \\\n  --result-format FullResourcePayloads | tee artifacts/whatif.txt\n# الرموز: + Create · - Delete · ~ Modify · = NoChange · * Deploy · Ignore\n# ⚠ Create لمورد موجود = اسم/نوع/نطاق غلط (هينشئ نسخة مكررة) — أصلحه قبل النشر.\n# ⚠ Delete = اقرأه مرتين؛ قد يكون موردًا عليه بيانات.\n\n# ═══ 3) النشر (تزايدى افتراضيًا: لا يحذف ما بطلتَ تصرّح به) ═══\naz deployment group create \\\n  --resource-group \"$RG\" \\\n  --name \"deploy-$(date +%Y%m%d-%H%M)\" \\\n  --template-file infra/main.bicep \\\n  --parameters infra/prod.bicepparam \\\n  --confirm-with-what-if               # يطالبك بتأكيد الفرق قبل التطبيق\n\n# ═══ 4) Deployment stack: إدارة دورة حياة كاملة (حذف غير المُصرَّح به) ═══\naz stack group create \\\n  --name shop-prod-stack \\\n  --resource-group \"$RG\" \\\n  --template-file infra/main.bicep \\\n  --parameters infra/prod.bicepparam \\\n  --action-on-unmanage detach \\\n  --deny-settings-mode denyDelete \\\n  --yes\n# الأعلام أعلاه: detach = اترك المورد غير المُدار؛ delete = احذفه (احذر — جرّبه على dev).\n#   denyDelete = يمنع الحذف اليدوي من الـPortal.\naz stack group list --resource-group \"$RG\" -o table\naz stack group show --name shop-prod-stack --resource-group \"$RG\" -o json | head -n 40\n# ⚠ --action-on-unmanage delete بيحذف موارد فعلًا: جرّبه على dev أولًا، وافهم الفرق.\n\n# ═══ 5) وحدات خاصة في سجل ACR (إعادة استخدام بين المشروعات) ═══\naz bicep publish --file infra/modules/postgres.bicep \\\n  --target br:acrshopprod.azurecr.io/bicep/modules/postgres:v1.2.0\n# bicepconfig.json: عرّف alias للسجل عشان ما تكررش الـFQDN في كل ملف:\n#   { \"moduleAliases\": { \"br\": { \"shop\": { \"registry\": \"acrshopprod.azurecr.io\", \"modulePath\": \"bicep/modules\" } } } }\n# ثم الاستهلاك:  module pg 'br/shop:postgres:v1.2.0' = { … }\n\n# ═══ 6) ترحيل ARM قديم → Bicep ═══\naz bicep decompile --file legacy/template.json\n# ═══ 7) التحقق بعد النشر من الخصائص الأمنية (what-if له نقاط عمياء) ═══\naz postgres flexible-server show -n pg-shop-prod -g \"$RG\" \\\n  --query \"{publicAccess:properties.network.publicNetworkAccess,ha:properties.highAvailability.mode}\" -o json\naz keyvault show -n kv-shop-prod -g \"$RG\" \\\n  --query \"{rbac:properties.enableRbacAuthorization,purge:properties.enablePurgeProtection}\" -o json\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ حدود المعاينة: `what-if` مش `terraform plan`"
+    },
+    {
+      "type": "table",
+      "caption": "نقاط عمياء موثقة — وده سبب خطوة التحقق بعد النشر",
+      "head": [
+        "الحالة",
+        "اللي بيحصل",
+        "التصرف"
+      ],
+      "rows": [
+        [
+          "خصائص ما صرّحتش بها في القالب وقيمتها الافتراضية مضبوطة من الخدمة",
+          "قد تُبلَّغ خطأً كـ**Delete** (noise)",
+          "اقرأ الـdiff على مستوى الخصائص، وأضف الخصائص المهمة صراحةً للقالب"
+        ],
+        [
+          "تعبيرات لا تُقيَّم خارج النشر: `reference()` · `listKeys()` · معاملات `@secure` · `utcNow()`",
+          "**تظهر دائمًا كتغيير** حتى لو مفيش فرق",
+          "توقّعها واستبعدها ذهنيًا من الحكم؛ لا تُلغي النشر بسببها"
+        ],
+        [
+          "تغيير أمني حساس (NSG rules · RBAC · firewall · public access)",
+          "أحيانًا يُبلَّغ كـ**NoChange** رغم إنه بيتغير",
+          "**تحقق بعد النشر** بـ`az resource show` أو بـAzure Policy compliance — لا تعتمد على المعاينة وحدها"
+        ],
+        [
+          "مورد موجود بالفعل واسمه/نوعه مطابق جزئيًا",
+          "يظهر كـ**Create** → نشره ينشئ نسخة مكررة بدل تبنّيه",
+          "أصلح الاسم/النطاق حتى يختفي الـCreate، أو استخدم **import**/stacks للتبني"
+        ],
+        [
+          "حذف مورد من الكود (نشر عادي بلا stacks)",
+          "**لا يُحذف** — يتراكم كمورد يتيم بيتفوتر",
+          "استخدم deployment stacks بـ`--action-on-unmanage` أو احذفه يدويًا ووثّق"
+        ],
+        [
+          "تغيير في Terraform",
+          "`plan` بيكشف الانحراف والحذف، والملف المطبَّق **نفس** المُراجَع",
+          "مرّر ملف الـplan من job المراجعة لـjob التطبيق (`terraform plan -out` ثم `apply plan.tfplan`)"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ Terraform: نفس النظام بنموذج الحالة"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "infra-tf/versions.tf + providers.tf + backend",
+      "filename": "infra-tf/versions.tf",
+      "code": "terraform {\n  required_version = \">= 1.9\"\n\n  required_providers {\n    azurerm = {\n      source  = \"hashicorp/azurerm\"\n      version = \"~> 4.0\"          # ثبّت الخط الرئيسي؛ راجع CHANGELOG قبل 5.x\n    }\n  }\n\n  # الحالة في Azure Storage (لا في Git) + قفل:\n  backend \"azurerm\" {\n    resource_group_name  = \"rg-tfstate\"\n    storage_account_name = \"sttfstateshop\"\n    container_name       = \"tfstate\"\n    key                  = \"shop-prod.tfstate\"\n    use_oidc             = true    # مصادقة بلا secret (نفس فكرة 6.3.1)\n    # client_id / subscription_id / tenant_id تُمرَّر كمتغيرات بيئة في CI:\n    #   ARM_CLIENT_ID · ARM_SUBSCRIPTION_ID · ARM_TENANT_ID · ARM_USE_OIDC=true\n  }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "infra-tf/main.tf",
+      "filename": "infra-tf/main.tf",
+      "code": "provider \"azurerm\" {\n  features {\n    resource_group { prevent_deletion_if_contains_resources = true }   # حماية من حذف غير مقصود\n    key_vault      { purge_soft_delete_on_destroy = false }            # لا تمسح soft-deleted\n  }\n  subscription_id = var.subscription_id\n  tenant_id       = var.tenant_id\n  client_id       = var.client_id\n  use_oidc        = true\n}\n\nlocals {\n  suffix = \"${var.name_prefix}-${var.environment}\"\n  tags = {\n    project   = \"shop\"\n    env       = var.environment\n    managedBy = \"terraform\"\n  }\n}\n\nresource \"azurerm_resource_group\" \"this\" {\n  name     = \"rg-shop-${var.environment}\"\n  location = var.location\n  tags     = local.tags\n}\n\nresource \"azurerm_log_analytics_workspace\" \"this\" {\n  name                = \"la-${local.suffix}\"\n  location            = azurerm_resource_group.this.location\n  resource_group_name = azurerm_resource_group.this.name\n  sku                 = \"PerGB2018\"\n  retention_in_days   = var.log_retention_days      # 30 للتطوير، 90 للإنتاج (6.2.5)\n  tags                = local.tags\n}\n\nresource \"azurerm_key_vault\" \"this\" {\n  name                       = \"kv-${local.suffix}\"\n  location                   = azurerm_resource_group.this.location\n  resource_group_name        = azurerm_resource_group.this.name\n  tenant_id                  = var.tenant_id\n  sku_name                   = \"standard\"\n  enable_rbac_authorization  = true\n  purge_protection_enabled   = true\n  soft_delete_retention_days = 90\n  tags                       = local.tags\n}\n\n# PostgreSQL Flexible Server — طبقة Burstable للتطوير (6.2.4):\nresource \"azurerm_postgresql_flexible_server\" \"this\" {\n  name                   = \"pg-${local.suffix}\"\n  resource_group_name    = azurerm_resource_group.this.name\n  location               = azurerm_resource_group.this.location\n  sku_name               = var.pg_sku            # \"Standard_B1ms\" أو \"Standard_D2ds_v5\"\n  version                = \"17\"\n  backup_retention_days  = var.environment == \"prod\" ? 30 : 7\n  storage_mb             = var.environment == \"prod\" ? 131072 : 32768\n  zone_redundant_ha_enabled = var.enable_ha      # يضاعف الحوسبة تقريبًا\n\n  # مصادقة Entra ID بدل كلمة سر (6.2.3):\n  authentication {\n    active_directory_auth_enabled = true\n    password_auth_enabled         = false\n  }\n\n  tags = local.tags\n}\n\nresource \"azurerm_container_app_environment\" \"this\" {\n  name                       = \"env-${local.suffix}\"\n  resource_group_name        = azurerm_resource_group.this.name\n  location                   = azurerm_resource_group.this.location\n  log_analytics_workspace_id = azurerm_log_analytics_workspace.this.id\n  tags                       = local.tags\n}\n\n# ── وحدة AVM لـTerraform (بديل كتابة الموارد يدويًا) ──\n# module \"storage\" {\n#   source  = \"Azure/avm-res-storage-storageaccount/azurerm\"\n#   version = \"~> 0.4\"          # ثبّت الإصدار وراجع CHANGELOG\n#   name    = \"st${replace(local.suffix, \"-\", \"\")}\"\n#   ...\n# }\n\n# ── مخرجات: تُستهلك في CI (نشر التطبيق) ──\noutput \"postgres_fqdn\" { value = azurerm_postgresql_flexible_server.this.fqdn }\noutput \"keyvault_uri\"  { value = azurerm_key_vault.this.vault_uri }\noutput \"aca_env_id\"    { value = azurerm_container_app_environment.this.id }\n\n# ⚠ لا تُخرج قيمًا حساسة:  output \"x\" { value = … ; sensitive = true }\n# ⚠ ملف الحالة قد يحتوي قيمًا نصًا (بما فيها ما يُعتبر سريًا) →\n#   خزّنه في backend مشفّر + صلاحيات ضيقة + بلا رفع لـGit.\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "infra-tf/tf-ops.sh — init · plan · apply · حالة",
+      "filename": "infra-tf/tf-ops.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\ncd infra-tf\n\n# ═══ 1) التهيئة والمصادقة بـOIDC (بلا secret) ═══\nexport ARM_USE_OIDC=true\nexport ARM_CLIENT_ID=\"$AZURE_CLIENT_ID\"\nexport ARM_SUBSCRIPTION_ID=\"$AZURE_SUBSCRIPTION_ID\"\nexport ARM_TENANT_ID=\"$AZURE_TENANT_ID\"\nterraform init -input=false -reconfigure\nterraform version && terraform providers\n\n# ═══ 2) المعاينة كملف (يُراجَع ثم يُطبَّق كما هو — نفس البايتات) ═══\nterraform fmt -check -recursive\nterraform validate\nterraform plan -var-file=\"prod.tfvars\" -out=tfplan -input=false -detailed-exitcode\nCODE=$?   # 0 = لا تغييرات · 1 = خطأ · 2 = فيه تغييرات\necho \"plan exit code: $CODE\"\nterraform show -no-color tfplan > artifacts/plan.txt      # يُنشر كتعليق على الـPR\n\n# ═══ 3) التطبيق بعد الموافقة البشرية (6.3.5) ═══\nterraform apply -input=false tfplan\n# ⚠ لا تستخدم `terraform apply -auto-approve` في الإنتاج.\n\n# ═══ 4) تبني مورد موجود (من Portal) بدل إعادة إنشائه ═══\nterraform import azurerm_resource_group.this /subscriptions/<SUB>/resourceGroups/rg-shop-prod\n# أو (أحدث) كتلة import في الكود:\n#   import { to = azurerm_key_vault.this  id = \"/subscriptions/…/vaults/kv-shop-prod\" }\n\n# ═══ 5) عمليات الحالة (احذر — كل واحدة بتغيّر الحقيقة المسجلة) ═══\nterraform state list | head -n 30\nterraform state show azurerm_postgresql_flexible_server.this | head -n 40\nterraform state mv azurerm_key_vault.this module.kv.azurerm_key_vault.this   # إعادة هيكلة\nterraform state rm azurerm_resource_group.old                                # إزالة من الإدارة (لا حذف)\n\n# ═══ 6) كشف الانحراف دوريًا (لو حد عدّل من Portal) ═══\nterraform plan -var-file=\"prod.tfvars\" -detailed-exitcode -input=false | tee artifacts/drift.txt\n# كود خروج 2 = فيه فرق بين الكود والواقع → افتح issue وصحّح الكود (لا الواقع) عادةً\n\n# ═══ 7) فحص أمني للحالة والإعدادات (tfsec/checkov) ═══\n# تحقق من الأداة الحالية واسم الأمر في إصدارك:\n#   checkov -d . --framework terraform --quiet\n#   tfsec .\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ CI/CD للبنية: معاينة في الـPR ونشر بعد موافقة"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": ".github/workflows/infra.yml",
+      "filename": ".github/workflows/infra.yml",
+      "code": "name: Infrastructure\n\non:\n  pull_request:\n    paths: [\"infra/**\", \".github/workflows/infra.yml\"]\n  push:\n    branches: [main]\n    paths: [\"infra/**\"]\n\npermissions:\n  contents: read\n  pull-requests: write      # لنشر المعاينة كتعليق\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - uses: actions/checkout@v4\n      - uses: azure/login@v2                # OIDC بصلاحيات قراءة فقط للتحقق\n        with:\n          client-id: ${{ vars.AZURE_CLIENT_ID }}\n          tenant-id: ${{ vars.AZURE_TENANT_ID }}\n          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}\n      - name: Build & lint Bicep\n        run: |\n          az bicep build --file infra/main.bicep\n          az bicep generate-params --file infra/main.bicep --output-format bicepparam\n      # تحقق بلا صلاحية نشر (Azure CLI ≥ 2.76):\n      - name: What-If (validation only)\n        if: github.event_name == 'pull_request'\n        run: |\n          az deployment group what-if \\\n            --resource-group rg-shop-dev \\\n            --template-file infra/main.bicep \\\n            --parameters infra/dev.bicepparam \\\n            --validation-level Template ProviderNoRbac \\\n            --result-format ResourceIdOnly > artifacts/whatif.txt\n      - name: Comment on PR\n        if: github.event_name == 'pull_request'\n        uses: actions/github-script@v7\n        with:\n          script: |\n            const fs = require('fs');\n            const body = fs.readFileSync('artifacts/whatif.txt', 'utf8').slice(0, 60000);\n            await github.rest.issues.createComment({\n              issue_number: context.issue.number,\n              owner: context.repo.owner,\n              repo: context.repo.repo,\n              body: '### Bicep what-if\\n```\\n' + body + '\\n```'\n            });\n\n  deploy:\n    if: github.ref == 'refs/heads/main' && github.event_name == 'push'\n    needs: validate\n    runs-on: ubuntu-latest\n    environment: production        # required reviewers → موافقة قبل تغيير البنية\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - uses: actions/checkout@v4\n      - uses: azure/login@v2\n        with:\n          client-id: ${{ vars.AZURE_CLIENT_ID }}\n          tenant-id: ${{ vars.AZURE_TENANT_ID }}\n          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}\n      - name: What-If ثم النشر\n        run: |\n          set -euo pipefail\n          az deployment group what-if -g rg-shop-prod \\\n            --template-file infra/main.bicep --parameters infra/prod.bicepparam | tee whatif.txt\n          if grep -qE '^\\s*- ' whatif.txt; then\n            echo \"⚠ فيه موارد هتتحذف — راجع whatif.txt قبل المتابعة\"; exit 1\n          fi\n          az deployment group create -g rg-shop-prod \\\n            --name \"deploy-${{ github.run_number }}-${{ github.sha }}\" \\\n            --template-file infra/main.bicep --parameters infra/prod.bicepparam\n      - name: تحقق من الخصائص الأمنية بعد النشر\n        run: |\n          az keyvault show -n kv-shop-prod -g rg-shop-prod \\\n            --query \"{rbac:properties.enableRbacAuthorization,purge:properties.enablePurgeProtection}\" -o json\n          az postgres flexible-server show -n pg-shop-prod -g rg-shop-prod \\\n            --query \"{public:properties.network.publicNetworkAccess}\" -o json\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "8 أخطاء في البنية ككود (كل واحد حصل فعلًا في الإنتاج)",
+      "md": "**① رفع `terraform.tfstate` لـGit**: قد يحتوي قيمًا سرية نصًا → backend مشفّر + صلاحيات ضيقة. **② تعديل من الـPortal**: انحراف صامت → اجعل `managedBy` tag + سياسة «كل تغيير عبر PR». **③ نشر بلا `plan`/`what-if`**: حذف غير مقصود لموارد عليها بيانات. **④ أسرار مكتوبة في الملفات أو ملفات المعاملات**: استخدم `@secure()` + `getSecret()` (Bicep) أو Key Vault/data sources (Terraform). **⑤ قالب/ملف ضخم واحد**: انفجار نصف القطر → وحدات لكل مجال (network · data · app) ونشرات منفصلة. **⑥ إصدارات وحدات غير مثبتة** (`~>` واسع أو بلا إصدار): تحديث بيقفل البناء → ثبّت وراجع CHANGELOG. **⑦ بلا قفل على الحالة المشتركة**: `apply` متزامن بيفسد الحالة → backend بقفل + `plan -out` في CI. **⑧ الاعتماد على المعاينة وحدها للأمان**: تحقق بعد النشر من NSG/RBAC/firewall/public access."
+    },
+    {
+      "type": "steps",
+      "title": "⑥ تبني IaC لمشروع موجود (من Portal إلى كود) — 6 خطوات",
+      "items": [
+        {
+          "title": "1) صدّر الواقع الحالي",
+          "md": "Bicep: `az resource group export` بيطلع ARM JSON ثم `az bicep decompile`. Terraform: `import` blocks أو `terraform import` لكل مورد. الهدف: كود يصف ما هو موجود فعلًا **بدون أي تغيير**.",
+          "code": "az group export -g rg-shop-prod > artifacts/current.json\naz bicep decompile --file artifacts/current.json   # راجع الناتج ونظّفه — التصدير الخام فوضوي"
+        },
+        {
+          "title": "2) أثبت إن الكود = الواقع (لا تغييرات)",
+          "md": "شغّل `what-if`/`plan` حتى يرجع **NoChange** لكل الموارد. أي `Create` لمورد موجود = اسم/نوع/نطاق غلط. دي أهم خطوة: لو عدّيتها، أول نشر هيكرّر موارد.",
+          "code": "az deployment group what-if -g rg-shop-prod --template-file infra/main.bicep --parameters infra/prod.bicepparam --result-format ResourceIdOnly | grep -E '^\\s*[+~-]' || echo 'لا تغييرات ✓'"
+        },
+        {
+          "title": "3) نظّف القالب: معاملات · وسوم · وحدات",
+          "md": "استخرج القيم المتغيرة لمعاملات (بيئة/منطقة/طبقة)، أضف وسومًا موحدة، وقسّم إلى وحدات (`modules/network.bicep` · `modules/data.bicep`). لا تخلط أسماء مكتوبة يدويًا.",
+          "code": ""
+        },
+        {
+          "title": "4) افصل البيئات بملفات معاملات",
+          "md": "`dev.bicepparam` / `prod.bicepparam` (أو `dev.tfvars`/`prod.tfvars`) — مع **مجموعات موارد منفصلة** (لا بيئة مشتركة). وخلي dev بلا HA وباحتفاظ سجلات أقل (6.2.4/6.2.5).",
+          "code": ""
+        },
+        {
+          "title": "5) أدخله CI: تحقق في الـPR ونشر بعد موافقة",
+          "md": "`what-if`/`plan` كتعليق على الـPR (بـ`--validation-level` لو الصلاحيات محدودة)، ثم نشر من job مربوط بـ`environment: production` فيه required reviewers (6.3.5).",
+          "code": ""
+        },
+        {
+          "title": "6) اضبط إدارة دورة الحياة والانحراف",
+          "md": "Bicep: deployment stack بـ`--action-on-unmanage` عشان الموارد المُزالة تتحذف أو تتفصل بوعي. Terraform: `plan` دوري (أسبوعيًا) لكشف الانحراف + issue لأي فرق. وسياسة مكتوبة: **مفيش تعديل من الـPortal إلا في حادث، وبعده PR يُحدّث الكود**.",
+          "code": ""
+        }
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أعرف الفرق الجوهري: Bicep بلا حالة (ARM مصدر الحقيقة) مقابل Terraform بملف حالة + backend + قفل.",
+        "أقدر أختار الأداة بمعايير: Azure-only/جديد → Bicep · multi-cloud أو بنية موجودة → Terraform.",
+        "أقدر أكتب Bicep فيه `targetScope` · معاملات موثقة ومقيدة · وسوم · وحدات AVM مثبّتة الإصدار · موارد مشروطة · مخرجات.",
+        "أعرف رموز `what-if` الستة وحدوده (noise · تعبيرات لا تُقيَّم · تغييرات أمنية بتظهر NoChange) وأتحقق بعد النشر.",
+        "أعرف إن النشر العادي **لا يحذف** الموارد المُزالة من الكود، وإن deployment stacks بـ`--action-on-unmanage` هو الحل.",
+        "أقدر أهيّئ Terraform بـbackend azurerm وOIDC، وأعمل `plan -out` ثم `apply` لنفس الملف، وأفهم حساسية ملف الحالة.",
+        "أعرف خطة تبني IaC لمشروع موجود (تصدير → إثبات NoChange → تنظيف → بيئات → CI → دورة حياة)."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على الأداتين والمعاينة.",
+      "questions": [
+        {
+          "q": "ليه Bicep «بلا ملف حالة» ميزة ومسؤولية أقل؟",
+          "options": [
+            "لأنه أسرع",
+            "**لأن ARM نفسه مصدر الحقيقة: مفيش backend تؤمّنه ولا قفل ولا جراحة حالة ولا خطر تسريب قيم سرية من ملف الحالة**",
+            "لأنه بيدعم multi-cloud",
+            "لأنه بيحذف الموارد تلقائيًا"
+          ],
+          "answer": 1,
+          "explain": "الثمن: من غير deployment stacks، الموارد اللي بتزيلها من الكود **ما بتتحذفش** (بتتراكم وتتفوتر). Terraform بيحذفها كسلوك أساسي — بس بيقابله مسؤولية الحالة والقفل."
+        },
+        {
+          "q": "`what-if` أظهر `+ Create` لخادم PostgreSQL موجود فعلًا. تعمل إيه؟",
+          "options": [
+            "انشر عادي",
+            "**أصلح الاسم/النوع/النطاق في القالب حتى يختفي الـCreate** — وإلا هتنشئ نسخة مكررة (وخادم جديد بيتفوتر)",
+            "احذف الخادم الحالي",
+            "استخدم Terraform"
+          ],
+          "answer": 1,
+          "explain": "ده أشهر فشل في تبني IaC: الكود ما بيطابقش الواقع. القاعدة: المعاينة لازم ترجع `NoChange` قبل أول نشر حقيقي."
+        },
+        {
+          "q": "شلت موردًا من `main.bicep` ونشرت. إيه اللي حصل للمورد في Azure؟",
+          "options": [
+            "اتحذف",
+            "**فضل موجود وبيتفوتر** — النشر العادي تزايدي؛ الحذف يحتاج deployment stack بـ`--action-on-unmanage delete/detach` أو حذفًا يدويًا",
+            "اتوقف",
+            "اتنقل لمجموعة تانية"
+          ],
+          "answer": 1,
+          "explain": "علشان كده الموارد اليتيمة بتتراكم. في Terraform الحذف تلقائي من `plan`/`apply` — وده سبب إن `plan` لازم يُقرأ قبل التطبيق."
+        },
+        {
+          "q": "ليه `terraform apply` في CI لازم يطبّق **ملف الـplan** المحفوظ؟",
+          "options": [
+            "أسرع",
+            "**عشان التغيير المطبَّق يكون مطابقًا بالبايت للتغيير المُراجَع في الـPR** — `apply` جديد ممكن يقيّم الظروف بشكل مختلف (وقت/حالة/اعتماديات)",
+            "أقل صلاحيات",
+            "بيقلل حجم الحالة"
+          ],
+          "answer": 1,
+          "explain": "`terraform plan -out=tfplan` ثم `terraform apply tfplan` — النمط القياسي للمراجعة الحقيقية. وده فرق دقيق بيتميز فيه Terraform عن what-if في Bicep."
+        },
+        {
+          "q": "أمان: إيه الغلط الأخطر في Terraform؟",
+          "options": [
+            "استخدام modules",
+            "**رفع `terraform.tfstate` لمستودع Git**: قد يحتوي قيمًا حساسة نصًا → backend مشفّر بصلاحيات ضيقة + قفل",
+            "`terraform fmt`",
+            "تثبيت إصدار الـprovider"
+          ],
+          "answer": 1,
+          "explain": "ملف الحالة سجل كامل لكل ما أُنشئ، وقيم بعض الخصائص بتُخزَّن فيه كنص. الحماية: backend (Azure Storage) + تشفير + صلاحيات محدودة + بلا نسخ محلية مشتركة + `sensitive = true` في المخرجات."
+        },
+        {
+          "q": "تحققت من `what-if` وكله `NoChange`. هل كده الخصائص الأمنية مؤكدة؟",
+          "options": [
+            "نعم دائمًا",
+            "**لا**: بعض التغييرات الحساسة (NSG/RBAC/firewall/public access) قد تُبلَّغ كـNoChange، وتعبيرات مثل `listKeys()`/`utcNow()`/`@secure` لا تُقيَّم خارج النشر → تحقق بعد النشر بـ`az resource show` أو Policy",
+            "لا لأن what-if غير موثوق",
+            "نعم لو استخدمت FullResourcePayloads"
+          ],
+          "answer": 1,
+          "explain": "المعاينة أداة قوية لكن لها نقاط عمياء موثقة. القاعدة العملية: الخصائص الأمنية تُتحقق **بعد** النشر بأمر صريح أو سياسة Azure Policy."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "بنية كاملة ككود + تبني واقع موجود.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: اكتب بنيتك كاملة بـBicep (أو Terraform) وانشرها",
+          "md": "**السياق:** نظام `shop` على Azure: resource group · Container Apps environment · تطبيق · PostgreSQL Flexible · Key Vault · Storage · Log Analytics.\n\n**المطلوب:**\n1. اختَر الأداة واكتب **ADR** (`docs/adr/0017-iac-tool.md`) بمعايير القرار (Azure-only؟ multi-cloud؟ خبرة الفريق؟ بنية موجودة؟).\n2. `infra/main.bicep` (أو `infra-tf/main.tf`) بمعاملات موثقة ومقيدة (`@allowed`/`@minValue`) + وسوم موحدة فيها `managedBy` + **وحدات AVM مثبّتة الإصدار** لموردين على الأقل.\n3. ملفا معاملات: `dev` (Burstable · بلا HA · احتفاظ 30 يومًا) و`prod` (GeneralPurpose · HA · 90 يومًا) — **ومجموعتا موارد منفصلتان**.\n4. الأسرار بـ`getSecret()`/Key Vault (لا قيمة في الملفات) + مصادقة Entra ID لقاعدة البيانات (بلا password).\n5. **معاينة إلزامية**: سكربت يشغّل `what-if`/`plan` ويطبع الملخص، ويفشل لو فيه `- Delete` غير متوقع.\n6. نشر فعلي لـdev ثم prod (أو dev فقط لو الميزانية محدودة) + **تحقق بعد النشر** من 3 خصائص أمنية (`enableRbacAuthorization` · `enablePurgeProtection` · `publicNetworkAccess`) بأمر صريح.\n7. اكتب `docs/iac-runbook.md`: إزاي أضيف موردًا · إزاي أغيّر طبقة · إزاي أتعامل مع الانحراف · وإزاي أحذف موردًا (bلا stacks / بـstacks).\n8. (Bicep) أنشئ deployment stack على dev بـ`--action-on-unmanage detach` وارفع/احذف موردًا من الكود لتوضيح الفرق — ووثّق النتيجة.",
+          "criteria": [
+            "ADR يبرر الأداة بمعايير واضحة (مش تفضيل).",
+            "معاملات موثقة بـdecorators وقيم مقيدة + وسوم فيها `managedBy`.",
+            "وحدتا AVM على الأقل بإصدارات مثبتة (بلا `latest`).",
+            "ملفا معاملات لبيئتين **بمجموعتي موارد منفصلتين** وفروق واضحة (طبقة/HA/احتفاظ).",
+            "صفر أسرار في الملفات + مصادقة Entra ID لقاعدة البيانات.",
+            "سكربت معاينة يفشل عند `Delete` غير متوقع، ومُختبَر بتجربة (احذف موردًا من الكود وشوف النتيجة).",
+            "نشر فعلي + تحقق **بعد** النشر من 3 خصائص أمنية بمخرجات.",
+            "runbook فيه إضافة/تغيير/انحراف/حذف.",
+            "(Bicep) تجربة deployment stack موثقة بالفرق عن النشر العادي."
+          ],
+          "hint": "أسهل مسار لو مفيش Azure عندك: اكتب الكود وشغّل `az bicep build` (يترجم ويكشف الأخطاء من غير نشر) + `az deployment group validate` (يتحقق من الصلاحيات والمخطط بدون إنشاء). ولو عندك اشتراك، ابدأ بـdev فقط وخلي الموارد قابلة للحذف (`az group delete`). وللـAPI versions: استخدم الأمر `az provider show --namespace … --query resourceTypes[…]` بدل ما تنسخ إصدارًا من مقال قديم.",
+          "solution": "الهيكل الناتج: `infra/main.bicep` (المعاملات + الوسوم + 3 وحدات AVM: log-analytics · key-vault · storage + موارد خام لـPostgreSQL وACA environment + private endpoint مشروط بالإنتاج) و`infra/dev.bicepparam` و`infra/prod.bicepparam` و`infra/bicep-ops.sh` و`docs/iac-runbook.md`. ADR نموذجي: Bicep لأن النظام Azure-only ومشروع جديد والفريق .NET (بلا خبرة Terraform)، والعواقب: بلا ملف حالة (أبسط) مقابل حاجة لـdeployment stacks للحذف، وبدعم day-0 للموارد الجديدة. التحقق بعد النشر بيكشف عادةً إن `publicNetworkAccess` لسه `Enabled` (الافتراضي) رغم إن القالب كان يقصد private endpoint → تُصلح بإضافة الخاصية صراحةً (مثال حي على حدود المعاينة). تجربة الـstack: حذف مورد من الكود مع `detach` بيخليه يبقى في Azure ويخرج من إدارة الـstack؛ مع `delete` بيحذفه فعلًا — فالتجربة على dev فقط.",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/",
+            "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/modules",
+            "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-what-if",
+            "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deploy-to-tenant",
+            "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/stacks",
+            "https://azure.github.io/Azure-Verified-Modules/",
+            "https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs",
+            "https://developer.hashicorp.com/terraform/language/backend/azurerm"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: بنية ككود في CI + سياسة انحراف",
+          "md": "**السياق:** البنية بقت كود (المهمة 1)، ومحتاج تضمن إنها تُراجع وتُختبر وتُنشر بأمان.\n\n**المطلوب:**\n1. `.github/workflows/infra.yml`: job **validate** على PR (build/lint + `what-if` أو `plan` + نشر الناتج **كتعليق على الـPR**) وjob **deploy** على main مربوط بـ`environment: production` (required reviewers من 6.3.5).\n2. استخدم **OIDC** للمصادقة (بلا secret) مع **دورين مختلفين**: قراءة/تحقق للـPR، ومساهِم للنشر — ووثّق الفرق.\n3. لو الصلاحيات محدودة في PR: استخدم `--validation-level Template ProviderNoRbac` (Azure CLI ≥ 2.76) واذكر الحد في الوثيقة.\n4. فحص أمان للبنية في CI (checkov أو tfsec أو Azure Policy as code) بعتبة: صفر CRITICAL/HIGH — ووثّق الاستثناءات بتبرير.\n5. **كشف انحراف مجدول**: workflow أسبوعي يشغّل `what-if`/`plan` ويقارن بالواقع، ولو فيه فرق يفتح **issue** تلقائيًا (بأسماء الموارد والخصائص).\n6. سياسة مكتوبة `docs/iac-policy.md`: مين يعدّل البنية · إزاي · إيه الممنوع (تعديل Portal) · إيه اللي يتعمل بعد حادث اضطر فيه حد يعدّل يدويًا (PR خلال 24 ساعة) · وإزاي تُدار موارد خارج الإدارة (import).\n7. اختبار تراجع للبنية: اختبار يتحقق إن `dev.bicepparam` فيه `enableHa=false` و`logRetentionDays<=30` و`prod` فيه العكس — يعني **قواعد التكلفة مفروضة آليًا** (6.2.5).",
+          "criteria": [
+            "المعاينة تظهر **كتعليق على الـPR** (مش في سجلات بس) — دليل بصري مُرفق.",
+            "النشر خلف `environment: production` بـrequired reviewers + موافقة موثقة.",
+            "OIDC بدورين مختلفين (تحقق مقابل نشر) والفرق موثق.",
+            "استخدام `--validation-level` (أو مكافئه في Terraform) مع ذكر الحد.",
+            "فحص أمان بعتبة صفر HIGH/CRITICAL + جدول استثناءات بتبرير وتاريخ انتهاء.",
+            "كشف انحراف أسبوعي يفتح issue بأسماء الموارد والخصائص المختلفة.",
+            "سياسة IaC مكتوبة فيها مسار «تعديل يدوي في حادث» بمهلة PR.",
+            "اختبار تراجع يفرض قواعد التكلفة على ملفات المعاملات (HA off وretention منخفض في dev)."
+          ],
+          "hint": "لتعليق الـPR: `actions/github-script` مع قراءة ملف `whatif.txt` وتقصيره (حد التعليق 65,536 حرفًا). وللدورين: أنشئ app registration واحد بـfederated credentials مختلفة — واحد بـ`environment:production` (دور Contributor على مجموعة الموارد) وآخر للتحقق (Reader) مربوط بـ`ref:refs/heads/*` أو بيئة `ci-readonly`. وللاختبار: اقرأ ملفات `.bicepparam`/`.tfvars` في اختبار xUnit وافشل لو `enableHa = true` في dev.",
+          "solution": "البنية: `infra.yml` بـjobين + `scripts/iac-checks.sh` (فحص قواعد التكلفة على ملفات المعاملات) + workflow `drift-check.yml` أسبوعي + `docs/iac-policy.md`. الدوران: **ci-readonly** (Reader على مجموعة الموارد + `--validation-level ProviderNoRbac`) للـPRs، و**prod-deployer** (Contributor على مجموعة موارد الإنتاج فقط، مربوط بـ`environment:production` مع required reviewers) للنشر. الفحص الأمني: checkov/tfsec على `infra-tf/` أو Azure Policy على الموارد المنشورة مع جدول استثناءات (مثال: `publicNetworkAccess` مسموح في dev فقط حتى تاريخ محدد). كشف الانحراف: `what-if` أسبوعيًا؛ أي `~ Modify` أو `- Delete` → issue بقائمة الموارد. اختبار التراجع: xUnit بيقرأ `infra/dev.bicepparam` و`prod.bicepparam` ويؤكد: dev → `enableHa=false`, `logRetentionDays<=30`, `pgTier=Burstable`؛ prod → `enableHa=true`, `logRetentionDays>=90`. النتيجة: قواعد التكلفة من 6.2.5 بقت مفروضة آليًا بدل ما تكون نصيحة.",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-what-if",
+            "https://docs.github.com/en/actions/use-cases-and-examples/deploying/deploying-to-azure",
+            "https://learn.microsoft.com/en-us/cli/azure/deployment/group",
+            "https://www.checkov.io/",
+            "https://learn.microsoft.com/en-us/azure/governance/policy/",
+            "https://azure.github.io/Azure-Verified-Modules/"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Bicep: التوثيق الأساسي",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/"
+        },
+        {
+          "label": "Bicep modules والسجلات",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/modules"
+        },
+        {
+          "label": "Bicep what-if",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-what-if"
+        },
+        {
+          "label": "Deployment stacks (إدارة دورة الحياة)",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deployment-stacks"
+        },
+        {
+          "label": "Azure Verified Modules",
+          "url": "https://azure.github.io/Azure-Verified-Modules/"
+        },
+        {
+          "label": "Terraform: azurerm provider",
+          "url": "https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs"
+        },
+        {
+          "label": "Terraform: backend azurerm",
+          "url": "https://developer.hashicorp.com/terraform/language/backend/azurerm"
+        },
+        {
+          "label": "Terraform: استيراد الموارد",
+          "url": "https://developer.hashicorp.com/terraform/language/import"
+        },
+        {
+          "label": "النشر إلى Azure من GitHub Actions",
+          "url": "https://docs.github.com/en/actions/use-cases-and-examples/deploying/deploying-to-azure"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,352 @@
+{
+  "id": "s2-m1-l6",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nالكاش أسرع تحسين أداء متاح — وهو أسرع طريق لباج «البيانات القديمة» لو اتعمل بلا استراتيجية إبطال.\nالمشكلة إن الناس بتقول «هنعمل كاش» كأنها قرار واحد، بينما فيه **خمس طبقات** مختلفة المكان والتكلفة والدقة:\nمن المتصفح والـCDN، لـoutput cache في الخادم، لـ`IMemoryCache`، لـdistributed cache،\nو**HybridCache** (اللي بيجمع الطبقتين مع حماية من stampede).\n\nالدرس ده: تختار الطبقة الصح، تضبط الإبطال بشكل مقصود، وتقيس الأثر الفعلي بالأرقام.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Client/CDN cache",
+          "def": "`Cache-Control`, `ETag`, `Last-Modified` — أقرب طبقة للمستخدم وأرخصها (الطلب ما يوصلش لخادمك)."
+        },
+        {
+          "term": "Response Caching",
+          "def": "كاش خادمي يحترم توجيهات العميل (`Cache-Control`) — يعمل كـcache وسيط متوافق."
+        },
+        {
+          "term": "Output Caching",
+          "def": "كاش خادمي **بقراراتك أنت** (سياسات، وسوم، إبطال) — بيتجاهل توجيهات العميل لما تريد."
+        },
+        {
+          "term": "`IMemoryCache`",
+          "def": "كاش داخل العملية. الأسرع، لكنه لكل نسخة، ولا يتشارك، وبيرجع **نفس مرجع الكائن**."
+        },
+        {
+          "term": "`IDistributedCache`",
+          "def": "كاش مشترك (Redis غالبًا) بقيم مُسلسلة — أبطأ من الذاكرة لكنه متسق بين النسخ."
+        },
+        {
+          "term": "`IHybridCache`",
+          "def": ".NET 9+: L1 في الذاكرة + L2 موزّع + **حماية من stampede** + إبطال بوسوم."
+        },
+        {
+          "term": "Cache Stampede",
+          "def": "لحظة انتهاء صلاحية مفتاح ساخن: مئات الطلبات المتزامنة كلها بتعيد الحساب على المصدر."
+        },
+        {
+          "term": "Tag-based invalidation",
+          "def": "إبطال مجموعة مفاتيح بوسم (`catalog`, `orders:{id}`) بدل تتبع كل مفتاح."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "الطبقة",
+        "المكان",
+        "الإبطال",
+        "التكلفة",
+        "أنسب حالة"
+      ],
+      "rows": [
+        [
+          "Client/CDN",
+          "المتصفح/الحافة",
+          "`Cache-Control`/`ETag`/purge",
+          "الأرخص",
+          "أصول ثابتة، بيانات عامة قليلة التغير"
+        ],
+        [
+          "Output Cache",
+          "خادمك (أو Redis في .NET 8+)",
+          "وسوم + TTL + `EvictByTag`",
+          "رخيصة",
+          "استجابات endpoints كاملة (قوائم، كتالوج)"
+        ],
+        [
+          "Response Cache",
+          "خادمك",
+          "يوجيهات العميل",
+          "رخيصة",
+          "APIs عامة تحترم `Cache-Control`"
+        ],
+        [
+          "`IMemoryCache`",
+          "ذاكرة العملية",
+          "TTL/حجم/يدوي",
+          "الأسرع",
+          "بيانات مرجعية صغيرة، إعدادات، lookups"
+        ],
+        [
+          "`IDistributedCache`",
+          "Redis",
+          "TTL/حذف مفتاح",
+          "شبكة لكل طلب",
+          "جلسات، بيانات مشتركة بين النسخ"
+        ],
+        [
+          "`IHybridCache`",
+          "ذاكرة + Redis",
+          "مفتاح/وسم + TTL",
+          "متوازنة",
+          "★ الافتراضي الجديد: بيانات محسوبة غالية + تعدد نسخ"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "HybridCache: الاختيار الافتراضي في .NET 9/10"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Api package Microsoft.Extensions.Caching.Hybrid\ndotnet add Shop.Api package Microsoft.Extensions.Caching.StackExchangeRedis   # للـL2\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Caching/CachingSetup.cs",
+      "title": "L1 + L2 + وسوم + إبطال مقصود",
+      "code": "\nusing Microsoft.Extensions.Caching.Hybrid;\n\npublic static class CachingSetup\n{\n    public static IServiceCollection AddAppCaching(this IServiceCollection services, IConfiguration config)\n    {\n        // L2: Redis مشترك بين النسخ\n        services.AddStackExchangeRedisCache(options =>\n        {\n            options.Configuration = config.GetConnectionString(\"Redis\");\n            options.InstanceName = \"shop:\";                        // عزل منطقي لو Redis مشترك\n        });\n\n        // L1 + L2 مع حماية من stampede\n        services.AddHybridCache(options =>\n        {\n            options.DefaultEntryOptions = new HybridCacheEntryOptions\n            {\n                Expiration = TimeSpan.FromMinutes(10),             // صلاحية إجمالية (L2)\n                LocalCacheExpiration = TimeSpan.FromSeconds(30),   // صلاحية الذاكرة (L1) — أقصر عمدًا\n            };\n            options.MaximumPayloadBytes = 1024 * 512;              // ✓ ارفض القيم الضخمة (512KB)\n            options.MaximumKeyLength = 256;\n        });\n\n        // Output cache للـendpoints الكاملة (أرخص من حساب أي شيء)\n        services.AddOutputCache(options =>\n        {\n            options.AddBasePolicy(p => p.Expire(TimeSpan.FromMinutes(1)));\n\n            options.AddPolicy(\"catalog\", p => p\n                .Expire(TimeSpan.FromMinutes(10))\n                .Tag(\"catalog\")\n                .SetVaryByQuery(\"page\", \"size\", \"sort\", \"country\"));   // ★ لا تخزّن كل المتغيرات كمفتاح واحد\n\n            options.AddPolicy(\"reports\", p => p\n                .Expire(TimeSpan.FromHours(1))\n                .Tag(\"reports\")\n                .SetVaryByAuthorizedUser());                            // ✓ بيانات المستخدم لا تُخلط\n        });\n\n        return services;\n    }\n}\n\n/// <summary>\n/// مثال الاستخدام: حساب غالي (تجميع مبيعات) محمي من stampede وبوسوم للإبطال.\n/// </summary>\npublic sealed class SalesReportService(IHybridCache cache, AppDbContext db, TimeProvider time)\n{\n    public Task<DailySales> GetDailyAsync(DateOnly day, CancellationToken ct) =>\n        cache.GetOrCreateAsync(\n            key: $\"sales:daily:{day:yyyy-MM-dd}\",\n            factory: async token => await ComputeAsync(day, token),\n            options: new HybridCacheEntryOptions\n            {\n                Expiration = day < DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime)\n                    ? TimeSpan.FromHours(6)          // يوم ماضٍ: لا يتغير → صلاحية أطول\n                    : TimeSpan.FromMinutes(2),       // اليوم الجاري: يتغير باستمرار\n                LocalCacheExpiration = TimeSpan.FromSeconds(20),\n            },\n            tags: [\"sales\", $\"sales:{day:yyyy-MM-dd}\"],\n            cancellationToken: ct);\n\n    /// <summary>الإبطال المقصود بعد أي كتابة تؤثر على التقرير.</summary>\n    public async Task InvalidateAsync(DateOnly day, CancellationToken ct)\n    {\n        await cache.RemoveByTagAsync($\"sales:{day:yyyy-MM-dd}\", ct);\n        await cache.RemoveByTagAsync(\"sales\", ct);      // وسوم مجمّعة لو فيه تقارير مشتقة\n    }\n\n    private async Task<DailySales> ComputeAsync(DateOnly day, CancellationToken ct)\n    {\n        var from = day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);\n        var to = from.AddDays(1);\n\n        var rows = await db.Orders\n            .AsNoTracking()\n            .Where(o => o.CreatedAt >= from && o.CreatedAt < to && o.Status != OrderStatus.Cancelled)\n            .GroupBy(o => o.Customer.Country)\n            .Select(g => new CountrySales(g.Key, g.Count(), g.Sum(o => o.Total)))\n            .ToListAsync(ct);\n\n        return new DailySales(day, rows, rows.Sum(r => r.Total), rows.Sum(r => r.Count));\n    }\n}\n\npublic sealed record CountrySales(string Country, int Orders, decimal Total);\npublic sealed record DailySales(DateOnly Day, IReadOnlyList<CountrySales> ByCountry, decimal Total, int Orders);\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "ليه `LocalCacheExpiration` أقصر من `Expiration`؟",
+      "md": "\nدي أهم ضبط في HybridCache:\n- **L2 (Redis)** = مصدر الحقيقة المشترك، صلاحيته أطول.\n- **L1 (الذاكرة)** = نسخة محلية سريعة لكل نسخة من التطبيق — صلاحياتها أقصر عشان الإبطال ما يتأخرش.\n\nإبطال بوسم بينسخ الـL2 وبيبلّغ النسخ، لكن لو عندك نشر/إعادة تشغيل أو شبكة Pub/Sub معطّلة،\nالـL1 القصير بيضمن إن أقدم نسخة خاطئة عمرها ≤ 30 ثانية. قرّر الرقم بحسب **أقصى قدر مقبول من القدم**\n(staleness) لبياناتك — مش بحسب الأداء.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Output Cache + إبطال بعد الكتابة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "كاش للاستجابة كاملة، وإبطال عند أي تغيير في الكتالوج",
+      "code": "\n// ── القراءة: سياسة \"catalog\"\ncatalog.MapGet(\"/products\", ListProducts)\n    .CacheOutput(\"catalog\")\n    .Produces<PagedResult<ProductSummary>>();\n\n// ★ Output cache بيتنوّع تلقائيًا بحسب الـURL (path + query) — فـ/products/{id}\n//   بيتخزّن لكل id على حدة. الوسم المشترك \"catalog\" كافٍ للإبطال الجماعي.\ncatalog.MapGet(\"/products/{id:guid}\", GetProduct)\n    .CacheOutput(\"catalog\");\n\n// ── الكتابة: إبطال مقصود بعد نجاح الحفظ\ncatalog.MapPut(\"/products/{id:guid}\", async (\n    Guid id, UpdateProductRequest request, AppDbContext db,\n    IOutputCacheStore outputCache, IHybridCache hybrid, CancellationToken ct) =>\n{\n    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct)\n                  ?? throw new NotFoundException(\"Product\", id);\n\n    product.Name = request.Name;\n    product.Price = request.Price;\n    await db.SaveChangesAsync(ct);                       // ✓ احفظ أولًا\n\n    await outputCache.EvictByTagAsync(\"catalog\", ct);    // ← كل قوائم وتفاصيل الكتالوج\n    await hybrid.RemoveByTagAsync(\"catalog\", ct);        // ← البيانات المحسوبة في HybridCache\n\n    return TypedResults.NoContent();\n}).RequireAuthorization(Policies.AdminOnly);\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "ETag وconditional GET: توفير حتى مع كاش الخادم"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "304 Not Modified — ASP.NET Core لا يفعلها تلقائيًا",
+      "code": "\ncatalog.MapGet(\"/products/{id:guid}\", async (\n    Guid id, AppDbContext db, HttpContext http, CancellationToken ct) =>\n{\n    var product = await db.Products.AsNoTracking()\n        .Where(p => p.Id == id)\n        .Select(p => new { p.Id, p.Name, p.Price, p.UpdatedAt, p.RowVersion })\n        .FirstOrDefaultAsync(ct);\n\n    if (product is null) throw new NotFoundException(\"Product\", id);\n\n    // ✓ ETag من عمود إصدار حقيقي (RowVersion) — أقوى من hash للمحتوى\n    var etag = new EntityTagHeaderValue($\"\\\"{Convert.ToHexString(product.RowVersion)}\\\"\");\n\n    if (http.Request.Headers.IfNoneMatch.ToString() is { Length: > 0 } match\n        && match.Trim('\"') == etag.Tag.Trim('\"'))\n    {\n        http.Response.StatusCode = StatusCodes.Status304NotModified;\n        http.Response.Headers.ETag = etag.Tag;\n        return Results.Empty;                            // بلا جسم — توفير شبكة حقيقي\n    }\n\n    http.Response.Headers.ETag = etag.Tag;\n    http.Response.Headers.CacheControl = \"private, max-age=30, must-revalidate\";\n    return TypedResults.Ok(new ProductResponse(product.Id, product.Name, product.Price));\n});\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "5 طرق يخرّب بيها الكاش مشروعك",
+      "md": "\n1. **`IMemoryCache` بيرجع نفس المرجع**: لو خزّنت كائنًا قابلًا للتعديل، أي طلب بيعدّل فيه بيأثر على **كل** الطلبات. خزّن records/قيم غير قابلة للتغيير، أو نسخة.\n2. **كاش لبيانات خاصة على مفتاح عام**: `products:list` مخزّن لمستخدم فيه أسعاره الخاصة → تسريب. استخدم `SetVaryByAuthorizedUser()` أو ضمّن معرّف المستخدم في المفتاح.\n3. **بلا إبطال**: TTL وحده معناه «بيانات قديمة لمدة TTL». أي كتابة تؤثر على القراءة لازم تبطل الكاش (أو تخلي المفتاح بإصدار: `key:v2:`).\n4. **stampede**: مفتاح ساخن بينتهي → 500 طلب بيحسبوا نفس الشيء على القاعدة. HybridCache بيحلها (نداء واحد للمصنع)، ولو استخدمت `IMemoryCache` احمِها بـ`SemaphoreSlim` لكل مفتاح.\n5. **كاش كحل لاستعلام بطيء**: الكاش بيخفي المشكلة ويخليها تظهر فجأة. أصلح الاستعلام/الفهرس أولًا، وبعدين اعمل كاش لو لسه مستحق.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "قياس الأثر: بلا أرقام الكاش تخمين"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "عدّادات hit/miss — بدونها ما تعرفش هل الكاش بيشتغل أصلًا",
+      "code": "\npublic static class CacheMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Api.cache\", \"1.0.0\");\n\n    public static readonly Counter<long> Hits =\n        Meter.CreateCounter<long>(\"cache.hits\", description: \"ضربات الكاش\");\n    public static readonly Counter<long> Misses =\n        Meter.CreateCounter<long>(\"cache.misses\", description: \"إخفاقات الكاش\");\n    public static readonly Histogram<double> LoadDuration =\n        Meter.CreateHistogram<double>(\"cache.load.duration\", unit: \"s\");\n    public static readonly Counter<long> Evictions =\n        Meter.CreateCounter<long>(\"cache.evictions\", description: \"عمليات الإبطال\");\n}\n\n/// <summary>لفّ حول أي حساب عشان تقيس نسبة الإصابة وتكلفة التحميل.</summary>\npublic sealed class MeasuredCache(IHybridCache inner)\n{\n    public async Task<T> GetAsync<T>(string key, Func<CancellationToken, ValueTask<T>> factory,\n        IEnumerable<string>? tags, CancellationToken ct)\n    {\n        var hit = true;\n        var result = await inner.GetOrCreateAsync(key, async token =>\n        {\n            hit = false;                                  // المصنع بيشتغل = miss\n            var started = TimeProvider.System.GetTimestamp();\n            var value = await factory(token);\n            CacheMetrics.LoadDuration.Record(\n                TimeProvider.System.GetElapsedTime(started).TotalSeconds, new(\"key\", key));\n            return value;\n        }, tags: tags, cancellationToken: ct);\n\n        if (hit) CacheMetrics.Hits.Add(1, new(\"key\", key));\n        else CacheMetrics.Misses.Add(1, new(\"key\", key));\n\n        return result;\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "القياس",
+        "قبل الكاش",
+        "بعد الكاش",
+        "الهدف"
+      ],
+      "rows": [
+        [
+          "p50 لزمن الاستجابة",
+          "—",
+          "—",
+          "تحسّن واضح على المسار الساخن"
+        ],
+        [
+          "p95 لزمن الاستجابة",
+          "—",
+          "—",
+          "الأهم: الذيل هو اللي بيكسر UX"
+        ],
+        [
+          "نسبة الإصابة (hits/total)",
+          "0%",
+          "—",
+          "> 70% للمسارات العامة"
+        ],
+        [
+          "عدد الاستعلامات لكل طلب",
+          "—",
+          "—",
+          "انخفاض ملموس"
+        ],
+        [
+          "حمل القاعدة (CPU/connections)",
+          "—",
+          "—",
+          "انخفاض تحت نفس الـRPS"
+        ],
+        [
+          "RPS قصوى مستقرة",
+          "—",
+          "—",
+          "زيادة قبل بدء التدهور"
+        ],
+        [
+          "تكلفة التسلسل/الشبكة للـL2",
+          "—",
+          "—",
+          "أقل من تكلفة الحساب وإلا الكاش خسارة"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "إمتى الكاش **مش** الحل",
+      "md": "\n- بيانات لازم تكون محدثة فورًا (رصيد، مخزون أثناء الشراء) → استخدم حجز/transaction بدل الكاش.\n- استعلام بطيء بسبب غياب فهرس → الفهرس حل أرخص وأدق.\n- استجابة مختلفة لكل مستخدم → الكاش قليل القيمة (أو يحتاج vary by user بتكلفة ذاكرة).\n- نسبة إصابة < 20% → أنت بتدفع تكلفة تسلسل وشبكة بلا عائد؛ راجع المفاتيح وTTL.\n- مشكلة استقرار (spikes/tail latency) سببها GC أو استنزاف thread pool → الكاش بيخفيها ولا يحلها.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أختار طبقة الكاش المناسبة (CDN/OutputCache/HybridCache/IMemoryCache) بحسب المكان والتكلفة ودقة الإبطال.",
+        "أضبط `HybridCache` بوسوم و`LocalCacheExpiration` أقصر وأحمي من stampede.",
+        "أبطل الكاش بعد كل كتابة مؤثرة وأتعامل مع ETag/304.",
+        "أقيس نسبة الإصابة وزمن الاستجابة قبل/بعد، وأعرف متى الكاش ليس الحل."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "إيه الفرق الجوهري بين Response Caching وOutput Caching؟",
+          "options": [
+            "لا فرق",
+            "Response Caching بيحترم توجيهات العميل (`Cache-Control`) كوسيط؛ Output Caching قرار خادمي بسياسات ووسوم وإبطال تحت سيطرتك",
+            "Output Caching أقدم",
+            "Response Caching أسرع دائمًا"
+          ],
+          "answer": 1,
+          "explain": "للـAPIs اللي بتتحكم فيها، Output Caching أقوى: وسوم، إبطال بعد الكتابة، vary by query/user."
+        },
+        {
+          "q": "خزّنت `List<Product>` في `IMemoryCache` وطلب عدّل عنصر فيها. إيه اللي حصل؟",
+          "options": [
+            "لا شيء — نسخة مستقلة",
+            "الكاش بيرجع نفس المرجع → التعديل أثر على كل الطلبات اللاحقة (باج بيانات مشترك)",
+            "استثناء",
+            "إبطال تلقائي"
+          ],
+          "answer": 1,
+          "explain": "خزّن أنواع غير قابلة للتغيير (records/collections ثابتة) أو نسخة دفاعية. ده من أشهر مصائب `IMemoryCache`."
+        },
+        {
+          "q": "Cache stampede بيحصل إمتى و`IHybridCache` بيحلها إزاي؟",
+          "options": [
+            "عند بدء التشغيل فقط — بحلها بالـwarm-up",
+            "عند انتهاء صلاحية مفتاح ساخن: طلبات متزامنة كتير تحسب نفس الشيء؛ HybridCache بيخلي نداء واحد فقط ينفّذ المصنع والباقي يستنى",
+            "عند حذف Redis",
+            "لا تحلها المكتبة"
+          ],
+          "answer": 1,
+          "explain": "مع `IMemoryCache` العادي لازم تنفذ الحماية بنفسك (`SemaphoreSlim`/`Lazy<T>` لكل مفتاح)."
+        },
+        {
+          "q": "endpoint مخزّن بـOutput Cache ومطلوب مصادقة وبيحتوي بيانات المستخدم. الخطر؟",
+          "options": [
+            "بطء",
+            "تقديم استجابة مستخدم لمستقبل مختلف → تسريب بيانات. الحل: `SetVaryByAuthorizedUser()` أو ضمّن الهوية في المفتاح أو لا تخزّن",
+            "401",
+            "فشل الإبطال"
+          ],
+          "answer": 1,
+          "explain": "الكاش ما يعرفش «لمين» الاستجابة تلقائيًا. أي تخزين لبيانات خاصة لازم يتنوع بحسب الهوية."
+        },
+        {
+          "q": "نسبة إصابة الكاش 12% وزمن الاستجابة ما اتحسنش. أنهي استنتاج سليم؟",
+          "options": [
+            "زِد TTL وخليه كده",
+            "المفاتيح/TTL غير مناسبة أو البيانات شديدة التخصيص — الكاش بيكلف (تسلسل/شبكة) بلا عائد؛ راجع التصميم أو أصلح الاستعلام",
+            "احذف Redis",
+            "زد حجم الذاكرة"
+          ],
+          "answer": 1,
+          "explain": "الكاش قرار اقتصادي: عائد (حساب متجنب) مقابل تكلفة (تسلسل + شبكة + تعقيد إبطال). 12% عادةً خسارة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "طبقتان بكاش مع إبطال صحيح",
+          "md": "طبّق Output Cache على مسار قراءة عام، وHybridCache على حساب غالي (تقرير/تجميع) بوسوم. أضف إبطالًا بعد كل كتابة مؤثرة، وعدّادات hit/miss. قِس p50/p95 قبل وبعد بحمل k6 من درس الـcapstone.",
+          "criteria": [
+            "اختبار يثبت إن الكتابة تبطل الكاش (القراءة بعد الكتابة ترجع القيمة الجديدة)",
+            "نسبة إصابة مسجلة > 50% تحت حمل متكرر لنفس المسار",
+            "جدول قبل/بعد فيه p50 وp95 وأرقام حقيقية",
+            "`LocalCacheExpiration` أقصر من `Expiration` مع تبرير الرقم",
+            "لا كاش لبيانات خاصة على مفتاح عام (مراجعة المفاتيح)"
+          ],
+          "hint": "لو الاختبار «الكتابة تبطل الكاش» بيفشل عشوائيًا: غالبًا فيه نسخة L1 في عملية الاختبار ما اتبطلتش — تأكد إنك بتبطل الوسوم في **الطبقتين** (OutputCache store + HybridCache) وبنفس الترتيب بعد `SaveChangesAsync`."
+        },
+        {
+          "id": "t2",
+          "title": "ETag و304",
+          "md": "أضف ETag مبني على `RowVersion`/`UpdatedAt` لمسار قراءة واحد، وردّ 304 عند `If-None-Match` مطابق. اكتب اختبارين: طلب أول 200 مع ETag، وطلب ثانٍ بنفس الـETag يرجع 304 بلا جسم.",
+          "criteria": [
+            "304 بلا جسم ورأس ETag موجود",
+            "تعديل المورد يغيّر الـETag (اختبار)",
+            "`Cache-Control` مضبوط بعمر مقصود (مش max-age ضخم بالخطأ)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "HybridCache (.NET 9+)",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/hybrid-cache"
+        },
+        {
+          "label": "Output caching in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/performance/caching/output"
+        },
+        {
+          "label": "Response caching",
+          "url": "https://learn.microsoft.com/aspnet/core/performance/caching/response"
+        },
+        {
+          "label": "In-memory cache",
+          "url": "https://learn.microsoft.com/aspnet/core/performance/caching/memory"
+        },
+        {
+          "label": "Distributed caching (Redis)",
+          "url": "https://learn.microsoft.com/aspnet/core/performance/caching/distributed"
+        },
+        {
+          "label": "HTTP caching (MDN)",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching"
+        }
+      ]
+    }
+  ]
+}

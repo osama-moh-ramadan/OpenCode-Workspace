@@ -1,0 +1,441 @@
+{
+  "id": "s4-m2-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nEvent Sourcing بيقلب نموذج التخزين: بدل ما تخزّن **الحالة الحالية** (صف فيه `status='shipped'`)،\nبتخزّن **تسلسل الأحداث** اللي وصلتها (`OrderPlaced`, `PaymentCaptured`, `OrderShipped`) —\nوالحالة بتتحسب بتطبيق الأحداث بالترتيب (fold).\n\nده بيديك تدقيق كامل، time travel، وإعادة بناء أي projection من الصفر. وبيكلفك:\nاتساق eventual في كل حتة، إصدارات أحداث للأبد، snapshots، وصعوبة في الاستعلامات،\nوتعارض مع متطلبات حذف البيانات الشخصية.\n\nالهدف هنا مش إقناعك تستخدمه — الهدف إنك **تفهمه كفاية عشان تقرر بوعي**،\nوتعرف إن أغلب الفرق محتاجة **audit log + domain events + outbox** (الدرس السابق) مش event sourcing كامل.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Event Store",
+          "def": "مخزن append-only للأحداث: لا تعديل ولا حذف، فقط إضافة."
+        },
+        {
+          "term": "Stream",
+          "def": "تسلسل أحداث لكيان واحد (عادةً aggregate) بمعرّف stream وترتيب (version)."
+        },
+        {
+          "term": "Version / Optimistic Concurrency",
+          "def": "رقم إصدار الـstream. الإضافة تتوقع إصدارًا محددًا → لو اتغير، تعارض (بديل `RowVersion`)."
+        },
+        {
+          "term": "Fold / Replay",
+          "def": "تطبيق الأحداث بالترتيب لبناء الحالة. نفس الأحداث = نفس الحالة (شرط: الأحداث حتمية)."
+        },
+        {
+          "term": "Snapshot",
+          "def": "لقطة حالة عند إصدار معين — لتقليل زمن التحميل للـstreams الطويلة."
+        },
+        {
+          "term": "Projection",
+          "def": "read model مبني من الأحداث (جدول/view/فهرس بحث) — قابل لإعادة البناء دائمًا."
+        },
+        {
+          "term": "Upcasting",
+          "def": "تحويل حدث قديم (v1) لصيغته الحالية (v2) وقت القراءة — الحل الوحيد لعدم كسر الـstreams القديمة."
+        },
+        {
+          "term": "Event Versioning",
+          "def": "إصدار نوع الحدث نفسه (`OrderPlaced@2`) مع قواعد تحويل موثقة."
+        },
+        {
+          "term": "Time Travel",
+          "def": "حساب الحالة عند لحظة ماضية بتطبيق الأحداث حتى تاريخ معين."
+        },
+        {
+          "term": "Immutable Log vs GDPR",
+          "def": "السجل غير قابل للحذف يتعارض مع «حق المسح» → الحل: تشفير البيانات الشخصية + حذف المفتاح (crypto-shredding)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) المقارنة الصريحة (قبل أي كود)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "CRUD + Domain Events (outbox)",
+        "**Audit Log** (جدول سجل)",
+        "**Event Sourcing**"
+      ],
+      "rows": [
+        [
+          "مصدر الحقيقة",
+          "جدول الحالة",
+          "جدول الحالة + سجل للقراءة",
+          "**الأحداث** (الحالة محسوبة)"
+        ],
+        [
+          "تدقيق كامل للتغييرات",
+          "جزئي (بحسب الأحداث)",
+          "✓ كامل",
+          "✓ كامل + قابل لإعادة التشغيل"
+        ],
+        [
+          "«ليه وصلنا لكده؟»",
+          "صعب",
+          "سهل (سجل)",
+          "✓ سهل جدًا (fold)"
+        ],
+        [
+          "الحالة عند تاريخ ماضي",
+          "✗",
+          "△ (يحتاج إعادة بناء يدوي)",
+          "✓ time travel أصيل"
+        ],
+        [
+          "إعادة بناء read models",
+          "✗",
+          "△",
+          "✓ replay كامل"
+        ],
+        [
+          "استعلام الحالة الحالية",
+          "✓ مباشر وسهل",
+          "✓ مباشر",
+          "✗ يحتاج projection لكل استعلام"
+        ],
+        [
+          "الاتساق",
+          "قوي (ACID)",
+          "قوي",
+          "eventual في كل القراءات المشتقة"
+        ],
+        [
+          "إصدارات المخطط",
+          "migrations عادية",
+          "بسيطة",
+          "**معقدة للأبد** (upcasting)"
+        ],
+        [
+          "حذف بيانات شخصية",
+          "✓ سهل",
+          "△ (السجل كمان)",
+          "✗ يحتاج crypto-shredding"
+        ],
+        [
+          "تعقيد الفريق",
+          "منخفض",
+          "منخفض",
+          "**عالي** (منحنى تعلم حاد)"
+        ],
+        [
+          "تكلفة التخزين",
+          "منخفضة",
+          "متوسطة",
+          "تنمو بلا حدود (أحداث + snapshots)"
+        ],
+        [
+          "مناسب لـ",
+          "★ أغلب الأنظمة",
+          "★ أغلب الأنظمة اللي تحتاج تدقيق",
+          "مالي/حجوزات/أنظمة بتدقيق صارم"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "goal",
+      "title": "القرار الواقعي لأغلب الفرق",
+      "md": "\n**احتياجاتك غالبًا:** «عايز أعرف مين غيّر إيه وإمتى وليه» + «عايز أنظمة تانية تعرف بالتغييرات».\n\nده بيتحقق بـ**CRUD + Domain Events (outbox) + جدول audit** — بلا event sourcing:\n- جدول `audit_log (entity, entity_id, action, actor, changes jsonb, at)` يُكتب في نفس المعاملة.\n- أحداث outbox للموديولات/الخدمات الأخرى.\n- الحالة الحالية في جداول عادية → استعلامات بسيطة وأداء معروف.\n\n**استخدم Event Sourcing فقط لو 2+ من دول صحيحين:**\n1. التدقيق الكامل **متطلب تنظيمي** وكل حالة قابلة لإعادة البناء منه.\n2. الحالة نفسها سلسلة انتقالات معقدة (حجوزات، مطالبات تأمين، ledger) والاستعلامات التاريخية جزء من المنتج.\n3. محتاج تعيد بناء read models من الصفر بشكل متكرر (تغيير نموذج العمل).\n4. الفريق عنده خبرة سابقة بيه وميزانية صيانة للأحداث المُصدَّرة.\n\nولو احتجته: **طبّقه على bounded context واحد** (مثل `Billing`) مش على النظام كله.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) تنفيذ على Postgres (بلا اعتماد خارجي)"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "db/020_event_store.sql",
+      "title": "جداول events وsnapshots وcheckpoints",
+      "code": "\nCREATE SCHEMA IF NOT EXISTS events;\n\nCREATE TABLE events.streams (\n    stream_id    uuid PRIMARY KEY,\n    stream_type  text NOT NULL,\n    version      bigint NOT NULL DEFAULT 0,              -- ★ آخر إصدار (للتنافس الأمثل)\n    created_at   timestamptz NOT NULL DEFAULT now()\n);\n\nCREATE TABLE events.events (\n    stream_id    uuid NOT NULL REFERENCES events.streams(stream_id) ON DELETE CASCADE,\n    version      bigint NOT NULL,\n    type         text NOT NULL,\n    schema_ver   int  NOT NULL DEFAULT 1,                -- ★ إصدار نوع الحدث (للـupcasting)\n    payload      jsonb NOT NULL,\n    metadata     jsonb NOT NULL DEFAULT '{}',            -- actor, correlation_id, causation_id\n    occurred_at  timestamptz NOT NULL DEFAULT now(),\n    global_pos   bigint GENERATED ALWAYS AS IDENTITY,    -- ★ ترتيب عالمي للـprojections\n    PRIMARY KEY (stream_id, version)                     -- ★ يمنع تكرار إصدار في نفس الـstream\n);\n\nCREATE INDEX ix_events_global ON events.events (global_pos);\nCREATE INDEX ix_events_type_time ON events.events (type, occurred_at DESC);\nCREATE INDEX ix_events_payload_gin ON events.events USING GIN (payload jsonb_path_ops);   -- استعلامات ad-hoc\n\nCREATE TABLE events.snapshots (\n    stream_id    uuid NOT NULL REFERENCES events.streams(stream_id) ON DELETE CASCADE,\n    version      bigint NOT NULL,\n    state        jsonb NOT NULL,\n    created_at   timestamptz NOT NULL DEFAULT now(),\n    PRIMARY KEY (stream_id, version)\n);\n\nCREATE TABLE events.projection_checkpoints (\n    projection   text PRIMARY KEY,\n    global_pos   bigint NOT NULL,\n    updated_at   timestamptz NOT NULL DEFAULT now()\n);\n\n-- أمثلة استعلامات مفيدة:\n-- كل أحداث stream:      SELECT * FROM events.events WHERE stream_id = @id ORDER BY version;\n-- التدقيق لمستخدم:      SELECT * FROM events.events WHERE metadata->>'actor_id' = @actor ORDER BY global_pos;\n-- الحالة عند تاريخ:    SELECT * FROM events.events WHERE stream_id = @id AND occurred_at <= @at ORDER BY version;\n-- streams نشطة اليوم:  SELECT DISTINCT stream_id FROM events.events WHERE occurred_at >= now() - interval '1 day';\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Infrastructure/EventStore/PostgresEventStore.cs",
+      "title": "إضافة بتنافس أمثل + تحميل بـsnapshot + fold",
+      "code": "\npublic interface IEventSerializer\n{\n    /// <summary>يرجع (نوع الحدث، إصدار المخطط، payload JSON).</summary>\n    (string Type, int SchemaVersion, string Payload) Serialize(IDomainEvent domainEvent);\n    IDomainEvent DeserializeAndUpcast(string type, int schemaVersion, string payload);\n    string SerializeState<TState>(TState state);\n    TState DeserializeState<TState>(string json);\n}\n\npublic static class EventStoreMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Infrastructure.eventstore\", \"1.0.0\");\n    public static readonly Counter<long> Appended = Meter.CreateCounter<long>(\"eventstore.appended\");\n    public static readonly Histogram<long> LoadDuration =\n        Meter.CreateHistogram<long>(\"eventstore.load.applied_events\", unit: \"events\");\n}\n\npublic interface IEventStore\n{\n    Task<long> AppendAsync(Guid streamId, string streamType, long expectedVersion,\n                           IReadOnlyList<IDomainEvent> events, EventMetadata metadata, CancellationToken ct);\n    Task<EventStream> LoadAsync<TState>(Guid streamId, CancellationToken ct)\n        where TState : IEventSourcedState, new();\n}\n\npublic sealed record EventMetadata(Guid? CorrelationId, Guid? CausationId, string? ActorId);\npublic sealed record StoredEvent(Guid StreamId, long Version, string Type, int SchemaVersion,\n                                 string Payload, EventMetadata Metadata, DateTimeOffset OccurredAt, long GlobalPos);\npublic sealed record EventStream(Guid StreamId, long Version, object State);\n\npublic sealed class PostgresEventStore(AppDbContext db, IEventSerializer serializer, ILogger<PostgresEventStore> log)\n    : IEventStore\n{\n    private const int SnapshotEvery = 50;\n\n    /// <summary>إضافة ذرّية مع تنافس أمثل: لو الـstream اتقدم من حد تاني → استثناء تعارض.</summary>\n    public async Task<long> AppendAsync(\n        Guid streamId, string streamType, long expectedVersion,\n        IReadOnlyList<IDomainEvent> events, EventMetadata metadata, CancellationToken ct)\n    {\n        if (events.Count == 0) return expectedVersion;\n        var connection = db.Database.GetDbConnection();\n        if (connection.State != ConnectionState.Open) await connection.OpenAsync(ct);   // ✓ (درس 3.1.3)\n\n        await using var tx = await connection.BeginTransactionAsync(ct);\n\n        // ① أنشئ الـstream لو جديد (بلا فشل لو موجود)\n        const string ensureStreamSql = \"\"\"\n            INSERT INTO events.streams (stream_id, stream_type, version)\n            VALUES (@StreamId, @StreamType, 0) ON CONFLICT (stream_id) DO NOTHING\n            \"\"\";\n        await connection.ExecuteAsync(new CommandDefinition(ensureStreamSql,\n            new { StreamId = streamId, StreamType = streamType }, tx, cancellationToken: ct));\n\n        // ② ★ التنافس الأمثل: UPDATE بشرط الإصدار المتوقع\n        const string advanceSql = \"\"\"\n            UPDATE events.streams SET version = @NewVersion\n            WHERE stream_id = @StreamId AND version = @ExpectedVersion\n            \"\"\";\n        var advanced = await connection.ExecuteAsync(new CommandDefinition(advanceSql,\n            new { StreamId = streamId, NewVersion = expectedVersion + events.Count, ExpectedVersion = expectedVersion },\n            tx, cancellationToken: ct));\n\n        if (advanced == 0)\n        {\n            await tx.RollbackAsync(ct);\n            var actual = await connection.ExecuteScalarAsync<long>(new CommandDefinition(\n                \"SELECT version FROM events.streams WHERE stream_id = @StreamId\", new { StreamId = streamId },\n                cancellationToken: ct));\n            throw new EventStoreConcurrencyException(streamId, expectedVersion, actual);\n        }\n\n        // ③ أدخل الأحداث بإصدارات متتابعة (PK يمنع التكرار كمان)\n        var version = expectedVersion;\n        foreach (var domainEvent in events)\n        {\n            version++;\n            var (type, schemaVersion, payload) = serializer.Serialize(domainEvent);\n            const string insertEventSql = \"\"\"\n                INSERT INTO events.events (stream_id, version, type, schema_ver, payload, metadata, occurred_at)\n                VALUES (@StreamId, @Version, @Type, @SchemaVer, @Payload::jsonb, @Metadata::jsonb, @OccurredAt)\n                \"\"\";\n            await connection.ExecuteAsync(new CommandDefinition(insertEventSql,\n                new\n                {\n                    StreamId = streamId, Version = version, Type = type, SchemaVer = schemaVersion,\n                    Payload = payload,\n                    Metadata = JsonSerializer.Serialize(new { metadata.CorrelationId, metadata.CausationId, metadata.ActorId }),\n                    OccurredAt = domainEvent.OccurredAt,\n                }, tx, cancellationToken: ct));\n        }\n\n        await tx.CommitAsync(ct);\n        EventStoreMetrics.Appended.Add(events.Count, new(\"type\", streamType));\n        return version;\n    }\n\n    /// <summary>تحميل: أحدث snapshot + الأحداث بعده، ثم fold + upcasting.</summary>\n    public async Task<EventStream> LoadAsync<TState>(Guid streamId, CancellationToken ct)\n        where TState : IEventSourcedState, new()\n    {\n        var connection = db.Database.GetDbConnection();\n\n        var snapshot = await connection.QuerySingleOrDefaultAsync<SnapshotRow?>(new CommandDefinition(\n            \"SELECT version, state FROM events.snapshots WHERE stream_id = @StreamId ORDER BY version DESC LIMIT 1\",\n            new { StreamId = streamId }, cancellationToken: ct));\n\n        var state = new TState();\n        var fromVersion = 0L;\n        if (snapshot is not null)\n        {\n            state = serializer.DeserializeState<TState>(snapshot.State);\n            fromVersion = snapshot.Version;\n        }\n\n        const string loadSql = \"\"\"\n            SELECT version, type, schema_ver, payload, metadata, occurred_at\n            FROM events.events WHERE stream_id = @StreamId AND version > @FromVersion ORDER BY version\n            \"\"\";\n        var rows = await connection.QueryAsync<EventRow>(new CommandDefinition(\n            loadSql, new { StreamId = streamId, FromVersion = fromVersion }, cancellationToken: ct));\n\n        var applied = 0;\n        foreach (var row in rows)\n        {\n            var domainEvent = serializer.DeserializeAndUpcast(row.Type, row.SchemaVersion, row.Payload);  // ★ upcasting\n            state = state.Apply(domainEvent);\n            applied++;\n        }\n\n        var currentVersion = fromVersion + applied;\n\n        // ✓ snapshot دوري — وإلا الـstreams الطويلة بتبطئ التحميل بشكل خطي\n        if (applied >= SnapshotEvery)\n        {\n            const string snapshotSql = \"\"\"\n                INSERT INTO events.snapshots (stream_id, version, state) VALUES (@StreamId, @Version, @State::jsonb)\n                ON CONFLICT (stream_id, version) DO NOTHING\n                \"\"\";\n            await connection.ExecuteAsync(new CommandDefinition(snapshotSql,\n                new { StreamId = streamId, Version = currentVersion, State = serializer.SerializeState(state) },\n                cancellationToken: ct));\n        }\n\n        EventStoreMetrics.LoadDuration.Record(applied, new(\"snapshot\", snapshot is not null));\n        return new EventStream(streamId, currentVersion, state);\n    }\n\n    private sealed record SnapshotRow(long Version, string State);\n    private sealed record EventRow(long Version, string Type, int SchemaVersion, string Payload,\n                                   string Metadata, DateTimeOffset OccurredAt);\n}\n\npublic sealed class EventStoreConcurrencyException(Guid streamId, long expected, long actual)\n    : Exception($\"تعارض في الـstream {streamId}: توقعنا الإصدار {expected} والفعلية {actual}\");\n\npublic interface IEventSourcedState\n{\n    /// <summary>تطبيق حدث واحد على الحالة (لا I/O، لا منطق غير حتمي — وإلا الـreplay يتغير).</summary>\n    IEventSourcedState Apply(IDomainEvent domainEvent);\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Billing/Domain/InvoiceStream.cs",
+      "title": "aggregate مُصدَّر بالحدث: Apply بدل setters",
+      "code": "\nnamespace Shop.Billing.Domain;\n\n/// <summary>\n/// الحالة محسوبة من الأحداث: مفيش setter، ومفيش حفظ مباشر.\n/// ★ كل `Apply` لازم يكون **حتميًا**: نفس الأحداث → نفس الحالة (بلا `DateTime.Now` ولا عشوائية).\n/// </summary>\npublic sealed class InvoiceStream : IEventSourcedState\n{\n    public Guid Id { get; private init; }\n    public Guid CustomerId { get; private init; }\n    public InvoiceStatus Status { get; private set; } = InvoiceStatus.Draft;\n    public Money Amount { get; private set; }\n    public DateTimeOffset IssuedAt { get; private set; }\n    public DateTimeOffset? PaidAt { get; private set; }\n    public IReadOnlyList<InvoiceLine> Lines => _lines;\n    /// <summary>★ يُحددها الـevent store عند التحميل — مش جزء من الـfold (وإلا بقى غير حتمي).</summary>\n    public long Version { get; internal set; }\n    private readonly List<InvoiceLine> _lines = [];\n\n    IEventSourcedState IEventSourcedState.Apply(IDomainEvent e) { Apply(e); return this; }\n\n    public void Apply(IDomainEvent e)\n    {\n        switch (e)\n        {\n            case InvoiceIssued issued:\n                Id = issued.InvoiceId; CustomerId = issued.CustomerId; Amount = issued.Amount;\n                IssuedAt = issued.OccurredAt; Status = InvoiceStatus.Issued;\n                _lines.AddRange(issued.Lines);\n                break;\n\n            case InvoiceLineAdjusted adj:\n                var line = _lines.Find(l => l.ProductId == adj.ProductId);\n                if (line is not null) line.AdjustQuantity(adj.NewQuantity);\n                Amount = adj.NewAmount;                 // ★ المبلغ الجديد من الحدث (مش محسوب الآن)\n                break;\n\n            case PaymentCaptured paid:\n                if (Status == InvoiceStatus.Issued) { Status = InvoiceStatus.Paid; PaidAt = paid.OccurredAt; }\n                break;                                  // ✓ idempotent: تكرار الحدث لا يكسر الحالة\n\n            case InvoiceVoided voided:\n                Status = InvoiceStatus.Voided;\n                break;\n\n            default:\n                // ★ حدث جديد/غير معروف: تجاهله (لا تفشل) — عشان الـstreams القديمة تفضل تُقرأ\n                break;\n        }\n    }\n\n    // ── الأوامر: تتحقق ثم تُنتج أحداثًا (لا تعدّل الحالة مباشرة) ──\n    public static (InvoiceStream State, IReadOnlyList<IDomainEvent> Events) Issue(\n        Guid invoiceId, Guid customerId, Money amount, IReadOnlyList<InvoiceLine> lines, IClock clock)\n    {\n        if (amount.IsZero) throw new InvalidOperationException(\"لا يمكن إصدار فاتورة بمبلغ صفر\");\n        if (lines.Count == 0) throw new InvalidOperationException(\"الفاتورة تحتاج سطرًا واحدًا على الأقل\");\n\n        var evt = new InvoiceIssued(invoiceId, customerId, amount, lines, clock.UtcNow);\n        var state = new InvoiceStream();\n        state.Apply(evt);\n        return (state, [evt]);\n    }\n\n    public IReadOnlyList<IDomainEvent> CapturePayment(Money amount, IClock clock)\n    {\n        if (Status != InvoiceStatus.Issued)\n            throw new InvalidOperationException($\"لا يمكن تحصيل فاتورة بحالة {Status}\");\n        if (amount != Amount)\n            throw new InvalidOperationException($\"المبلغ المحصّل {amount} لا يطابق المستحق {Amount}\");\n\n        return [new PaymentCaptured(Id, amount, clock.UtcNow)];\n    }\n\n    public IReadOnlyList<IDomainEvent> Void(string reason, IClock clock)\n    {\n        if (Status == InvoiceStatus.Paid)\n            throw new InvalidOperationException(\"الفاتورة المدفوعة لا تُلغى — أصدر فاتورة دائنة (credit note)\");\n\n        return [new InvoiceVoided(Id, reason, clock.UtcNow)];\n    }\n}\n\npublic sealed record InvoiceIssued(Guid InvoiceId, Guid CustomerId, Money Amount,\n    IReadOnlyList<InvoiceLine> Lines, DateTimeOffset OccurredAt) : IDomainEvent;\npublic sealed record InvoiceLineAdjusted(Guid InvoiceId, Guid ProductId, int NewQuantity,\n    Money NewAmount, DateTimeOffset OccurredAt) : IDomainEvent;\npublic sealed record PaymentCaptured(Guid InvoiceId, Money Amount, DateTimeOffset OccurredAt) : IDomainEvent;\npublic sealed record InvoiceVoided(Guid InvoiceId, string Reason, DateTimeOffset OccurredAt) : IDomainEvent;\n\npublic sealed class InvoiceLine\n{\n    public Guid ProductId { get; init; }\n    public string Name { get; init; } = string.Empty;\n    public int Quantity { get; private set; }\n    public Money UnitPrice { get; init; }\n    public Money Subtotal => UnitPrice.Multiply(Quantity);\n    public void AdjustQuantity(int q) { if (q < 0) throw new ArgumentOutOfRangeException(nameof(q)); Quantity = q; }\n}\n\npublic enum InvoiceStatus { Draft, Issued, Paid, Voided }\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Upcasting: التكلفة اللي بتفضل معاك للأبد"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "تحويل الأحداث القديمة للصيغة الحالية وقت القراءة",
+      "code": "\n/// <summary>\n/// لما يتغير شكل الحدث، **ممنوع** تعديل الأحداث المخزنة (السجل غير قابل للتغيير).\n/// الحل: upcaster يحوّل النسخة القديمة للجديدة وقت القراءة، ومُسجَّل لكل إصدار.\n/// </summary>\npublic interface IEventUpcaster\n{\n    string Type { get; }\n    int FromVersion { get; }\n    JsonNode Upcast(JsonNode payload);\n}\n\n/// <summary>مثال حقيقي: `InvoiceIssued@1` كان فيه `total` بدل `amount` + `currency` منفصلين.</summary>\npublic sealed class InvoiceIssuedV1ToV2 : IEventUpcaster\n{\n    public string Type => \"invoice.issued\";\n    public int FromVersion => 1;\n\n    public JsonNode Upcast(JsonNode payload)\n    {\n        var obj = payload.AsObject();\n        if (obj[\"amount\"] is not null) return obj;                     // ✓ بالفعل بالصيغة الجديدة\n\n        var total = obj[\"total\"]?.GetValue<decimal>()\n                    ?? throw new InvalidDataException(\"invoice.issued@1 بلا total\");\n        var currency = obj[\"currency\"]?.GetValue<string>() ?? \"EGP\";   // ✓ قيمة افتراضية موثقة\n\n        obj[\"amount\"] = new JsonObject { [\"amount\"] = total, [\"currency\"] = currency };\n        obj.Remove(\"total\");\n        obj.Remove(\"currency\");\n        return obj;\n    }\n}\n\n/// <summary>سلسلة الـupcasting: v1 → v2 → v3 (ترتيب مهم).</summary>\npublic sealed class EventSerializer(IEnumerable<IEventUpcaster> upcasters) : IEventSerializer\n{\n    private readonly Dictionary<(string Type, int Version), IEventUpcaster> _map =\n        upcasters.ToDictionary(u => (u.Type, u.FromVersion));\n\n    public IDomainEvent DeserializeAndUpcast(string type, int schemaVersion, string payload)\n    {\n        var node = JsonNode.Parse(payload) ?? throw new InvalidDataException($\"payload فارغ لـ{type}\");\n        var version = schemaVersion;\n\n        // ★ اصعد إصدارًا بإصدار حتى الأحدث\n        while (_map.TryGetValue((type, version), out var upcaster))\n        {\n            node = upcaster.Upcast(node);\n            version++;\n        }\n\n        return MapToDomainEvent(type, node);                            // type → النوع الحالي في الكود\n    }\n\n    private static IDomainEvent MapToDomainEvent(string type, JsonNode node) => type switch\n    {\n        \"invoice.issued\"     => node.Deserialize<InvoiceIssued>()!,\n        \"invoice.voided\"     => node.Deserialize<InvoiceVoided>()!,\n        \"payment.captured\"   => node.Deserialize<PaymentCaptured>()!,\n        \"invoice.line_adjusted\" => node.Deserialize<InvoiceLineAdjusted>()!,\n        _ => new UnknownEvent(type, node),      // ✓ لا تفشل على حدث من إصدار أحدث (توافق أمامي)\n    };\n}\n\npublic sealed record UnknownEvent(string Type, JsonNode Payload) : IDomainEvent\n{\n    public DateTimeOffset OccurredAt => DateTimeOffset.MinValue;\n}\n\n// قواعد إصدار الأحداث (اكتبها في CONTRIBUTING):\n// ① إضافة حقل اختياري بقيمة افتراضية → **لا** يحتاج إصدارًا جديدًا (توافق خلفي)\n// ② إعادة تسمية/حذف/تغيير نوع حقل → إصدار جديد + upcaster + اختبار على بيانات قديمة\n// ③ ممنوع حذف upcaster قديم ما دام فيه stream بهذا الإصدار (فحص: SELECT DISTINCT schema_ver)\n// ④ كل upcaster له اختبار على payload حقيقي من الإنتاج (مش مثال مختلق)\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) الأدوات الجاهزة في .NET"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الأداة",
+        "التخزين",
+        "المزايا",
+        "اعتبارات"
+      ],
+      "rows": [
+        [
+          "**Marten**",
+          "PostgreSQL",
+          "event store + projections + document DB في مكتبة واحدة، بلا بنية إضافية",
+          "يربطك بـPostgres؛ افحص أداء الـprojections لحملك"
+        ],
+        [
+          "**EventStoreDB**",
+          "مخصص (gRPC)",
+          "مصمم للأحداث: اشتراكات، projections مدمجة، أداء عالي",
+          "خدمة إضافية تشغّلها وتراقبها وتؤمنها"
+        ],
+        [
+          "**Wolfgang / Wolverine**",
+          "Postgres",
+          "مراسلة + أحداث في إطار واحد",
+          "أصغر مجتمعًا من MassTransit"
+        ],
+        [
+          "**EF Core + outbox (MassTransit)**",
+          "Postgres/SQL Server",
+          "بلا event sourcing لكن بموثوقية رسائل",
+          "★ الخيار الكافي لأغلب الفرق"
+        ],
+        [
+          "يدوي على Postgres (كما أعلاه)",
+          "PostgreSQL",
+          "بلا اعتماديات، تحكم كامل، سهل الفهم",
+          "بتكتب snapshots/ projections/ upcasting بنفسك"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "ملاحظة على APIs المكتبات الجاهزة",
+      "md": "\nالمكتبات دي بتتطور بسرعة وتواقيعها بتتغير بين الإصدارات (Marten مثلًا غيّر API الـaggregations أكتر من مرة).\nاستخدم الكود اليدوي أعلاه لفهم **المفاهيم** (streams، version، fold، snapshots، upcasting) —\nولما تختار مكتبة، اقرأ توثيق إصدارك المحدد وابدأ بـspike صغير على بياناتك قبل الالتزام.\n\nمهما كانت الأداة، الأسئلة اللي لازم تجاوبها بنفسك: **إزاي هتعمل migration لأحداث قديمة؟\nإزاي هتحذف بيانات شخصية؟ وإزاي هتستعلم عن الحالة الحالية بسرعة؟**\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) المشاكل التشغيلية (اللي بتظهر بعد 6 شهور)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المشكلة",
+        "ليه بتحصل",
+        "الحل"
+      ],
+      "rows": [
+        [
+          "الاستعلامات البسيطة بقت صعبة",
+          "الحالة مش مخزنة — كل عرض يحتاج projection",
+          "ابنِ projection لكل حالة عرض من البداية (وقِس تكلفة إعادة البناء)"
+        ],
+        [
+          "إصدار جديد من حدث قديم كسر الـreplay",
+          "تغيير شكل الحدث بلا upcaster",
+          "قواعد إصدار صارمة + اختبارات على payloads قديمة حقيقية"
+        ],
+        [
+          "حذف بيانات مستخدم (GDPR)",
+          "السجل غير قابل للحذف",
+          "شفّر الحقول الشخصية بمفتاح لكل مستخدم واحذف المفتاح (crypto-shredding)، أو خزن معرّف بدل البيانات"
+        ],
+        [
+          "stream بطول 200k حدث → تحميل بطيء",
+          "بلا snapshots أو snapshot كل N كبير",
+          "snapshot دوري (كل 50-100 حدث) + قيّم ضغط الـstream (stream per فترة)"
+        ],
+        [
+          "الـprojection تأخرت بعد إعادة بناء",
+          "replay لملايين الأحداث",
+          "خطة إعادة بناء متوازية + نسخة جديدة من الجدول + تبديل (shadow table)"
+        ],
+        [
+          "الأحداث صارت «API» غير مقصود",
+          "كل مستهلك يعتمد على حقول الحدث",
+          "عقود موثقة + إصدار + اختبار توافق"
+        ],
+        [
+          "التخزين بيكبر بلا حدود",
+          "append-only بطبيعته",
+          "أرشفة الـstreams المغلقة (cold storage) + احتفظ بـsnapshot نهائي"
+        ],
+        [
+          "صعوبة onboarding",
+          "نموذج غير مألوف",
+          "توثيق + مثال مرجعي + مراجعة صارمة لـApply (لا I/O ولا عدم حتمية)"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "اختبارات event sourcing (مختلفة عن اختبارات CRUD)",
+      "code": "\npublic class InvoiceStreamTests\n{\n    private static readonly FixedClock Clock = new(new DateTimeOffset(2026, 10, 22, 9, 0, 0, TimeSpan.Zero));\n\n    [Fact]\n    public void Fold_produces_same_state_regardless_of_chunking()\n    {\n        var events = new List<IDomainEvent>\n        {\n            new InvoiceIssued(Guid.NewGuid(), Guid.NewGuid(), new Money(1000m, \"EGP\"), TestData.Lines(2), Clock.UtcNow),\n        };\n\n        var state = new InvoiceStream();\n        foreach (var e in events) state.Apply(e);\n\n        // ★ إعادة التطبيق (تكرار) لا تغيّر الحالة — idempotent fold\n        foreach (var e in events) state.Apply(e);\n\n        state.Status.Should().Be(InvoiceStatus.Issued);\n        state.Lines.Should().HaveCount(2);\n        state.Amount.Should().Be(new Money(1000m, \"EGP\"));\n    }\n\n    [Fact]\n    public async Task Concurrent_append_on_same_stream_yields_conflict()\n    {\n        await using var store = new TestEventStore();          // Postgres حقيقي (Testcontainers)\n        var streamId = Guid.NewGuid();\n        await store.AppendAsync(streamId, \"invoice\", 0, [Issued()], Meta(), CancellationToken.None);\n\n        // نسختان قرأتا الإصدار 1 وحاولتا الإضافة\n        await store.AppendAsync(streamId, \"invoice\", 1, [Paid()], Meta(), CancellationToken.None);\n        var second = () => store.AppendAsync(streamId, \"invoice\", 1, [Voided()], Meta(), CancellationToken.None);\n\n        await second.Should().ThrowAsync<EventStoreConcurrencyException>()\n            .Where(e => e.Message.Contains(\"توقعنا الإصدار 1\"));\n    }\n\n    [Fact]\n    public async Task Upcaster_migrates_v1_payload_to_current_shape()\n    {\n        const string V1Payload = \"\"\"{\"invoiceId\":\"...\",\"customerId\":\"...\",\"total\":1000,\"currency\":\"EGP\",\"lines\":[]}\"\"\";\n        var serializer = new EventSerializer([new InvoiceIssuedV1ToV2()]);\n\n        var e = serializer.DeserializeAndUpcast(\"invoice.issued\", schemaVersion: 1, V1Payload);\n\n        e.Should().BeOfType<InvoiceIssued>().Which.Amount.Should().Be(new Money(1000m, \"EGP\"));\n    }\n\n    [Fact]\n    public async Task Unknown_future_event_is_ignored_not_fatal()\n    {\n        var serializer = new EventSerializer([]);\n        var e = serializer.DeserializeAndUpcast(\"invoice.new_feature_from_v3\", 1, \"{}\");\n\n        e.Should().BeOfType<UnknownEvent>();\n        var state = new InvoiceStream();\n        var act = () => state.Apply(e);\n        act.Should().NotThrow(\"التوافق الأمامي: حدث من إصدار أحدث لا يكسر القراءة\");\n    }\n\n    [Fact]\n    public async Task Snapshot_plus_tail_equals_full_fold()\n    {\n        await using var store = new TestEventStore();\n        var streamId = Guid.NewGuid();\n        // 120 حدثًا → يُلتقط snapshot بعد 50\n        await store.AppendManyAsync(streamId, \"invoice\", Enumerable.Range(0, 120).Select(Adjust).ToList());\n\n        var withSnapshot = await store.LoadAsync<InvoiceStream>(streamId, CancellationToken.None);\n        var fromScratch = FoldManually(await store.ReadAllAsync(streamId, CancellationToken.None));\n\n        withSnapshot.Version.Should().Be(120);\n        JsonSerializer.Serialize(withSnapshot.State).Should().Be(JsonSerializer.Serialize(fromScratch),\n            \"التحميل من snapshot + الذيل لازم يساوي fold كامل\");\n    }\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أفرّق بين Event Sourcing وaudit log وCRUD+events وأختار بأدلة (مش بحماس).",
+        "أفهم streams/version/fold/snapshots وأعرف إن `Apply` لازم يكون حتميًا وبلا I/O.",
+        "أتعامل مع إصدارات الأحداث عبر upcasting وقواعد تغيير صارمة واختبارات على بيانات قديمة.",
+        "أعرف المشاكل التشغيلية (GDPR، نمو التخزين، صعوبة الاستعلام، إعادة البناء) وخطة كل واحدة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "في Event Sourcing، مصدر الحقيقة هو…",
+          "options": [
+            "جدول الحالة",
+            "تسلسل الأحداث (الحالة الحالية نتيجة fold عليها)",
+            "الـprojection",
+            "الـsnapshot"
+          ],
+          "answer": 1,
+          "explain": "الجداول الأخرى كلها مشتقة وقابلة لإعادة البناء. ده اللي بيديك time travel وإعادة تشغيل."
+        },
+        {
+          "q": "ليه `Apply` لازم يكون حتميًا (بلا `DateTime.Now` ولا عشوائية)؟",
+          "options": [
+            "للأداء",
+            "لأن إعادة تشغيل نفس الأحداث لازم تنتج نفس الحالة — وإلا الـreplay والـsnapshots بتدي نتائج مختلفة",
+            "مطلب المترجم",
+            "لتقليل الذاكرة"
+          ],
+          "answer": 1,
+          "explain": "الزمن/القيم العشوائية تجيء من الحدث نفسه (occurred_at) أو من الـmetadata — مش من لحظة الـfold."
+        },
+        {
+          "q": "غيرت شكل حدث موجود في 3 مليون صف قديم. التصرف؟",
+          "options": [
+            "UPDATE للأحداث القديمة",
+            "اكتب upcaster يحوّل v1→v2 وقت القراءة، وسجّل إصدار النوع، واختبره على payload حقيقي قديم",
+            "احذف الأحداث القديمة",
+            "أنشئ stream جديدة"
+          ],
+          "answer": 1,
+          "explain": "تعديل السجل بيكسر مبدأ immutability والتدقيق. الـupcasting هو الآلية الوحيدة المقبولة (مع سلسلة إصدارات)."
+        },
+        {
+          "q": "مستخدم طلب حذف بياناته (GDPR) والسجل غير قابل للحذف. الحل؟",
+          "options": [
+            "احذف الأحداث",
+            "crypto-shredding: شفّر الحقول الشخصية بمفتاح لكل مستخدم واحذف المفتاح، أو خزن معرّفات بدل البيانات الحساسة",
+            "تجاهل الطلب",
+            "احذف قاعدة البيانات"
+          ],
+          "answer": 1,
+          "explain": "بعد حذف المفتاح، البيانات المشفرة تصير غير قابلة للقراءة = مسح فعلي. لازم تخطط لها من التصميم الأول."
+        },
+        {
+          "q": "stream فيه 200,000 حدث والتحميل بقى بطيء. الحل؟",
+          "options": [
+            "احذف أحداث قديمة",
+            "snapshots دورية (كل 50-100 حدث) + تحميل من أحدث snapshot ثم الذيل فقط، وقياس زمن التحميل",
+            "زِد الـtimeout",
+            "لا تخزن أحداث"
+          ],
+          "answer": 1,
+          "explain": "التحميل خطي في عدد الأحداث بلا snapshot. كمان قيّم تصميم الـstream (stream لكل فترة/دورة حياة) بدل stream واحد أبدي."
+        },
+        {
+          "q": "أغلب الفرق محتاجة «نعرف مين غيّر إيه وليه». أنسب حل؟",
+          "options": [
+            "Event Sourcing كامل",
+            "CRUD + domain events عبر outbox + جدول audit_log في نفس المعاملة",
+            "لا شيء",
+            "طباعة اللوجات"
+          ],
+          "answer": 1,
+          "explain": "بيديك التدقيق والتكامل بلا تكلفة ES (إصدارات أحداث للأبد، projections لكل استعلام، اتساق eventual)."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "قرار event sourcing موثق",
+          "md": "اكتب ADR يقيّم Event Sourcing مقابل audit log مقابل CRUD+events لنظامك: جدول معايير، تقييم لكل خيار، القرار، وشروط إعادة النظر. لو قررت audit log: صمّم الجدول واكتبه في معاملة.",
+          "criteria": [
+            "جدول ≥ 8 معايير (تدقيق، time travel، استعلامات، اتساق، إصدارات، GDPR، تكلفة فريق، تخزين)",
+            "قرار صريح بدليل من متطلباتك (مش تفضيل عام)",
+            "لو audit log: الجدول يُكتب في نفس معاملة التغيير + اختبار يثبت تطابق السجل مع التغيير",
+            "معالجة صريحة لمتطلب حذف البيانات الشخصية (أيًا كان القرار)",
+            "شروط إعادة نظر مقاسة"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "نموذج event sourcing مصغّر (لو اخترت التجربة)",
+          "md": "نفّذ stream واحدة (فاتورة/حجز) على Postgres: جداول events/snapshots/checkpoints، append بتنافس أمثل، fold، snapshot كل 50 حدث، وprojection واحدة. اختبر الحالات الحرجة.",
+          "criteria": [
+            "append ذرّي مع تنافس أمثل (اختبار تعارض بين نسختين)",
+            "fold حتمي (اختبار: التطبيق المزدوج لا يغيّر الحالة)",
+            "snapshots: تحميل من snapshot + الذيل يساوي fold كامل (اختبار)",
+            "projection واحدة بـcheckpoint قابل لإعادة البناء (truncate + replay)",
+            "مثال upcaster واحد مع اختبار على payload قديم",
+            "قياس: زمن التحميل لـstream بـ100 و1000 و10000 حدث (جدول)"
+          ],
+          "hint": "خلي الـaggregate صغير (كيان واحد). لو لقيت نفسك بتطبق أحداث من aggregates تانية داخل الـfold → الحدود غلط."
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Event Sourcing pattern (MS Learn)",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/event-sourcing"
+        },
+        {
+          "label": "Marten — Event store",
+          "url": "https://martendb.io/events/"
+        },
+        {
+          "label": "EventStoreDB documentation",
+          "url": "https://www.eventstore.com/docs"
+        },
+        {
+          "label": "Event versioning & upcasting",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/event-sourcing#event-versioning"
+        },
+        {
+          "label": "CQRS + Event Sourcing guidance",
+          "url": "https://learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/cqrs-microservice-reads"
+        },
+        {
+          "label": "Crypto-shredding & GDPR",
+          "url": "https://gdpr-info.eu/art-17-gdpr/"
+        }
+      ]
+    }
+  ]
+}

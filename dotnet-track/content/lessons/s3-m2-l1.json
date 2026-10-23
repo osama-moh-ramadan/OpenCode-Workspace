@@ -1,0 +1,295 @@
+{
+  "id": "s3-m2-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nأغلب مشاكل الأداء في تطبيقات .NET مش في قاعدة البيانات — دي في **الـSQL اللي الـORM ولّده**.\nوأسوأها شهرةً: **N+1** (استعلام للقائمة + استعلام لكل صف). بيتخفى بسهولة لأن الكود LINQ نظيف و«منطقي».\n\nالدرس ده: تكتشف N+1 بالأدوات (مش بالتخمين)، تختار بين `Include` وprojection،\nتستخدم `AsNoTracking` صح، وتقيس أثر كل تغيير بالأرقام.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "N+1",
+          "def": "استعلام واحد يجلب N صف، ثم N استعلام إضافية لجلب التفاصيل — غالبًا عبر تنقّل كسول (lazy) أو `Include` مفقود داخل حلقة."
+        },
+        {
+          "term": "Eager Loading (`Include`)",
+          "def": "جلب العلاقات مع الاستعلام الأساسي (JOIN). يقلل عدد الرحلات لكنه قد يجلب أعمدة/صفوف أكثر من اللازم."
+        },
+        {
+          "term": "Cartesian Explosion",
+          "def": "ضمّ أكثر من collection navigation في استعلام واحد → حاصل ضرب الصفوف (N×M). حله `AsSplitQuery`."
+        },
+        {
+          "term": "Projection (`Select`)",
+          "def": "طلب الأعمدة المطلوبة فقط في شكل DTO — الأفضل أداءً للقراءات، وبلا tracking تلقائيًا."
+        },
+        {
+          "term": "`AsNoTracking`",
+          "def": "قراءة بلا change tracking: أسرع وأقل ذاكرة. للمسارات اللي ما بتعدّلش الكيانات."
+        },
+        {
+          "term": "`AsNoTrackingWithIdentityResolution`",
+          "def": "بلا tracking لكن مع توحيد الكيانات المكررة في النتيجة (أبطأ قليلًا من `AsNoTracking`)."
+        },
+        {
+          "term": "Change Tracker",
+          "def": "مخزن الكيانات المتتبَّعة: كل كيان = snapshot + حالة. تكلفته تكبر مع عدد الكيانات."
+        },
+        {
+          "term": "Compiled Query",
+          "def": "`EF.CompileAsyncQuery` — ترجمة الاستعلام مرة واحدة وإعادة استخدام الخطة (توفير CPU لكل نداء)."
+        },
+        {
+          "term": "Client Evaluation",
+          "def": "تنفيذ جزء من الاستعلام في الذاكرة بدل القاعدة. EF Core بيرفضه غالبًا باستثناء أعلى projection."
+        },
+        {
+          "term": "Query Filter",
+          "def": "شرط implicit على النوع (soft delete/multi-tenancy) — بيُطبَّق تلقائيًا ويتجاهل بـ`IgnoreQueryFilters()`."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) الاكتشاف: شوف الـSQL الحقيقي"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Program.cs",
+      "title": "تسجيل SQL + عداد استعلامات لكل طلب",
+      "code": "\nbuilder.Services.AddDbContext<AppDbContext>(options =>\n{\n    options.UseNpgsql(config.GetConnectionString(\"Default\"), npgsql =>\n    {\n        npgsql.EnableRetryOnFailure(maxRetryCount: 3);\n        npgsql.CommandTimeout(15);                        // ✓ سقف زمني: استعلام متعلق لا يعلّق الطلب\n    });\n\n    // ── في التطوير: شوف كل SQL بتفاصيله\n    if (builder.Environment.IsDevelopment())\n    {\n        options.LogTo(\n            Console.WriteLine,\n            new[] { RelationalEventId.CommandExecuted },\n            LogLevel.Information,\n            DbContextLoggerOptions.SingleLine | DbContextLoggerOptions.Level);\n\n        options.EnableSensitiveDataLogging();             // ★ تطوير فقط: يطبع قيم المعاملات\n        options.EnableDetailedErrors();\n    }\n\n    // ── سلوك افتراضي للقراءة: بلا tracking (الـAPIs نادرًا ما تعدّل كيانات مقروءة)\n    options.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);\n});\n\n// ★ كشف N+1 آليًا: interceptor بيعدّ الاستعلامات داخل نطاق الطلب\npublic sealed class QueryCountingInterceptor(ILogger<QueryCountingInterceptor> log) : DbCommandInterceptor\n{\n    private static readonly AsyncLocal<int> Counter = new();\n    public static int Count => Counter.Value;\n\n    public static IDisposable BeginScope()\n    {\n        Counter.Value = 0;\n        return new Scope();\n    }\n\n    public override InterceptionResult<DbDataReader> ReaderExecuting(\n        DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)\n    {\n        Counter.Value++;\n        return base.ReaderExecuting(command, eventData, result);\n    }\n\n    public override Task<InterceptionResult<DbDataReader>> ReaderExecutingAsync(\n        DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,\n        CancellationToken ct = default)\n    {\n        Counter.Value++;\n        return base.ReaderExecutingAsync(command, eventData, result, ct);\n    }\n\n    private sealed class Scope : IDisposable\n    {\n        public void Dispose() { /* القيمة تُقرأ في middleware الآتية */ }\n    }\n}\n\n// middleware يسجّل عدد الاستعلامات لكل endpoint (وينبّه على القيم الشاذة)\napp.Use(async (ctx, next) =>\n{\n    using var _ = QueryCountingInterceptor.BeginScope();\n    await next(ctx);\n\n    var count = QueryCountingInterceptor.Count;\n    ctx.Response.Headers[\"X-Query-Count\"] = count.ToString();\n    if (count > 25)\n        Log.Warning(\"possible N+1: {Count} queries on {Path}\", count, ctx.Request.Path);\n});\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "أدوات خارجية للتشخيص",
+      "code": "\n# عدادات EF Core الحية (queries/sec، زمن التنفيذ، SaveChanges)\ndotnet tool install -g dotnet-counters\ndotnet-counters monitor --process-id <PID> --counters Microsoft.EntityFrameworkCore\n\n# من جانب القاعدة: أبطأ العبارات وأكثرها تكرارًا (المصدر الأدق للحقيقة)\npsql \"$DB\" -c \"SELECT calls, round(mean_exec_time::numeric,2) AS mean_ms,\n                      round(total_exec_time::numeric,1) AS total_ms, left(query,110)\n               FROM pg_stat_statements ORDER BY calls DESC LIMIT 25;\"\n\n# ملاحظة: عبارة SELECT متكررة مئات المرات بنفس الشكل = توقيع N+1 النموذجي\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) N+1 بأشكاله الأربعة وعلاج كل واحد"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Orders/N1Patterns.cs",
+      "title": "الأشكال الشائعة — والحل لكل شكل",
+      "code": "\n// ═══ الشكل 1: تنقّل داخل حلقة (الأشهر) ═══\n// ✗ 1 + N استعلام\nvar orders = await db.Orders.Take(50).ToListAsync(ct);\nforeach (var o in orders) total += o.Lines.Sum(l => l.Total);      // ← كل سطر استعلام\n\n// ✓ أ: projection (الأفضل للقراءة)\nvar rows = await db.Orders\n    .OrderByDescending(o => o.CreatedAt)\n    .Take(50)\n    .Select(o => new OrderSummary(\n        o.Id, o.CreatedAt, o.Status,\n        LineCount: o.Lines.Count,                                  // يُترجم لـaggregate في SQL\n        Total: o.Lines.Sum(l => l.Quantity * l.UnitPrice),\n        CustomerCountry: o.Customer.Country))                      // JOIN واحد\n    .ToListAsync(ct);\n\n// ✓ ب: Include لو محتاج الكيانات نفسها (للكتابة)\nvar withLines = await db.Orders\n    .Include(o => o.Lines)\n    .Include(o => o.Customer)\n    .Where(o => o.Status == OrderStatus.New)\n    .Take(50)\n    .ToListAsync(ct);\n\n\n// ═══ الشكل 2: Lookup مفقود (N استعلام للبحث عن أصل) ═══\n// ✗ لكل منتج: استعلام للفئة\nvar products = await db.Products.Take(200).ToListAsync(ct);\nvar names = products.Select(p => db.Categories\n    .First(c => c.Id == p.CategoryId).Name).ToList();\n\n// ✓ اجلب المفاتيح مرة واحدة وابنِ dictionary في الذاكرة\nvar ids = products.Select(p => p.CategoryId).Distinct().ToArray();\nvar categories = await db.Categories\n    .Where(c => ids.Contains(c.Id))                                // IN (...) واحد\n    .ToDictionaryAsync(c => c.Id, c => c.Name, ct);\nvar names2 = products.Select(p => categories.GetValueOrDefault(p.CategoryId)).ToList();\n\n\n// ═══ الشكل 3: Lazy Loading مفعّل (بيخفي N+1 خلف ملكية بسيطة) ═══\n// ✗ options.UseLazyLoadingProxies() + o.Customer.Country في loop\n// ✓ عطّله (الافتراضي) واستخدم Include/projection صراحة\n//   قاعدة: Lazy loading يخفي تكلفة الاستعلام عن القارئ وعن المراجعة — لا تفعّله في APIs\n\n\n// ═══ الشكل 4: N+1 في الكتابة (SaveChanges لكل كيان) ═══\n// ✗ حلقة فيها SaveChanges → transaction لكل كيان + round-trip لكل واحد\nforeach (var id in ids)\n{\n    var order = await db.Orders.SingleAsync(o => o.Id == id, ct);\n    order.Status = OrderStatus.Cancelled;\n    await db.SaveChangesAsync(ct);\n}\n\n// ✓ تعديل جماعي بعبارة واحدة (درس ExecuteUpdate)\nvar affected = await db.Orders\n    .Where(o => ids.Contains(o.Id))\n    .ExecuteUpdateAsync(s => s\n        .SetProperty(o => o.Status, OrderStatus.Cancelled)\n        .SetProperty(o => o.UpdatedAt, TimeProvider.System.GetUtcNow()), ct);\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Include مقابل Projection مقابل Split Query"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الحالة",
+        "الحل",
+        "ملاحظة"
+      ],
+      "rows": [
+        [
+          "قائمة للقراءة (عرض/تقرير)",
+          "**Projection** بـ`Select` لأعمدة محتاجها",
+          "أقل بيانات، بلا tracking، aggregate في SQL"
+        ],
+        [
+          "كيانات للتعديل في نفس الـscope",
+          "`AsTracking` + `Include`",
+          "لا تستخدم projection لو هتعدّل"
+        ],
+        [
+          "علاقة collection واحدة + `Skip/Take`",
+          "`Include` مع `AsSplitQuery()`",
+          "يتجنب حاصل الضرب مع الترقيم"
+        ],
+        [
+          "أكثر من collection navigation",
+          "`AsSplitQuery()` (استعلام لكل مجموعة)",
+          "Cartesian explosion بيضخّم الصفوف أسيًا"
+        ],
+        [
+          "قراءة كيان واحد بتفاصيله",
+          "`Include` + `ThenInclude`",
+          "لا تكلف كثيرًا لصف واحد"
+        ],
+        [
+          "عدّ/وجود فقط",
+          "`CountAsync()` / `AnyAsync()`",
+          "لا تجلب الصفوف ثم تعدّها في الذاكرة"
+        ],
+        [
+          "مسار ساخن جدًا (آلاف النداءات/ثانية)",
+          "**Compiled Query** + projection",
+          "يوفر وقت الترجمة لكل نداء"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Split query + compiled query",
+      "code": "\n// ── Split query: استعلام رئيسي + استعلام لكل collection (بدل N×M صف)\nvar detailed = await db.Orders\n    .Include(o => o.Lines)\n    .Include(o => o.Payments)\n    .Include(o => o.Customer)\n    .Where(o => o.CreatedAt >= since)\n    .OrderByDescending(o => o.CreatedAt)\n    .Take(20)\n    .AsSplitQuery()                       // ✓ يحذر EF من انفجار كارتي لو نسيته\n    .AsNoTracking()\n    .ToListAsync(ct);\n\n// ── Compiled query: يُترجم مرة واحدة، يُستخدم لكل نداء\nprivate static readonly Func<AppDbContext, Guid, CancellationToken, Task<Order?>> OrderById =\n    EF.CompileAsyncQuery((AppDbContext db, Guid id, CancellationToken ct) =>\n        db.Orders.AsNoTracking()\n                 .Include(o => o.Lines)\n                 .FirstOrDefault(o => o.Id == id));\n\nprivate static readonly Func<AppDbContext, int, IAsyncEnumerable<OrderSummary>> TopOrders =\n    EF.CompileAsyncQuery((AppDbContext db, int count) =>\n        db.Orders.AsNoTracking()\n                 .OrderByDescending(o => o.Total)\n                 .Take(count)\n                 .Select(o => new OrderSummary(o.Id, o.CreatedAt, o.Status,\n                                               o.Lines.Count, o.Total, o.Customer.Country)));\n\nvar order = await OrderById(db, id, ct);\nawait foreach (var summary in TopOrders(db, 25)) Console.WriteLine(summary.Total);\n\n// تحذير: الـcompiled queries ما بتدعمش `Include` مع split ولا بعض التوسعات الديناميكية —\n// جرّبها على مسار واحد ساخن وقِس الفرق قبل تعميمها.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) AsNoTracking: التوفير الحقيقي"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "قياس أثر الـtracking (أرقام حقيقية من مشروع نموذجي)",
+      "code": "\n// التجربة: قراءة 5,000 طلب مع الخطوط (حوالي 20,000 كيان)\n//\n//  AsTracking (افتراضي قديم)            AsNoTracking\n//  ───────────────────────────────────  ─────────────────────────────\n//  زمن: 1,240 ms                        زمن: 380 ms      (-69%)\n//  ذاكرة مخصّصة: 96 MB                  ذاكرة: 22 MB       (-77%)\n//  GC Gen0/Gen1: 41 / 6                 GC Gen0/Gen1: 9 / 1\n//\n// السبب: لكل كيان متتبَّع → snapshot كامل + entry في ChangeTracker + فحص DetectChanges\n//\n// القواعد:\n// • مسارات القراءة (GET/تقارير/قوائم)   → AsNoTracking دائمًا\n// • مسار يعدّل كيانًا مقروءًا            → AsTracking (أو ExecuteUpdate)\n// • نتيجة فيها نفس الكيان مكررًا ومهم    → AsNoTrackingWithIdentityResolution\n// • projection لـDTO                     → بلا tracking تلقائيًا (الأفضل)\n// • جعل NoTracking الافتراضي في AddDbContext، وطلِب التتبع صراحة عند الحاجة\n\npublic sealed class OrderQueryService(AppDbContext db)\n{\n    // ✓ قراءة: صريح وواضح\n    public Task<List<OrderSummary>> ListAsync(CancellationToken ct) =>\n        db.Orders.AsNoTracking()\n                 .OrderByDescending(o => o.CreatedAt)\n                 .Take(50)\n                 .Select(o => new OrderSummary(o.Id, o.CreatedAt, o.Status,\n                                               o.Lines.Count, o.Total, o.Customer.Country))\n                 .ToListAsync(ct);\n\n    // ✓ كتابة: تتبع صريح + تعديل + حفظ في معاملة واحدة\n    public async Task RenameAsync(Guid id, string note, CancellationToken ct)\n    {\n        var order = await db.Orders.AsTracking().SingleOrDefaultAsync(o => o.Id == id, ct)\n                    ?? throw new NotFoundException(\"Order\", id);\n\n        order.ShippingNote = note;\n        await db.SaveChangesAsync(ct);\n    }\n}\n\n// ✗ خطأ شائع: AsNoTracking ثم محاولة الحفظ — التغييرات تُتجاهل بصمت\nvar o = await db.Orders.AsNoTracking().SingleAsync(x => x.Id == id, ct);\no.Status = OrderStatus.Cancelled;\nawait db.SaveChangesAsync(ct);          // ← لا شيء يحدث! لا خطأ ولا تحديث\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "5 أخطاء أداء شائعة في EF Core",
+      "md": "\n1. **`ToList()` ثم فلترة/تجميع في الذاكرة** → كل الجدول بييجي للشبكة والذاكرة. اعمل `Where`/`GroupBy`/`Sum` **قبل** أي `AsEnumerable`/`ToList`.\n2. **`Count() > 0` بدل `Any()`** → `COUNT(*)` على الجدول كله بدل `EXISTS` (يتوقف عند أول صف).\n3. **`Include` لكل حاجة «عشان أضمن»** → بيانات ضخمة بلا استخدام؛ projection أدق وأرخص.\n4. **نسيان `CancellationToken`** → استعلامات بتكمل بعد إلغاء العميل (اتصالات مشغولة تحت الحمل).\n5. **`SaveChanges` داخل حلقة** → transaction وround-trip لكل عنصر؛ اجمع التغييرات واحفظ مرة واحدة (أو `ExecuteUpdate`).\n\nومكافئ مهم: **`Select` داخل `Select`** على navigation collections بيولّد استعلامات فرعية متكررة —\nافحص الـSQL المولّد دائمًا، مش الكود فقط.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) القياس: بلا أرقام أي تحسين تخمين"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "قياس منهجي لنفس المسار قبل/بعد",
+      "code": "\n[Collection(\"Postgres\")]\npublic sealed class OrderQueryPerformanceTests(PostgresFixture db) : IAsyncLifetime\n{\n    public async ValueTask InitializeAsync()\n    {\n        await db.ResetAsync();\n        await using var ctx = db.CreateContext();\n        if (!await ctx.Orders.AnyAsync())\n        {\n            ctx.Orders.AddRange(TestData.ManyOrders(5_000));     // بذرة ثابتة (بذرة Bogus)\n            await ctx.SaveChangesAsync();\n        }\n    }\n    public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n\n    [Fact]\n    public async Task Projection_beats_include_with_entities()\n    {\n        await using var ctx = db.CreateContext();\n        const int runs = 20;\n\n        var includeMs = await MeasureAsync(runs, () => ctx.Orders\n            .AsNoTracking().Include(o => o.Lines).Include(o => o.Customer)\n            .OrderByDescending(o => o.CreatedAt).Take(50).ToListAsync());\n\n        var projectionMs = await MeasureAsync(runs, () => ctx.Orders\n            .AsNoTracking().OrderByDescending(o => o.CreatedAt).Take(50)\n            .Select(o => new OrderSummary(o.Id, o.CreatedAt, o.Status,\n                                          o.Lines.Count, o.Total, o.Customer.Country))\n            .ToListAsync());\n\n        // ✓ أرقام مسجلة في مخرجات الاختبار (لا assertions هشة على أرقام مطلقة)\n        TestContext.WriteLine($\"include={includeMs:P1} projection={projectionMs:P1}\");\n        projectionMs.Should().BeLessThan(includeMs);             // الاتجاه، لا الرقم المطلق\n    }\n\n    private static async Task<TimeSpan> MeasureAsync(int runs, Func<Task> action)\n    {\n        await action();                                          // إحماء (خطة/كاش)\n        var sw = Stopwatch.StartNew();\n        for (var i = 0; i < runs; i++) await action();\n        return sw.Elapsed / runs;\n    }\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أكتشف N+1 بالأدوات (لوجات SQL، عداد استعلامات لكل طلب، `pg_stat_statements`) مش بالتخمين.",
+        "أعالج كل شكل من أشكال N+1 بالطريقة المناسبة (projection/Include/IN-batch/ExecuteUpdate).",
+        "أختار بين `Include` وprojection و`AsSplitQuery` بحسب الغرض (قراءة مقابل تعديل).",
+        "أستخدم `AsNoTracking` في مسارات القراءة وأقيس الأثر بأرقام قبل/بعد."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "توقيع N+1 في `pg_stat_statements` بيكون إيه؟",
+          "options": [
+            "استعلام واحد بزمن طويل",
+            "نفس الاستعلام المُعامل (parameterized) متكرر مئات/آلاف المرات بزمن قصير لكل مرة",
+            "استعلامات DDL متكررة",
+            "SaveChanges كتير"
+          ],
+          "answer": 1,
+          "explain": "المجموع هو المشكلة مش الفرد: 1000 استعلام × 2ms = ثانيتين. عشان كده `calls` أهم من `mean_exec_time` في التشخيص."
+        },
+        {
+          "q": "`Include(o => o.Lines).Include(o => o.Payments)` مع `Take(20)` — الخطر؟",
+          "options": [
+            "لا خطر",
+            "Cartesian explosion: حاصل ضرب صفوف المجموعتين (20 × 5 × 3 = 300 صف تُرسل) — الحل `AsSplitQuery()` أو projection",
+            "فقدان بيانات",
+            "قفل الجداول"
+          ],
+          "answer": 1,
+          "explain": "EF Core بيحذّرك في اللوجات. `AsSplitQuery` بيفصلها لاستعلام رئيسي + استعلام لكل مجموعة."
+        },
+        {
+          "q": "`AsNoTracking` ثم تعديل الكيان و`SaveChanges` — النتيجة؟",
+          "options": [
+            "استثناء",
+            "لا شيء يُحفظ — التغييرات تُتجاهل بصمت (باج صامت خطير)",
+            "يُحفظ لكن أبطأ",
+            "يُحفظ جزئيًا"
+          ],
+          "answer": 1,
+          "explain": "بلا tracking مفيش snapshot للمقارنة. لو محتاج تعدّل: `AsTracking()` أو `ExecuteUpdate` (بلا تحميل أصلًا)."
+        },
+        {
+          "q": "فرق `AnyAsync()` عن `CountAsync() > 0`؟",
+          "options": [
+            "لا فرق",
+            "`Any` تُترجم لـ`EXISTS` وتتوقف عند أول صف؛ `Count` بتعدّ الجدول/النتيجة كلها",
+            "`Any` أبطأ",
+            "`Count` أدق"
+          ],
+          "answer": 1,
+          "explain": "على جدول كبير الفرق من ميلي ثانية لمئات. قاعدة: وجود → `Any`، عدد معروض للمستخدم → `Count`."
+        },
+        {
+          "q": "إمتى Compiled Query يستحق؟",
+          "options": [
+            "دائمًا",
+            "مسار ساخن ثابت الشكل يُنادى آلاف المرات/ثانية — يوفر وقت الترجمة لكل نداء",
+            "للاستعلامات المعقدة فقط",
+            "مع Include دائمًا"
+          ],
+          "answer": 1,
+          "explain": "الفائدة في CPU لكل نداء. للاستعلامات العادية التحسين الأكبر في الـSQL نفسه والفهارس."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "اقتل N+1 في مسار حقيقي",
+          "md": "أضف عداد استعلامات لكل طلب (interceptor + رأس `X-Query-Count`)، شغّل أبطأ 3 مسارات قراءة عندك، حدّد أيها فيه N+1، وأصلحه بـprojection أو `Include`/`AsSplitQuery`. سجّل عدد الاستعلامات والزمن قبل/بعد.",
+          "criteria": [
+            "عدد الاستعلامات في المسار انخفض من N+1 إلى عدد ثابت (1-3) مهما كان حجم الصفحة",
+            "اختبار يثبت الثبات: صفحة بـ50 عنصر = نفس عدد الاستعلامات لصفحة بـ10 عناصر",
+            "زمن p95 انخفض برقم مسجل",
+            "لا `ToList()` قبل الفلترة/التجميع في المسار (مراجعة كود)",
+            "الـSQL المولّد محفوظ في ملاحظات الدرس قبل وبعد"
+          ],
+          "hint": "لو العدد ثابت لـ10 عناصر وبيزيد مع 50 → فيه تنقّل داخل حلقة أو lazy loading. ابحث عن `.` على navigation داخل `foreach`/`Select`."
+        },
+        {
+          "id": "t2",
+          "title": "سياسة tracking واضحة",
+          "md": "اجعل `QueryTrackingBehavior.NoTracking` الافتراضي في `AddDbContext`، وراجع كل مسار كتابة ليتتبع صراحة (`AsTracking()` أو تحميل بلا `AsNoTracking`). أضف اختبارًا يفشل لو تعديل على كيان مقروء بلا تتبع اتحفظ بصمت.",
+          "criteria": [
+            "الافتراضي NoTracking وموثق في README/ADR",
+            "كل مسارات الكتابة مختبرة (التعديل بيُحفظ فعلًا)",
+            "لا `SaveChanges` داخل حلقة في مسارات الكتابة الجماعية",
+            "اختبار يحمي من «التعديل الصامت» على كيان غير متتبَّع"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "EF Core — Query performance",
+          "url": "https://learn.microsoft.com/ef/core/performance/"
+        },
+        {
+          "label": "EF Core — Loading related data (Eager/Lazy/Explicit)",
+          "url": "https://learn.microsoft.com/ef/core/querying/related-data"
+        },
+        {
+          "label": "EF Core — No-tracking queries",
+          "url": "https://learn.microsoft.com/ef/core/querying/no-tracking"
+        },
+        {
+          "label": "EF Core — Compiled queries",
+          "url": "https://learn.microsoft.com/ef/core/performance/advanced-performance-topics"
+        },
+        {
+          "label": "EF Core — Logging & interceptors",
+          "url": "https://learn.microsoft.com/ef/core/logging-events-diagnostics/"
+        }
+      ]
+    }
+  ]
+}

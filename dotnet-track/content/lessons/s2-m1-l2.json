@@ -1,0 +1,264 @@
+{
+  "id": "s2-m1-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nالـAPI من غير وثيقة حيّة = دعم لا نهائي في الشات. في .NET 10 الـOpenAPI document **بيتولّد من الكود نفسه**\n(مش ملف YAML تكتبه بإيدك ويتقادم)، وواجهة **Scalar** بتعرضه بشكل أسرع وأدق من Swagger UI التقليدي.\n\nالدرس ده: توليد المستند، إثراؤه بالأوصاف والأمثلة، تجميعه حسب الإصدارات، وعرضه — وضمان إنه ما يكذبش.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "OpenAPI 3.1",
+          "def": "مواصفة وصف الـAPI (مسارات، معاملات، مخططات، أمان). .NET 10 بيولّد 3.1 بدل 3.0."
+        },
+        {
+          "term": "`AddOpenApi` / `MapOpenApi`",
+          "def": "توليد المستند وعرضه على `/openapi/v1.json` — مدمج في ASP.NET Core (بدون Swashbuckle)."
+        },
+        {
+          "term": "Scalar",
+          "def": "واجهة تفاعلية حديثة (`Scalar.AspNetCore`) تعرض المستند مع أمثلة وrequests جاهزة."
+        },
+        {
+          "term": "`IOpenApiDocumentTransformer`",
+          "def": "خطوة تعديل على المستند النهائي (أمان، معلومات، وسوم، مسارات)."
+        },
+        {
+          "term": "`IOpenApiOperationTransformer`",
+          "def": "تعديل عملية (endpoint) واحدة: وصف، أمثلة، رؤوس."
+        },
+        {
+          "term": "Schema examples",
+          "def": "أمثلة على المخططات والاستجابات — أكتر حاجة بتقلل أسئلة المستهلكين."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\n# توليد OpenAPI مدمج في ASP.NET Core 10 — لا حزمة إضافية\ndotnet add Shop.Api package Scalar.AspNetCore      # الواجهة التفاعلية\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Program.cs",
+      "title": "التوليد والعرض",
+      "code": "\nbuilder.Services.AddOpenApi(options =>\n{\n    // إخفاء رؤوس التشخيص الداخلية من المستند\n    options.AddDocumentTransformer<SecuritySchemeTransformer>();\n    options.AddDocumentTransformer<ApiInfoTransformer>();\n    options.AddOperationTransformer<ExamplesOperationTransformer>();\n});\n\nvar app = builder.Build();\n\nif (app.Environment.IsDevelopment())\n{\n    app.MapOpenApi();                                  // GET /openapi/v1.json\n    app.MapScalarApiReference(options =>\n    {\n        options.Title = \"Shop API\";\n        options.DefaultHttpClient = new(ScalarTarget.Http, ScalarClient.Curl);\n        options.AddPreferredSecuritySchemes(\"Bearer\");\n    });                                                // GET /scalar/v1\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "لا تعرض المستند في الإنتاج هكذا",
+      "md": "\n`app.MapOpenApi()` في الإنتاج = خريطة كاملة لهجومك. الاختيارات:\n1. **الأفضل**: ولّد المستند وقت البناء واحفظه كملف (`dotnet run -- --openapi out.json` أو MSBuild target) ووزعه على مستهلكين محددين.\n2. اعرضه خلف مصادقة/شبكة داخلية فقط.\n3. لو لازم عام: `RequireAuthorization()` على `MapOpenApi()` و`MapScalarApiReference()`.\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/OpenApi/Transformers.cs",
+      "title": "إثراء المستند: معلومات، أمان، أمثلة",
+      "code": "\nusing Microsoft.AspNetCore.OpenApi;\nusing Microsoft.OpenApi;\n\npublic sealed class ApiInfoTransformer : IOpenApiDocumentTransformer\n{\n    public Task TransformAsync(OpenApiDocument document, OpenApiDocumentTransformerContext ctx, CancellationToken ct)\n    {\n        document.Info = new OpenApiInfo\n        {\n            Title = \"Shop API\",\n            Version = \"v1\",\n            Description = \"\"\"\n                API للمتجر. كل الأخطاء تُرجَع بصيغة `application/problem+json` (RFC 9457)\n                مع `traceId` يربط الاستجابة بالسجلات.\n                \"\"\",\n            Contact = new OpenApiContact { Name = \"Platform Team\", Email = \"api@example.com\" },\n        };\n\n        document.Components ??= new OpenApiComponents();\n        document.Components.SecuritySchemes[\"Bearer\"] = new OpenApiSecurityScheme\n        {\n            Type = SecuritySchemeType.Http,\n            Scheme = \"bearer\",\n            BearerFormat = \"JWT\",\n            Description = \"ضع access token هنا (بدون كلمة Bearer).\",\n        };\n        document.SecurityRequirements.Add(new OpenApiSecurityRequirement\n        {\n            [new OpenApiSecurityScheme { Reference = new OpenApiReference { Id = \"Bearer\", Type = ReferenceType.SecurityScheme } }] = [],\n        });\n\n        return Task.CompletedTask;\n    }\n}\n\n/// <summary>أمثلة للاستجابات — أعلى قيمة للمستهلك.</summary>\npublic sealed class ExamplesOperationTransformer : IOpenApiOperationTransformer\n{\n    public Task TransformAsync(OpenApiOperation operation, OpenApiOperationTransformerContext ctx, CancellationToken ct)\n    {\n        if (ctx.Description.RelativePath == \"/api/orders\" && ctx.Description.HttpMethod == \"POST\")\n        {\n            operation.Summary = \"إنشاء طلب جديد\";\n            operation.Description = \"يتحقق من المخزون ويحسب الخصم حسب الدولة. يحتاج دور `customer` أو `admin`.\";\n\n            AddExample(operation, StatusCodes.Status201Created, \"\"\"\n                { \"id\": \"3fa85f64-5717-4562-b3fc-2c963f66afa6\", \"total\": 228.00, \"currency\": \"EGP\" }\n                \"\"\");\n            AddExample(operation, StatusCodes.Status400BadRequest, \"\"\"\n                {\n                  \"type\": \"https://tools.ietf.org/html/rfc9110#section-15.5.1\",\n                  \"title\": \"One or more validation errors occurred.\",\n                  \"status\": 400,\n                  \"errors\": { \"Lines[0].Quantity\": [\"الكمية يجب أن تكون أكبر من صفر\"] },\n                  \"traceId\": \"0HMV1...\"\n                }\n                \"\"\");\n        }\n        return Task.CompletedTask;\n    }\n\n    private static void AddExample(OpenApiOperation op, int status, string json)\n    {\n        if (!op.Responses.TryGetValue(status.ToString(), out var response)) return;\n        response.Content[\"application/json\"] ??= new OpenApiMediaType();\n        response.Content[\"application/json\"].Example = new OpenApiString(json);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "أهم 6 قواعد لوثيقة ما تكذبش"
+    },
+    {
+      "type": "steps",
+      "title": "قائمة الفحص",
+      "items": [
+        {
+          "title": "كل endpoint له `WithName` و`WithTags`",
+          "md": "الاسم بيولّد operationId ثابت (المستهلكين بيعتمدوا عليه في توليد الكود)، والوسم بيجمّع المسارات في الواجهة."
+        },
+        {
+          "title": "كل حالات الفشل معلنة",
+          "md": "`Results<A,B>` أو `ProducesProblem(404)`. حالة مش معلنة = مفاجأة في الإنتاج.",
+          "code": {
+            "lang": "csharp",
+            "title": "إعلان صريح",
+            "code": "group.MapGet(\"/{id:guid}\", GetOrder)\n    .Produces<OrderResponse>(200)\n    .ProducesProblem(404)\n    .ProducesProblem(401);"
+          }
+        },
+        {
+          "title": "problem+json موثق كنمط عام",
+          "md": "اعمل schema مشترك لـ`ProblemDetails` و`ValidationProblemDetails` وارجع له (`$ref`) في كل استجابات الأخطاء."
+        },
+        {
+          "title": "أمثلة حقيقية على الطلب والاستجابة",
+          "md": "مثال واحد دقيق بيوفر ساعات شرح. استخدم قيم واقعية (EGP، تواريخ بصيغة ISO 8601)."
+        },
+        {
+          "title": "الأمان معلن",
+          "md": "security scheme + أنهي endpoint محتاج أنهي دور. من غيره المستهلك هيجرب ويحصل على 401 مش مفهومة."
+        },
+        {
+          "title": "تحقق تلقائي في CI",
+          "md": "قارن المستند المولّد بالنسخة المعتمدة (golden file) — أي تغيير في العقد يظهر في الـPR.",
+          "code": {
+            "lang": "bash",
+            "title": "فحص العقد في CI",
+            "code": "# ولّد المستند\ndotnet run --project Shop.Api -- --dump-openapi openapi.json\n# قارن بالنسخة المعتمدة (فشل لو العقد اتغير بدون تحديث متعمد)\ngit diff --exit-code --no-index docs/openapi.approved.json openapi.json"
+          }
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "OpenAPI 3.1 — إيه الجديد اللي يهمك؟",
+      "md": "\n3.1 متوافقة مع JSON Schema 2020-12: `nullable` بقى `type: [\"string\", \"null\"]`، و`exclusiveMinimum` رقم مش boolean،\nودعم `webhooks`. الأثر العملي عليك: **أدوات توليد كود قديمة** (مبنية على 3.0) ممكن تفشل في قراءة المستند.\nجرّب مولّد العميل بتاعك على المستند قبل ما تسلّمه لفريق تاني.\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الأداة",
+        "الدور",
+        "متى"
+      ],
+      "rows": [
+        [
+          "`AddOpenApi` (مدمج)",
+          "توليد المستند من الكود",
+          "الافتراضي في .NET 10"
+        ],
+        [
+          "Scalar",
+          "واجهة تفاعلية للمستهلك",
+          "داخليًا وللمطورين"
+        ],
+        [
+          "NSwag / openapi-generator",
+          "توليد عميل C#/TS من المستند",
+          "لما يكون عندك frontend منفصل"
+        ],
+        [
+          "Stoplight / Postman",
+          "مشاركة وتجميع واختبار يدوي",
+          "مع فرق خارجية"
+        ],
+        [
+          "golden file diff في CI",
+          "كشف تغييرات العقد غير المقصودة",
+          "كل PR"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أولّد OpenAPI 3.1 من الكود وأعبر عنه في Scalar.",
+        "أثري المستند بـtransformers (معلومات، أمان، أمثلة).",
+        "أعلن كل حالات الفشل والأدوار المطلوبة لكل endpoint.",
+        "أحمي العقد بـgolden file diff في الـCI، ولا أعرض المستند في الإنتاج بلا حماية."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه التوليد من الكود أفضل من كتابة YAML بإيدك؟",
+          "options": [
+            "أسرع في التشغيل",
+            "ما يتقادمش: المستند مشتق من التوقيعات والأنواع الحقيقية",
+            "أصغر حجمًا",
+            "بيدعم GraphQL"
+          ],
+          "answer": 1,
+          "explain": "الوثيقة اليدوية بتكذب بعد أول تعديل على الكود. التوليد بيخلي المستند ناتج بناء."
+        },
+        {
+          "q": "أخطر خطأ في نشر الـOpenAPI في الإنتاج؟",
+          "options": [
+            "الحجم الكبير",
+            "عرض المستند والواجهة بلا مصادقة = خريطة كاملة لسطح الهجوم",
+            "بطء Scalar",
+            "عدم دعم 3.1"
+          ],
+          "answer": 1,
+          "explain": "الحل: ولّد وقت البناء ووزّع على مستهلكين محددين، أو اعرضه خلف auth/شبكة داخلية."
+        },
+        {
+          "q": "`WithName(\"CreateOrder\")` — فايدته الأساسية؟",
+          "options": [
+            "تسريع التوجيه",
+            "توليد operationId ثابت يستخدمه مولّدو كود العميل، وربط الـlinks بين العمليات",
+            "الأمان",
+            "الكاش"
+          ],
+          "answer": 1,
+          "explain": "من غيره الأسماء بتتولد تلقائيًا وبتتغير مع أي تعديل، فينكسر كود العميل المولّد."
+        },
+        {
+          "q": "golden file diff للمستند في CI بيحميك من إيه؟",
+          "options": [
+            "الأخطاء الإملائية",
+            "تغييرات غير مقصودة في العقد (كسر للمستهلكين) تعدي في الـPR بدون انتباه",
+            "بطء البناء",
+            "تسريب الأسرار"
+          ],
+          "answer": 1,
+          "explain": "العقد ده واجهة عامة. أي تغيير فيه لازم يكون متعمدًا ومراجَعًا — مش أثرًا جانبيًا لتعديل DTO."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "وثيقة كاملة لـAPI عندك",
+          "md": "فعّل `AddOpenApi` + `MapOpenApi` + Scalar، وأضف transformers للمعلومات والأمان (Bearer) والأمثلة. تأكد إن كل endpoint له tags وname وكل حالات الفشل معلنة.",
+          "criteria": [
+            "`/openapi/v1.json` يرجع مستند 3.1 صالح و`/scalar/v1` يفتحه",
+            "كل endpoint له `WithTags` و`WithName`",
+            "استجابات 400/401/404/409 معلنة مع مثال problem+json واحد على الأقل",
+            "security scheme باسم Bearer مطبّق على الـendpoints المحمية"
+          ],
+          "hint": "لو المستند فاضي: تأكد إن `MapOpenApi()` بيتنادى **بعد** تسجيل الـendpoints في الـpipeline، وإن المجموعة مش معزولة عن `app`."
+        },
+        {
+          "id": "t2",
+          "title": "حارس العقد في CI",
+          "md": "أضف خطوة في الـworkflow تولّد المستند وتقارنه بنسخة معتمدة في الـrepo، وتفشل لو اختلفت. وثّق في README إزاي تحدّث النسخة المعتمدة عمدًا.",
+          "criteria": [
+            "الـCI يفشل عند تغيير عقد غير مقصود (جرّب بتعديل DTO)",
+            "تحديث النسخة المعتمدة إجراء موثق بسطر واحد",
+            "المستند لا يُعرض في الإنتاج بلا حماية"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "OpenAPI in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/openapi"
+        },
+        {
+          "label": "Customize OpenAPI documents with transformers",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/openapi/customize-openapi"
+        },
+        {
+          "label": "Scalar",
+          "url": "https://scalar.com/"
+        },
+        {
+          "label": "OpenAPI 3.1 specification",
+          "url": "https://spec.openapis.org/oas/v3.1.0"
+        },
+        {
+          "label": "RFC 9457 — Problem Details",
+          "url": "https://www.rfc-editor.org/rfc/rfc9457"
+        }
+      ]
+    }
+  ]
+}

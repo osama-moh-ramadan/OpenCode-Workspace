@@ -1,0 +1,276 @@
+{
+  "id": "s2-m2-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nASP.NET Core Identity بتحل مشكلات ماينفعش ترتجل فيها: تخزين كلمة السر (PBKDF2/Argon2)،\nlockout بعد محاولات فاشلة، 2FA بـTOTP، تأكيد الإيميل، recovery codes. الخطأ الشائع إنك إما\nتعيد اختراعها (خطر أمني) أو تسيبها تتسرب لجوالة الـDomain (تشابك معماري).\n\nالدرس ده: دمج Identity مع API وEF Core، ضبط السياسات (كلمات السر، القفل، 2FA)، وفصلها عن الـDomain.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "`AddIdentityCore<TUser>`",
+          "def": "النسخة المخصصة للـAPIs: بلا كوكيز ولا صفحات — أنت تتحكم في الاستجابات."
+        },
+        {
+          "term": "`SignInManager<TUser>`",
+          "def": "إدارة جلسات الدخول (كوكيز/توكنات) والتحقق من كلمة السر مع lockout."
+        },
+        {
+          "term": "`UserManager<TUser>`",
+          "def": "CRUD للمستخدمين + الأدوار + التوكنات الخاصة (تأكيد إيميل، 2FA، تغيير كلمة السر)."
+        },
+        {
+          "term": "Password Hasher",
+          "def": "خوارزمية اشتقاق مفتاح مبطّئة عمدًا (PBKDF2 افتراضيًا) مع salt لكل مستخدم وترقية تلقائية للصيغة."
+        },
+        {
+          "term": "Lockout",
+          "def": "قفل مؤقت بعد N محاولات فاشلة — أهم دفاع ضد تخمين كلمات السر."
+        },
+        {
+          "term": "TOTP 2FA",
+          "def": "كلمة سر لمرة واحدة كل 30 ثانية من تطبيق authenticator (Google/Microsoft Authenticator)."
+        },
+        {
+          "term": "Recovery Codes",
+          "def": "رموز بديلة لمرة واحدة لو فقد المستخدم جهاز الـ2FA."
+        },
+        {
+          "term": "Security Stamp",
+          "def": "قيمة تتغير عند أحداث حساسة → إبطال كل الجلسات/التوكنات القديمة."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Api package Microsoft.AspNetCore.Identity.EntityFrameworkCore\ndotnet add Shop.Api package Microsoft.Extensions.Identity.Stores\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Identity/ApplicationUser.cs",
+      "title": "المستخدم + DbContext الخاص بالـIdentity",
+      "code": "\nusing Microsoft.AspNetCore.Identity;\nusing Microsoft.AspNetCore.Identity.EntityFrameworkCore;\n\n/// <summary>Guid بدل string: فهارس أصغر وعلاقات أوضح.</summary>\npublic sealed class ApplicationUser : IdentityUser<Guid>\n{\n    public string? FullName { get; set; }\n    public string? Country { get; set; }\n    public DateTimeOffset CreatedAt { get; set; }\n\n    /// <summary>ربط صريح بمفهوم الـDomain — الـDomain لا يعرف ApplicationUser.</summary>\n    public Guid? CustomerId { get; set; }\n}\n\npublic sealed class AppIdentityDbContext(DbContextOptions<AppIdentityDbContext> options)\n    : IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>(options)\n{\n    protected override void OnModelCreating(ModelBuilder builder)\n    {\n        base.OnModelCreating(builder);\n\n        builder.Entity<ApplicationUser>(e =>\n        {\n            e.ToTable(\"identity_users\");\n            e.HasIndex(u => u.Country);\n            e.HasIndex(u => u.CustomerId).IsUnique();\n            e.Property(u => u.FullName).HasMaxLength(200);\n        });\n        builder.Entity<IdentityRole<Guid>>().ToTable(\"identity_roles\");\n        // بقية جداول Identity (logins, tokens, claims, role claims) — سمّها بـprefix واضح\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Identity/IdentitySetup.cs",
+      "title": "الإعداد: سياسات صريحة بدل الافتراضيات",
+      "code": "\npublic static IServiceCollection AddIdentityForApi(\n    this IServiceCollection services, IConfiguration config)\n{\n    services.AddDbContext<AppIdentityDbContext>(o =>\n        o.UseNpgsql(config.GetConnectionString(\"Identity\"), npgsql => npgsql.EnableRetryOnFailure()));\n\n    services\n        .AddIdentityCore<ApplicationUser>(options =>\n        {\n            // ── كلمة السر: الطول أهم من التعقيد (توصية NIST 800-63B)\n            options.Password.RequiredLength = 12;\n            options.Password.RequireDigit = false;\n            options.Password.RequireLowercase = false;\n            options.Password.RequireUppercase = false;\n            options.Password.RequireNonAlphanumeric = false;\n            options.Password.RequiredUniqueChars = 4;\n\n            // ── القفل: أهم دفاع ضد التخمين\n            options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);\n            options.Lockout.MaxFailedAccessAttempts = 5;\n            options.Lockout.AllowedForNewUsers = true;\n\n            // ── المستخدم\n            options.User.RequireUniqueEmail = true;\n            options.User.AllowedUserNameCharacters =\n                \"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-\";\n\n            // ── 2FA\n            options.SignIn.RequireConfirmedEmail = false;     // فعّلها لو عندك بريد موثوق\n            options.Tokens.AuthenticatorTokenProvider = TokenOptions.DefaultAuthenticatorProvider;\n            options.Tokens.PasswordResetTokenProvider = TokenOptions.DefaultEmailProvider;\n        })\n        .AddRoles<IdentityRole<Guid>>()\n        .AddEntityFrameworkStores<AppIdentityDbContext>()\n        .AddSignInManager()\n        .AddTokenProvider<DataProtectorTokenProvider<ApplicationUser>>(TokenOptions.DefaultProvider)\n        .AddDefaultTokenProviders();\n\n    // مدقق كلمة السر المخصص: ارفض الكلمات المسربة والشائعة\n    services.AddScoped<IPasswordValidator<ApplicationUser>, BreachedPasswordValidator>();\n    services.AddScoped<IUserValidator<ApplicationUser>, NormalizedEmailValidator>();\n\n    // توزيع صلاحيات الـIdentity: لا تمنح UserManager لـController/endpoint مباشرة\n    services.AddScoped<IUserAccounts, IdentityUserAccounts>();\n\n    return services;\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Identity/BreachedPasswordValidator.cs",
+      "title": "مدقق مخصص: كلمات السر الشائعة/المسربة",
+      "code": "\nusing Microsoft.AspNetCore.Identity;\n\n/// <summary>\n/// يفحص كلمة السر مقابل قائمة كلمات شائعة (ويفضل خدمة k-anonymity مثل HIBP في الإنتاج).\n/// قائمة الـ10k الأكثر شيوعًا تمنع أغلب الهجمات الحقيقية بتكلفة صفر.\n/// </summary>\npublic sealed class BreachedPasswordValidator(ICommonPasswordStore passwords)\n    : IPasswordValidator<ApplicationUser>\n{\n    public async Task<IdentityResult> ValidateAsync(\n        UserManager<ApplicationUser> manager, ApplicationUser user, string? password)\n    {\n        if (string.IsNullOrWhiteSpace(password))\n            return IdentityResult.Failed(new IdentityError { Code = \"EmptyPassword\", Description = \"كلمة السر مطلوبة\" });\n\n        if (password.Length < 12)\n            return IdentityResult.Failed(new IdentityError\n            {\n                Code = \"PasswordTooShort\", Description = \"كلمة السر يجب ألا تقل عن 12 حرفًا\",\n            });\n\n        if (await passwords.IsCommonAsync(password))\n            return IdentityResult.Failed(new IdentityError\n            {\n                Code = \"PasswordCommon\", Description = \"كلمة السر مستخدمة بكثرة؛ اختر عبارة مرور أطول\",\n            });\n\n        // لا تسمح بأن تكون مشتقة من بيانات الحساب (إيميل/اسم)\n        var email = user.Email ?? string.Empty;\n        if (email.Length > 3 && password.Contains(email.Split('@')[0], StringComparison.OrdinalIgnoreCase))\n            return IdentityResult.Failed(new IdentityError\n            {\n                Code = \"PasswordContainsEmail\", Description = \"لا تستخدم جزءًا من بريدك في كلمة السر\",\n            });\n\n        return IdentityResult.Success;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "APIs فوق Identity: اترجم الأخطاء لعقدك"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Auth/AccountsEndpoints.cs",
+      "title": "تسجيل + أخطاء problem+json موحدة",
+      "code": "\npublic static IEndpointRouteBuilder MapAccountsApi(this IEndpointRouteBuilder app)\n{\n    var group = app.MapGroup(\"/api/accounts\").WithTags(\"Accounts\");\n\n    group.MapPost(\"/register\", async (\n        RegisterRequest request, IUserAccounts accounts, HttpContext http, CancellationToken ct) =>\n    {\n        var result = await accounts.RegisterAsync(request, ct);\n\n        if (!result.Succeeded)\n            return TypedResults.Json(new ValidationProblemDetails(result.ErrorsByField)\n            {\n                Status = 400, Title = \"تعذّر إنشاء الحساب\",\n                Extensions = { [\"traceId\"] = http.TraceIdentifier },\n            }, statusCode: 400);\n\n        return TypedResults.Created($\"/api/accounts/{result.UserId}\", new AccountCreatedResponse(result.UserId));\n    }).RequireRateLimiting(\"auth\").AllowAnonymous();\n\n    group.MapPost(\"/{id:guid}/email/confirm\", async (\n        Guid id, ConfirmEmailRequest request, IUserAccounts accounts, CancellationToken ct) =>\n        await accounts.ConfirmEmailAsync(id, request.Token, ct)\n            ? TypedResults.NoContent()\n            : TypedResults.BadRequest(new ProblemDetails { Status = 400, Title = \"رابط التأكيد غير صالح\" }));\n\n    group.MapPost(\"/password/forgot\", async (ForgotPasswordRequest r, IUserAccounts accounts, CancellationToken ct) =>\n    {\n        // ✓ استجابة واحدة مهما كانت النتيجة: لا تكشف إن الإيميل مسجل\n        await accounts.SendPasswordResetAsync(r.Email, ct);\n        return TypedResults.Accepted();\n    }).RequireRateLimiting(\"auth\").AllowAnonymous();\n\n    return app;\n}\n\n/// <summary>غلاف فوق UserManager: يترجم أخطاء Identity لعقدنا ويمنع تسريبها للطبقات العليا.</summary>\npublic sealed class IdentityUserAccounts(\n    UserManager<ApplicationUser> users, RoleManager<IdentityRole<Guid>> roles,\n    ILogger<IdentityUserAccounts> log) : IUserAccounts\n{\n    public async Task<AccountResult> RegisterAsync(RegisterRequest request, CancellationToken ct)\n    {\n        var user = new ApplicationUser\n        {\n            UserName = request.Email,           // Identity يتطلب UserName\n            Email = request.Email,\n            FullName = request.FullName,\n            Country = request.Country,\n            CreatedAt = DateTimeOffset.UtcNow,\n        };\n\n        var result = await users.CreateAsync(user, request.Password);\n        if (!result.Succeeded)\n            return AccountResult.Failed(MapErrors(result));\n\n        await users.AddToRoleAsync(user, Roles.Customer);\n        log.LogInformation(\"account created user={UserId}\", user.Id);\n\n        return AccountResult.Ok(user.Id);\n    }\n\n    /// <summary>ترجمة رموز Identity لرسائل مفهومة ومجمّعة حسب الحقل.</summary>\n    private static Dictionary<string, string[]> MapErrors(IdentityResult result)\n    {\n        var map = new Dictionary<string, List<string>>();\n        foreach (var e in result.Errors)\n        {\n            var field = e.Code switch\n            {\n                \"PasswordTooShort\" or \"PasswordRequiresUniqueChars\" or \"PasswordCommon\" => \"password\",\n                \"InvalidEmail\" or \"DuplicateEmail\" => \"email\",\n                \"DuplicateUserName\" => \"email\",\n                _ => \"\",\n            };\n            if (!map.TryGetValue(field, out var list)) map[field] = list = [];\n            list.Add(Describe(e));\n        }\n        return map.ToDictionary(kv => kv.Key, kv => kv.Value.ToArray());\n    }\n\n    private static string Describe(IdentityError e) => e.Code switch\n    {\n        \"PasswordTooShort\" => \"كلمة السر قصيرة جدًا (12 حرفًا على الأقل)\",\n        \"PasswordRequiresUniqueChars\" => \"كلمة السر تحتاج أحرفًا مختلفة أكثر\",\n        \"DuplicateEmail\" => \"البريد مسجل بالفعل\",\n        \"InvalidEmail\" => \"صيغة البريد غير صحيحة\",\n        _ => \"تعذّر إتمام العملية\",                       // لا تسرّب تفاصيل داخلية\n    };\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2FA بـTOTP + recovery codes"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "مسار التفعيل الكامل",
+      "code": "\npublic static IEndpointRouteBuilder MapTwoFactorApi(this IEndpointRouteBuilder app)\n{\n    var group = app.MapGroup(\"/api/accounts/2fa\")\n        .WithTags(\"Accounts\")\n        .RequireAuthorization();\n\n    // 1) ابدأ التفعيل: رجّع المفتاح المشترك + رابط otpauth:// للتطبيق\n    group.MapPost(\"/setup\", async (UserManager<ApplicationUser> users, ICurrentUser me, CancellationToken ct) =>\n    {\n        var user = await RequireUserAsync(users, me);\n        await users.SetTwoFactorEnabledAsync(user, true);\n        await users.ResetAuthenticatorKeyAsync(user);              // يبطل أي مفتاح سابق\n\n        var key = await users.GetAuthenticatorKeyAsync(user);\n        return TypedResults.Ok(new TwoFactorSetupResponse(\n            SharedKey: FormatKey(key!),\n            AuthenticatorUri: $\"otpauth://totp/Shop:{Uri.EscapeDataString(user.Email!)}\" +\n                              $\"?secret={key}&issuer=Shop&digits=6&period=30\"));\n    });\n\n    // 2) أكّد التفعيل برمز من التطبيق + سلّم recovery codes (مرة واحدة)\n    group.MapPost(\"/verify\", async (\n        VerifyTwoFactorRequest request, UserManager<ApplicationUser> users,\n        ICurrentUser me, CancellationToken ct) =>\n    {\n        var user = await RequireUserAsync(users, me);\n        var code = request.Code.Replace(\" \", string.Empty).Replace(\"-\", string.Empty);\n\n        var valid = await users.VerifyTwoFactorTokenAsync(\n            user, TokenOptions.DefaultAuthenticatorProvider, code);\n\n        if (!valid)\n        {\n            // صدّ التخمين: كل محاولة فاشلة تُحتسب نحو lockout\n            await users.AccessFailedAsync(user);\n            return TypedResults.Json(new ProblemDetails\n            {\n                Status = 400, Title = \"رمز التحقق غير صحيح\",\n                Detail = \"تأكد من تزامن ساعة جهازك (الرموز تتغير كل 30 ثانية).\",\n            }, statusCode: 400);\n        }\n\n        var recoveryCodes = await users.GenerateNewTwoFactorRecoveryCodesAsync(user, 10);\n        await users.UpdateSecurityStampAsync(user);                 // ← يبطل الجلسات القديمة\n\n        return TypedResults.Ok(new TwoFactorEnabledResponse([.. recoveryCodes!]));\n    });\n\n    // 3) تعطيل (يتطلب رمزًا حاليًا — لا تسمح بتعطيل بلا إثبات)\n    group.MapPost(\"/disable\", async (\n        VerifyTwoFactorRequest request, UserManager<ApplicationUser> users, ICurrentUser me, CancellationToken ct) =>\n    {\n        var user = await RequireUserAsync(users, me);\n        var ok = await users.VerifyTwoFactorTokenAsync(\n            user, TokenOptions.DefaultAuthenticatorProvider, request.Code);\n        if (!ok) return TypedResults.BadRequest(new ProblemDetails { Status = 400, Title = \"رمز غير صحيح\" });\n\n        await users.SetTwoFactorEnabledAsync(user, false);\n        await users.UpdateSecurityStampAsync(user);\n        return TypedResults.NoContent();\n    });\n\n    return app;\n}\n\nprivate static async Task<ApplicationUser> RequireUserAsync(UserManager<ApplicationUser> users, ICurrentUser me) =>\n    me.UserId is { } id\n        ? await users.FindByIdAsync(id.ToString()) ?? throw new NotFoundException(\"User\", id)\n        : throw new UnauthorizedException();\n\nprivate static string FormatKey(string key) =>\n    string.Join(\" \", key.Chunk(4).Select(chunk => new string(chunk)));\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "Security Stamp: الزر السحري لإبطال الجلسات",
+      "md": "\n`UpdateSecurityStampAsync(user)` بيغيّر طابع الأمان، فأي توكن/جلسة قديمة **بتبطل**.\nاستخدمه بعد: تغيير كلمة السر، تفعيل/تعطيل 2FA، الاشتباه في اختراق، تغيير البريد.\n\nلو بتصدر JWT بنفسك: حط `security_stamp` كـclaim، وفي `OnTokenValidated` قارنه بالقيمة الحالية\n(مع كاش قصير) — ده بيدّيك **قدرة إبطال** على توكنات الـstateless، وبيحل أكبر ضعف في JWT.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "فصل Identity عن الـDomain"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الطبقة",
+        "مسموح",
+        "ممنوع"
+      ],
+      "rows": [
+        [
+          "Domain",
+          "مفاهيم العمل (`Customer`, `Order`)",
+          "أي إشارة لـ`ApplicationUser`/`IdentityUser`"
+        ],
+        [
+          "Application",
+          "`ICurrentUser`, `IUserAccounts` (تجريدات)",
+          "`UserManager` مباشرة"
+        ],
+        [
+          "Infrastructure",
+          "Identity + EF stores + `IdentityUserAccounts`",
+          "منطق عمل"
+        ],
+        [
+          "API",
+          "endpoints المصادقة وDTOs",
+          "`UserManager` في الـendpoints (غلاف فقط)"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "خريطتان نظيفتان بين العالمين",
+      "code": "\n// 1) عند إنشاء الحساب: ApplicationUser ← Customer (مفهوم العمل)\npublic async Task<Guid> RegisterAsync(RegisterRequest request, CancellationToken ct)\n{\n    var identityResult = await accounts.RegisterAsync(request, ct);\n    if (!identityResult.Succeeded) throw new ValidationException(identityResult.ErrorsByField);\n\n    // الـDomain لا يعرف شيئًا عن Identity: بنمرر قيمًا بسيطة\n    var customer = await customers.CreateAsync(\n        new CreateCustomerCommand(identityResult.UserId, request.Email, request.Country), ct);\n\n    await accounts.LinkCustomerAsync(identityResult.UserId, customer.Id, ct);   // ApplicationUser.CustomerId\n    return customer.Id;\n}\n\n// 2) عند تنفيذ عملية: ICurrentUser ← معرّف المستخدم فقط\npublic sealed record CreateOrderRequest(Guid CustomerId, IReadOnlyList<OrderLineInput> Lines);\n\n// في الـservice: تجاهل CustomerId من الطلب واعتمد على الهوية (منع BOLA)\nvar customerId = user.UserId ?? throw new UnauthorizedException();\nif (request.CustomerId != customerId && !user.Roles.Contains(Roles.Admin))\n    throw new ForbiddenException(\"Order\", request.CustomerId);\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "`MapIdentityApi<TUser>()` — نقاط جاهزة",
+      "md": "\n.NET 8+ بيوفّر `app.MapIdentityApi<ApplicationUser>()` اللي بيعمل `/register` و`/login` و`/refresh`\nو`/confirmEmail` و`/2fa` و`/manage/info` جاهزة. مفيدة جدًا للبداية أو الـprototypes،\nلكنك غالبًا هتحتاج تتحكم في: شكل الاستجابة (عقدك مش شكلها الافتراضي)، سياسات الـrate limiting،\nربط الحساب بـ`Customer`، وتسجيل الأحداث.\n\nالقرار: ابدأ بيها لو مستعجل، وانتقل لنقاطك الخاصة أول ما تحتاج تخصيصًا — ولا تسيب الاثنين شغالين معًا\n(سطحان للمصادقة = ضعفان).\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أدمج Identity بـ`AddIdentityCore` في API مع DbContext مخصص وتسمية جداول واضحة.",
+        "أضبط سياسات كلمة السر (طول > تعقيد) وlockout ومدقق كلمات مسربة.",
+        "أنفّذ 2FA بـTOTP مع recovery codes وأستخدم Security Stamp لإبطال الجلسات.",
+        "أفصل Identity عن الـDomain بتجريدات (`ICurrentUser`, `IUserAccounts`)."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه الطول أهم من اشتراط رموز وأرقام؟",
+          "options": [
+            "أسهل على المستخدم فقط",
+            "الإنتروبيا بتيجي من الطول؛ القيود المفروضة تقلل مساحة التخمين وتشجع أنماطًا متوقعة (NIST 800-63B)",
+            "لأن الـhash أسرع",
+            "لا فرق"
+          ],
+          "answer": 1,
+          "explain": "`password123!` بيحقق كل قيود التعقيد ومع ذلك ضعيف. «عبارة مرور» من 4 كلمات عشوائية أطول وأقوى بكثير."
+        },
+        {
+          "q": "إيه فائدة الـSecurity Stamp؟",
+          "options": [
+            "تشفير كلمة السر",
+            "إبطال الجلسات والتوكنات القديمة بعد حدث حساس (تغيير كلمة السر/2FA/اختراق مشتبه)",
+            "تسريع الدخول",
+            "تخزين الأدوار"
+          ],
+          "answer": 1,
+          "explain": "بدونه، تغيير كلمة السر ما بيوقفش توكن مسروق. ده أهم تعويض عن طبيعة JWT الـstateless."
+        },
+        {
+          "q": "`/password/forgot` لإيميل غير مسجل — أنهي استجابة؟",
+          "options": [
+            "404 «الإيميل غير موجود»",
+            "202 Accepted بنفس الاستجابة والشكل، بلا كشف لوجود الحساب",
+            "400",
+            "500"
+          ],
+          "answer": 1,
+          "explain": "كشف وجود الحساب = تسريب لقائمة مستخدميك (enumeration). الاستجابة الموحدة + rate limiting هو الحل."
+        },
+        {
+          "q": "ليه `AddIdentityCore` بدل `AddIdentity` في مشروع API؟",
+          "options": [
+            "أسرع",
+            "`AddIdentity` بتضيف كوكيز وredirects وسلوك صفحات — أنت عايز تتحكم في الاستجابات بنفسك",
+            "`AddIdentityCore` بيدعم 2FA فقط",
+            "لا فرق"
+          ],
+          "answer": 1,
+          "explain": "`AddIdentity` مصممة لتطبيقات MVC بصفحات. في API، `AddIdentityCore` + `AddSignInManager` بيدّيك التحكم الكامل."
+        },
+        {
+          "q": "الـDomain layer بيعتمد على `UserManager<ApplicationUser>`. إيه المشكلة؟",
+          "options": [
+            "الأداء",
+            "تشابك مع إطار العمل: قواعد العمل بقت مرتبطة بالـIdentity، والاختبار بقى يحتاج stores حقيقية",
+            "لا مشكلة",
+            "حجم التوكن"
+          ],
+          "answer": 1,
+          "explain": "مرّر تجريدًا (`ICurrentUser` / معرّفات بسيطة) للـApplication والـDomain، وسيب التكيف مع Identity في Infrastructure."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "Identity مضبوطة في مشروعك",
+          "md": "دمج `AddIdentityCore` مع DbContext مخصص، سياسات كلمة سر (12+ حرف، 4 أحرف مختلفة)، lockout (5 محاولات/15 دقيقة)، `BreachedPasswordValidator` بقائمة كلمات شائعة، و`/register` يرجع problem+json موحّد.",
+          "criteria": [
+            "تسجيل ناجح ينشئ المستخدم ويعطيه دور customer ويربطه بـCustomer في الـDomain",
+            "كلمة سر شائعة (مثل `password12345`) مرفوضة برسالة واضحة",
+            "5 محاولات دخول فاشلة → 423/lockout (اختبار يثبت القفل)",
+            "`/password/forgot` بيرجع نفس الاستجابة لإيميل موجود وغير موجود",
+            "الـDomain لا يحتوي أي `using Microsoft.AspNetCore.Identity`"
+          ],
+          "hint": "لو `DuplicateUserName` بيظهر رغم إن الإيميل جديد: `UserManager` بيطبّع الـUserName. اضبط `UserName = Email` consistently واستخدم `FindByEmailAsync`."
+        },
+        {
+          "id": "t2",
+          "title": "2FA كامل مع إبطال الجلسات",
+          "md": "نفّذ `/2fa/setup` و`/2fa/verify` و`/2fa/disable`، وأظهر recovery codes مرة واحدة، ونفّذ إبطال الجلسات بعد التفعيل عبر Security Stamp (ولو بتصدر JWT: قارن الـstamp في `OnTokenValidated`).",
+          "criteria": [
+            "otpauth URI صحيح ويفتح في تطبيق authenticator حقيقي",
+            "رمز خاطئ مرفوض ومحسوب نحو lockout",
+            "recovery codes بتُعرض مرة واحدة ومخزنة بـhash (مش نص صريح)",
+            "توكن قديم مرفوض بعد تغيير الـSecurity Stamp (اختبار)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "ASP.NET Core Identity overview",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authentication/identity"
+        },
+        {
+          "label": "Custom Identity with API",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authentication/customize-identity-model"
+        },
+        {
+          "label": "Enable 2FA",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authentication/identity-enable-qrcodes"
+        },
+        {
+          "label": "NIST 800-63B (digital identity)",
+          "url": "https://pages.nist.gov/800-63-3/sp800-63b.html"
+        },
+        {
+          "label": "OWASP Credential Stuffing",
+          "url": "https://owasp.org/www-community/attacks/Credential_stuffing"
+        }
+      ]
+    }
+  ]
+}

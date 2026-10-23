@@ -1,0 +1,309 @@
+{
+  "id": "s2-m2-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nJWT مش «طريقة تسجيل دخول» — ده **حامل claims موقّع** بصلاحيات قصيرة. أغلب الثغرات اللي بنشوفها في\nتدقيقات الأمان مش في التشفير، دي في: مفاتيح متسربة، توكنات صلاحيتها طويلة، وrefresh tokens بلا تدوير\nأو بلا كشف إعادة استخدام.\n\nالدرس ده: إصدار وتحقق JWT بشكل سليم (مفاتيح غير متماثلة + تدوير تلقائي)، وrefresh token rotation\nمع **كشف السرقة**، وتخزين المفاتيح بأمان.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Access Token",
+          "def": "JWT قصير العمر (5-15 دقيقة) يحمل الهوية والصلاحيات. لا يمكن إبطاله قبل انتهاء صلاحيته."
+        },
+        {
+          "term": "Refresh Token",
+          "def": "سر طويل العمر (أيام/أسابيع) عشوائي ومعتم، يُستخدم لإصدار access token جديد."
+        },
+        {
+          "term": "Token Rotation",
+          "def": "كل استخدام لـrefresh token يُصدر بديلًا ويُبطِل القديم — فيتحول أي تسريب إلى نافذة صغيرة."
+        },
+        {
+          "term": "Reuse Detection",
+          "def": "لو قُدِّم refresh token مُستبدَل مرة تانية → سرقة محتملة → إبطال العائلة كلها."
+        },
+        {
+          "term": "Token Family",
+          "def": "سلسلة الإصدارات المتعاقبة من أول تسجيل دخول. إبطالها يقطع الطريق على المهاجم."
+        },
+        {
+          "term": "JWKS",
+          "def": "endpoint للمفاتيح العامة (`/.well-known/jwks.json`) — يخلي التحقق يدوّر المفاتيح تلقائيًا."
+        },
+        {
+          "term": "Clock Skew",
+          "def": "سماحية الفرق في الساعة. الافتراضي 5 دقائق — قلّلها لثوانٍ."
+        },
+        {
+          "term": "Asymmetric Signing",
+          "def": "RSA/ECDSA: المصدر يوقّع بالخاص، والمستهلكون يتحققون بالعام فقط (أأمن بكثير من المفتاح المشترك)."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Api package Microsoft.AspNetCore.Authentication.JwtBearer\n# لو إنت الـIdP وتحتاج إصدار التوكنات:\ndotnet add Shop.Api package Microsoft.IdentityModel.JsonWebTokens\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) التحقق: دع المكتبة تجلب المفاتيح وتدوّرها"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Auth/JwtSetup.cs",
+      "title": "الحالة الموصى بها: Authority + JWKS (تدوير مفاتيح تلقائي)",
+      "code": "\nusing Microsoft.AspNetCore.Authentication.JwtBearer;\nusing Microsoft.IdentityModel.Tokens;\n\npublic static class JwtSetup\n{\n    public static IServiceCollection AddJwtAuth(this IServiceCollection services, IConfiguration config)\n    {\n        var auth = config.GetSection(\"Auth\").Get<AuthOptions>()\n                   ?? throw new InvalidOperationException(\"قسم Auth ناقص في الإعدادات\");\n\n        services\n            .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)\n            .AddJwtBearer(options =>\n            {\n                // ✓ Authority: يجلب مستند OIDC + JWKS، ويحدّث المفاتيح عند التدوير بدون إعادة نشر\n                options.Authority = auth.Authority;             // مثال: https://login.example.com/tenant\n                options.Audience  = auth.Audience;              // مثال: shop-api\n                options.RequireHttpsMetadata = true;            // لا تعطّلها إلا في تطوير محلي موثق\n\n                // ✗ لا تضع MapInboundClaims = true (الافتراضي في بعض القوالب):\n                //   بيعيد تسمية الـclaims ويخفي الشكل الحقيقي القادم من الـIdP\n                options.MapInboundClaims = false;\n\n                options.TokenValidationParameters = new TokenValidationParameters\n                {\n                    ValidateIssuer           = true,\n                    ValidIssuer              = auth.Issuer,\n                    ValidateAudience         = true,\n                    ValidAudience            = auth.Audience,\n                    ValidateLifetime         = true,\n                    ValidateIssuerSigningKey = true,\n                    ClockSkew                = TimeSpan.FromSeconds(30),   // ← مش 5 دقائق\n                    NameClaimType            = \"name\",\n                    RoleClaimType            = \"role\",\n                };\n\n                // لا تقبل إلا خوارزميات موقعة غير متماثلة\n                options.TokenValidationParameters.ValidAlgorithms =\n                    [SecurityAlgorithms.RsaSha256, SecurityAlgorithms.RsaSha384, SecurityAlgorithms.EcdsaSha256];\n\n                options.Events = new JwtBearerEvents\n                {\n                    OnTokenValidated = ctx =>\n                    {\n                        // فرصة أخيرة لرفض توكن «صالح توقيعيًا» لكنه من عميل غير مرغوب\n                        var azp = ctx.Principal?.FindFirstValue(\"azp\");\n                        if (azp is not null && !auth.AllowedClients.Contains(azp))\n                        {\n                            ctx.Fail($\"client '{azp}' غير مسموح له\");\n                            return Task.CompletedTask;\n                        }\n                        return Task.CompletedTask;\n                    },\n                    OnAuthenticationFailed = ctx =>\n                    {\n                        // سجّل السبب الحقيقي (منتهي/توقيع/جمهور) — بيوفر ساعات تشخيص\n                        ctx.HttpContext.Items[\"authError\"] = ctx.Exception.GetType().Name;\n                        return Task.CompletedTask;\n                    },\n                };\n            });\n\n        services.AddAuthorizationBuilder();\n        return services;\n    }\n}\n\npublic sealed record AuthOptions\n{\n    public required string Authority { get; init; }\n    public required string Audience { get; init; }\n    public required string Issuer { get; init; }\n    public IReadOnlySet<string> AllowedClients { get; init; } = new HashSet<string>();\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "لو إنت بتصدر التوكنات بنفسك: أخطاء قاتلة",
+      "md": "\n- `ValidateIssuerSigningKey = false` → **أي مفتاح يُقبل**. ده أشهر خطأ في الأكواد المنسوخة.\n- مفتاح متماثل (HMAC) في `appsettings.json` داخل الـrepo → أي قارئ للكود يقدر يزوّر توكنات للأبد.\n- مفتاح أقصر من 256 بت → رفض/ضعف. لو HMAC فلازم ≥ 32 بايت عشوائية (وليس كلمة سر).\n- `ValidateAudience = false` → توكن مصدور لخدمة تانية يشتغل عندك (token replay بين الخدمات).\n- `ClockSkew` كبيرة + `Expires` طويل → نافذة إبطال معدومة.\n- الاعتماد على `alg` من التوكن نفسه → ثبّت قائمة خوارزميات مقبولة صراحةً (زي الكود أعلاه).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) الإصدار: JsonWebTokenHandler + مفتاح غير متماثل"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Auth/AccessTokenFactory.cs",
+      "title": "إصدار توكن قصير العمر بمحتوى مقصود",
+      "code": "\nusing System.Security.Cryptography;\nusing Microsoft.IdentityModel.JsonWebTokens;\nusing Microsoft.IdentityModel.Tokens;\n\npublic sealed class AccessTokenFactory(AuthTokenOptions options, TimeProvider time)\n{\n    private static readonly JsonWebTokenHandler Handler = new();   // الأحدث والأسرع من JwtSecurityTokenHandler\n    private readonly RsaSecurityKey _signingKey = CreateSigningKey(options);\n\n    public string Create(ApplicationUser user, IReadOnlyList<string> roles, IReadOnlyList<string> permissions)\n    {\n        var now = time.GetUtcNow();\n        var subject = new ClaimsIdentity(\n        [\n            new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),\n            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString(\"N\")),  // معرّف فريد للإبطال/التدقيق\n            new Claim(JwtRegisteredClaimNames.Email, user.Email ?? string.Empty),\n            new Claim(\"name\", user.FullName ?? string.Empty),\n            new Claim(\"country\", user.Country ?? string.Empty),\n            .. roles.Select(r => new Claim(\"role\", r)),\n            .. permissions.Select(p => new Claim(\"permissions\", p)),\n        ]);\n\n        var descriptor = new SecurityTokenDescriptor\n        {\n            Issuer = options.Issuer,\n            Audience = options.Audience,\n            Subject = subject,\n            IssuedAt = now.UtcDateTime,\n            NotBefore = now.UtcDateTime,\n            Expires = now.Add(options.AccessTokenLifetime).UtcDateTime,   // 5-15 دقيقة\n            SigningCredentials = new SigningCredentials(_signingKey, SecurityAlgorithms.RsaSha256),\n        };\n\n        return Handler.CreateToken(descriptor);\n    }\n\n    private static RsaSecurityKey CreateSigningKey(AuthTokenOptions options)\n    {\n        var rsa = RSA.Create();\n        // المفتاح الخاص من Key Vault / user-secrets — ليس من ملف في الـrepo\n        rsa.ImportFromPem(options.PrivateKeyPem);\n        return new RsaSecurityKey(rsa) { KeyId = options.KeyId };   // KeyId يظهر في JWKS ورأس kid\n    }\n}\n\npublic sealed record AuthTokenOptions\n{\n    public required string Issuer { get; init; }\n    public required string Audience { get; init; }\n    public required string KeyId { get; init; }\n    public required string PrivateKeyPem { get; init; }\n    public TimeSpan AccessTokenLifetime { get; init; } = TimeSpan.FromMinutes(10);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "لا تضع أسرارًا في التوكن",
+      "md": "\nالـJWT **مشفّر بترميز base64url، مش مُعمّى** — أي حد بياخده يقدر يفكّه ويقرأ كل الـclaims.\nحط فيه: معرّفات، أدوار، صلاحيات، بلد. **لا تحط**: كلمة سر، رقم بطاقة، عنوان تفصيلي، بيانات صحية،\nأو أي حاجة تخالف GDPR/خصوصية. وقلّل الحجم: كل claim بيتبعت في **كل** طلب.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Refresh Token Rotation مع كشف إعادة الاستخدام"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Auth/RefreshToken.cs",
+      "title": "النموذج: hash فقط + family + علامة استبدال",
+      "code": "\npublic sealed class RefreshToken\n{\n    public Guid Id { get; init; } = Guid.NewGuid();\n    public required Guid UserId { get; init; }\n\n    /// <summary>سلسلة الإصدارات: كل تدوير يحتفظ بنفس الـfamily — أساس كشف السرقة.</summary>\n    public required Guid FamilyId { get; init; }\n\n    /// <summary>SHA-256 للتوكن. ✗ لا تخزن التوكن الخام — لو القاعدة اتسربت، الجلسات اتسرقت.</summary>\n    public required string TokenHash { get; init; }\n\n    public required DateTimeOffset CreatedAt { get; init; }\n    public required DateTimeOffset ExpiresAt { get; init; }\n\n    /// <summary>null = التوكن الحالي صالح. غير null = استُبدل (استخدامه تاني = سرقة محتملة).</summary>\n    public Guid? ReplacedById { get; init; }\n    public string? RevokedReason { get; init; }\n\n    public string? CreatedByIp { get; init; }\n    public string? UserAgent { get; init; }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Auth/TokenRotationService.cs",
+      "title": "التدوير + كشف إعادة الاستخدام + إبطال العائلة",
+      "code": "\nusing System.Security.Cryptography;\n\npublic sealed class TokenRotationService(\n    AppDbContext db, AccessTokenFactory accessTokens, UserManager<ApplicationUser> users,\n    TimeProvider time, ILogger<TokenRotationService> log, AuthOptions options)\n{\n    private static readonly TimeSpan RefreshLifetime = TimeSpan.FromDays(14);\n    private static readonly TimeSpan AbsoluteSessionLimit = TimeSpan.FromDays(30);\n\n    /// <summary>أول إصدار بعد تسجيل الدخول: يبدأ عائلة جديدة.</summary>\n    public async Task<TokenPair> IssueAsync(ApplicationUser user, string ip, string? agent, CancellationToken ct)\n    {\n        var family = Guid.NewGuid();\n        return await CreatePairAsync(user, family, previous: null, ip, agent, ct);\n    }\n\n    public async Task<TokenPairResult> RotateAsync(string presented, string ip, CancellationToken ct)\n    {\n        var hash = Hash(presented);\n        var now = time.GetUtcNow();\n\n        var stored = await db.RefreshTokens.AsTracking()\n            .SingleOrDefaultAsync(t => t.TokenHash == hash, ct);\n\n        if (stored is null)\n            return TokenPairResult.Fail(\"invalid_grant\", \"توكن غير معروف\");\n\n        if (stored.RevokedReason is not null)\n            return TokenPairResult.Fail(\"invalid_grant\", \"توكن مُبطَل\");\n\n        // ★ الحالة الأخطر: توكن استُبدل بالفعل وبيتقدّم تاني\n        if (stored.ReplacedById is not null)\n        {\n            log.LogWarning(\n                \"refresh token reuse detected user={UserId} family={Family} ip={Ip} — revoking family\",\n                stored.UserId, stored.FamilyId, ip);\n\n            await RevokeFamilyAsync(stored.FamilyId, \"reuse_detected\", ct);\n            return TokenPairResult.Fail(\"invalid_grant\", \"تم رصد استخدام غير طبيعي؛ أعد تسجيل الدخول\");\n        }\n\n        if (stored.ExpiresAt <= now)\n            return TokenPairResult.Fail(\"invalid_grant\", \"توكن منتهي\");\n\n        var user = await users.FindByIdAsync(stored.UserId.ToString());\n        if (user is null || await users.IsLockedOutAsync(user))\n            return TokenPairResult.Fail(\"invalid_grant\", \"الحساب غير متاح\");\n\n        // حد جلسة مطلق: منعيدش التدوير للأبد\n        if (now - stored.CreatedAt > AbsoluteSessionLimit)\n            return TokenPairResult.Fail(\"invalid_grant\", \"انتهت مدة الجلسة القصوى\");\n\n        var pair = await CreatePairAsync(user, stored.FamilyId, stored, ip, stored.UserAgent, ct);\n        return TokenPairResult.Ok(pair);\n    }\n\n    private async Task<TokenPair> CreatePairAsync(\n        ApplicationUser user, Guid family, RefreshToken? previous,\n        string ip, string? agent, CancellationToken ct)\n    {\n        var raw = Convert.ToHexString(RandomNumberGenerator.GetBytes(48));   // عشوائي قوي، مش JWT\n\n        var next = new RefreshToken\n        {\n            UserId = user.Id,\n            FamilyId = family,\n            TokenHash = Hash(raw),\n            CreatedAt = time.GetUtcNow(),\n            ExpiresAt = time.GetUtcNow().Add(RefreshLifetime),\n            CreatedByIp = ip,\n            UserAgent = agent,\n        };\n\n        db.RefreshTokens.Add(next);\n        if (previous is not null)\n            db.Entry(previous).CurrentValues[nameof(RefreshToken.ReplacedById)] = next.Id;\n\n        await db.SaveChangesAsync(ct);\n\n        var roles = await users.GetRolesAsync(user);\n        var access = accessTokens.Create(user, [.. roles], await Permissions.ForAsync(user.Id, ct));\n\n        return new TokenPair(access, raw, (int)TimeSpan.FromMinutes(10).TotalSeconds,\n                             (int)RefreshLifetime.TotalSeconds);\n    }\n\n    public async Task RevokeFamilyAsync(Guid family, string reason, CancellationToken ct)\n    {\n        await db.RefreshTokens\n            .Where(t => t.FamilyId == family && t.RevokedReason == null)\n            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedReason, reason), ct);\n    }\n\n    public async Task RevokeAllForUserAsync(Guid userId, string reason, CancellationToken ct) =>\n        await db.RefreshTokens\n            .Where(t => t.UserId == userId && t.RevokedReason == null)\n            .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedReason, reason), ct);\n\n    private static string Hash(string raw) =>\n        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)));\n}\n\npublic sealed record TokenPair(string AccessToken, string RefreshToken, int ExpiresIn, int RefreshExpiresIn);\npublic sealed record TokenPairResult(bool Succeeded, TokenPair? Pair, string? Error, string? Description)\n{\n    public static TokenPairResult Ok(TokenPair p) => new(true, p, null, null);\n    public static TokenPairResult Fail(string e, string d) => new(false, null, e, d);\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Auth/AuthEndpoints.cs",
+      "title": "الـendpoints: refresh ككوكي HttpOnly (الخيار الآمن للويب)",
+      "code": "\npublic static IEndpointRouteBuilder MapAuthApi(this IEndpointRouteBuilder app)\n{\n    var group = app.MapGroup(\"/api/auth\").WithTags(\"Auth\");\n\n    group.MapPost(\"/login\", async (\n        LoginRequest request, HttpContext http, SignInManager<ApplicationUser> signIn,\n        TokenRotationService tokens, CancellationToken ct) =>\n    {\n        var user = await signIn.UserManager.FindByEmailAsync(request.Email);\n        var result = user is null\n            ? SignInResult.Failed                                   // لا تكشف إن الإيميل موجود\n            : await signIn.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: true);\n\n        if (!result.Succeeded)\n            return TypedResults.Json(new ProblemDetails\n            {\n                Status = 401, Title = \"بيانات الدخول غير صحيحة\",\n                Extensions = { [\"traceId\"] = http.TraceIdentifier },\n            }, statusCode: 401);\n\n        if (result.IsLockedOut)\n            return TypedResults.Json(new ProblemDetails\n            {\n                Status = 423, Title = \"الحساب مقفل مؤقتًا\",\n                Detail = \"جرّب بعد دقائق أو استخدم استعادة الوصول.\",\n            }, statusCode: 423);\n\n        var pair = await tokens.IssueAsync(user!, http.Connection.RemoteIpAddress?.ToString() ?? \"?\",\n                                           http.Request.Headers.UserAgent, ct);\n\n        SetRefreshCookie(http, pair.RefreshToken, pair.RefreshExpiresIn);\n        return TypedResults.Ok(new LoginResponse(pair.AccessToken, pair.ExpiresIn));\n    }).RequireRateLimiting(\"auth\");                                 // ← مهم: منع تخمين كلمات السر\n\n    group.MapPost(\"/refresh\", async (HttpContext http, TokenRotationService tokens, CancellationToken ct) =>\n    {\n        var presented = http.Request.Cookies[\"refresh_token\"];\n        if (string.IsNullOrEmpty(presented))\n            return TypedResults.Unauthorized();\n\n        var result = await tokens.RotateAsync(presented,\n            http.Connection.RemoteIpAddress?.ToString() ?? \"?\", ct);\n\n        if (!result.Succeeded)\n        {\n            http.Response.Cookies.Delete(\"refresh_token\", CookieOptions());   // نظّف الكوكي\n            return TypedResults.Json(new ProblemDetails\n            {\n                Status = 401, Title = \"تعذّر تجديد الجلسة\", Detail = result.Description,\n            }, statusCode: 401);\n        }\n\n        SetRefreshCookie(http, result.Pair!.RefreshToken, result.Pair.RefreshExpiresIn);\n        return TypedResults.Ok(new LoginResponse(result.Pair.AccessToken, result.Pair.ExpiresIn));\n    }).RequireRateLimiting(\"auth\");\n\n    group.MapPost(\"/logout\", async (HttpContext http, TokenRotationService tokens,\n                                    ICurrentUser user, CancellationToken ct) =>\n    {\n        if (user.UserId is { } id)\n            await tokens.RevokeAllForUserAsync(id, \"logout\", ct);\n        http.Response.Cookies.Delete(\"refresh_token\", CookieOptions());\n        return TypedResults.NoContent();\n    }).RequireAuthorization();\n\n    return app;\n}\n\nprivate static void SetRefreshCookie(HttpContext http, string token, int maxAge) =>\n    http.Response.Cookies.Append(\"refresh_token\", token, new CookieOptions\n    {\n        HttpOnly = true,                       // ← JavaScript ما يقدرش يقرأه (حماية من XSS)\n        Secure = true,                         // HTTPS فقط\n        SameSite = SameSiteMode.Strict,        // حماية من CSRF\n        Path = \"/api/auth\",                    // ← يُرسل لمسارات المصادقة فقط\n        MaxAge = TimeSpan.FromSeconds(maxAge),\n    });\n\nprivate static CookieOptions CookieOptions() => new() { Path = \"/api/auth\", Secure = true, HttpOnly = true };\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) تخزين المفاتيح والتوكنات على العميل"
+    },
+    {
+      "type": "table",
+      "head": [
+        "نوع العميل",
+        "أفضل نمط",
+        "ليه"
+      ],
+      "rows": [
+        [
+          "SPA (React/Angular) مع API",
+          "BFF: كوكي HttpOnly للـrefresh + الـaccess token في الذاكرة",
+          "لا يصل JS لأي توكن طويل العمر → XSS ما يسرقش الجلسة"
+        ],
+        [
+          "SPA بدون BFF",
+          "access token في الذاكرة فقط + refresh في كوكي HttpOnly",
+          "حل وسط مقبول؛ تجنّب localStorage إطلاقًا"
+        ],
+        [
+          "Mobile (MAUI/native)",
+          "Keychain/Keystore عبر مكتبة آمنة",
+          "تخزين مشفّر من النظام"
+        ],
+        [
+          "CLI / أداة سطر أوامر",
+          "Device Code flow + تخزين في credential manager",
+          "بلا متصفح مدمج وبلا secret في الكود"
+        ],
+        [
+          "خدمة إلى خدمة",
+          "Client Credentials (OAuth2) — بلا refresh token",
+          "مفيش مستخدم أصلًا"
+        ],
+        [
+          "تخزين في localStorage",
+          "✗ لا",
+          "أي XSS = سرقة كاملة للجلسة"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "المفاتيح: من Key Vault بـManaged Identity (بلا سر في الكود)",
+      "code": "\n// Program.cs\nvar config = builder.Configuration;\n\nif (builder.Environment.IsProduction())\n{\n    var vaultUrl = config[\"KeyVault:Url\"]\n        ?? throw new InvalidOperationException(\"KeyVault:Url مطلوب في الإنتاج\");\n    // Managed Identity: لا يوجد client secret ولا connection string في الكود أو الإعدادات\n    config.AddAzureKeyVault(new Uri(vaultUrl), new DefaultAzureCredential());\n}\n\nbuilder.Services.Configure<AuthTokenOptions>(config.GetSection(\"AuthToken\"));\n// AuthToken:PrivateKeyPem و AuthToken:KeyId يجيئان من Key Vault\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "التطوير المحلي: user-secrets (مش appsettings.json)",
+      "code": "\ndotnet user-secrets init --project Shop.Api\ndotnet user-secrets set \"AuthToken:KeyId\" \"dev-key-2026-10\" --project Shop.Api\ndotnet user-secrets set \"AuthToken:PrivateKeyPem\" \"$(cat ./dev-key.pem)\" --project Shop.Api\n\n# تأكد إن الملف مش في الـrepo\ngrep -rn \"PRIVATE KEY\" --include=\"*.json\" --include=\"*.cs\" . || echo \"clean ✅\"\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "تدوير المفاتيح بدون downtime",
+      "md": "\n1. أنشئ مفتاحًا جديدًا بـ`KeyId` مختلف وانشره في JWKS (المفتاحان موجودان معًا).\n2. ابدأ التوقيع بالمفتاح الجديد. التوكنات القديمة لسه بتتحقق بالقديم (عن طريق `kid`).\n3. بعد انتهاء عمر أقصى توكن مصدر + سماحية، احذف القديم من JWKS.\n\nمع `options.Authority` في الـJwtBearer، الخطوات دي بتحصل **تلقائيًا** على جانب المستهلك —\nوده أقوى حجة لعدم إدارة المفاتيح يدويًا في كل خدمة.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أضبط JwtBearer بـAuthority/JWKS وأفعّل كل عناصر التحقق مع ClockSkew صغير.",
+        "أصدر access token قصير العمر بمفتاح غير متماثل وclaims مقصودة.",
+        "أنفّذ refresh token rotation مع hash للتخزين وكشف إعادة الاستخدام وإبطال العائلة.",
+        "أخزن المفاتيح في Key Vault/user-secrets وأختار نمط تخزين توكنات مناسب لكل عميل."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه access token ما ينفعش يُبطَل مباشرة؟ وإيه الحل العملي؟",
+          "options": [
+            "يُبطَل بحذفه من قاعدة البيانات",
+            "لأنه stateless وموقّع؛ الحل: عمر قصير + إبطال الـrefresh tokens + deny-list للحالات الطارئة",
+            "يُبطَل بإعادة إصداره",
+            "يُبطَل بتغيير الجمهور"
+          ],
+          "answer": 1,
+          "explain": "التوكن صالح حتى انتهاء صلاحيته عند أي خدمة تتحقق منه. تقصير العمر (5-15 دقيقة) هو الآلية الأساسية، وإبطال الـrefresh بيقطع التجديد."
+        },
+        {
+          "q": "توكن refresh مُستبدَل اتقدّم تاني. أنهي تصرف صح؟",
+          "options": [
+            "أصدر زوجًا جديدًا عادي",
+            "ارفض واعتبرها سرقة محتملة: أبطل العائلة كلها وسجّل تحذيرًا",
+            "أرجع 500",
+            "أجدد الـexpires"
+          ],
+          "answer": 1,
+          "explain": "ده بالظبط هدف rotation: التوكن المسروق إما يُستخدم من المهاجم أو من المستخدم الشرعي — التاني هيظهر كـreuse فتنكشف السرقة."
+        },
+        {
+          "q": "ليه نخزن hash للـrefresh token مش التوكن نفسه؟",
+          "options": [
+            "لتقليل الحجم",
+            "لو قاعدة البيانات اتسربت، المهاجم ما يحصلش على توكنات صالحة للاستخدام",
+            "لأن الـhash أسرع في البحث",
+            "متطلب من ASP.NET Core"
+          ],
+          "answer": 1,
+          "explain": "نفس منطق عدم تخزين كلمات السر. البحث بـhash محسوب من التوكن المقدَّم — سريع وآمن."
+        },
+        {
+          "q": "SPA بيخزن الـaccess token في localStorage. إيه الخطر؟",
+          "options": [
+            "بطء القراءة",
+            "أي ثغرة XSS تقرأ التوكن وتبعته لأي مكان — الجلسة بتتسرق بالكامل",
+            "مشكلة في CSRF",
+            "تعارض مع CORS"
+          ],
+          "answer": 1,
+          "explain": "الحل: BFF بكوكي HttpOnly للـrefresh، والـaccess token في الذاكرة فقط (يُفقد عند إعادة التحميل ويُستعاد بـ/refresh)."
+        },
+        {
+          "q": "مفتاح HMAC مشترك بين 6 خدمات. إيه المشكلة؟",
+          "options": [
+            "أبطأ",
+            "أي خدمة مخترقة تقدر تزوّر توكنات لكل الخدمات؛ مع RSA/ECDSA المستهلك يحتاج المفتاح العام فقط",
+            "التوكن أكبر",
+            "لا توجد مشكلة"
+          ],
+          "answer": 1,
+          "explain": "المفتاح المتماثل سر مشترك = سطح هجوم مشترك. غير المتماثل بيفصل القدرة على الإصدار عن القدرة على التحقق."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "دورة توكنات كاملة",
+          "md": "نفّذ `/api/auth/login` و`/refresh` و`/logout` مع rotation وhash للعائلة وكشف إعادة الاستخدام، والـrefresh في كوكي HttpOnly بـ`Path=/api/auth`. اكتب اختبارات integration للدورة كلها.",
+          "criteria": [
+            "login ناجح → access token + كوكي refresh، وفاشل → 401 problem+json بلا كشف لوجود الحساب",
+            "refresh يستبدل التوكن ويبطل السابق",
+            "إعادة استخدام توكن مستبدل → 401 + إبطال كل توكنات العائلة (اختبار يثبت إن توكن تالت من نفس العائلة بقى مرفوض)",
+            "logout يبطل كل توكنات المستخدم",
+            "لا يوجد توكن خام مخزن في القاعدة (تحقق بفحص العمود)"
+          ],
+          "hint": "لو اختبار الـreuse بيفشل: تأكد إنك بتحمّل الـtoken بـ`AsTracking()` وبتحفظ `ReplacedById` في نفس `SaveChanges`، وإن الـendpoints بتقرأ الكوكي من `Path=/api/auth` (كوكي بمسار تاني مش هيتبعت)."
+        },
+        {
+          "id": "t2",
+          "title": "تدقيق إعدادات التحقق",
+          "md": "راجع `TokenValidationParameters` في مشروعك وسجّل في ملاحظات الدرس: حالة كل `Validate*`، قيمة `ClockSkew`، الخوارزميات المقبولة، ومصدر المفتاح. أصلح أي بند ضعيف وأضف اختبارًا يفشل لو اتغير.",
+          "criteria": [
+            "كل عناصر التحقق مفعّلة وموثقة",
+            "`ClockSkew` ≤ 60 ثانية",
+            "قائمة خوارزميات مقبولة صريحة (لا `none` ولا خوارزميات متماثلة غير مقصودة)",
+            "اختبار يرفض توكن منتهي + توكن بجمهور خاطئ + توكن بتوقيع خاطئ"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "JWT Bearer authentication",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authentication/jwt"
+        },
+        {
+          "label": "TokenValidationParameters",
+          "url": "https://learn.microsoft.com/dotnet/api/microsoft.identitymodel.tokens.tokenvalidationparameters"
+        },
+        {
+          "label": "OAuth 2.0 Security BCP (RFC 9700)",
+          "url": "https://www.rfc-editor.org/rfc/rfc9700"
+        },
+        {
+          "label": "OAuth 2.1 draft (PKCE إلزامي)",
+          "url": "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1"
+        },
+        {
+          "label": "Key Vault configuration provider",
+          "url": "https://learn.microsoft.com/azure/key-vault/general/configuration-provider"
+        },
+        {
+          "label": "OWASP Authentication Cheat Sheet",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,310 @@
+{
+  "id": "s3-m3-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nRedis هو «السكين السويسري» للـbackend: كاش موزّع، أقفال، عدّادات، طوابير خفيفة، pub/sub.\nوسبب أغلب مشاكله مش صعوبة الـAPI — ده **سوء فهم لطبيعته**: Redis مش قاعدة بيانات (تسليم غير متزامن،\nبيانات ممكن تضيع)، ومفاتيحه بلا حدود = ذاكرة بلا حدود، وقفل موزّع مكتوب غلط = أسوأ من بلا قفل.\n\nالدرس ده: cache-aside بـTTL وإبطال صحيح، أقفال موزّعة **بعناية** (مع fencing tokens)،\nوطوابير خفيفة (Lists/Streams/Pub-Sub) — وإمتى تسيب Redis وتروح لوسيط رسائل حقيقي.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "`ConnectionMultiplexer`",
+          "def": "الاتصال بـRedis. **Singleton واحد للتطبيق كله** — thread-safe ويدير الاتصالات داخليًا. أكثر من واحد = استنزاف اتصالات."
+        },
+        {
+          "term": "Cache-aside",
+          "def": "النمط الأشهر: اقرأ من الكاش، ولو فاشل اقرأ من المصدر واكتب في الكاش بـTTL."
+        },
+        {
+          "term": "TTL (Expiry)",
+          "def": "مدة صلاحية المفتاح. شبكة أمان ضد الإبطال المنسي، لكنها ليست بديلًا عن الإبطال المقصود."
+        },
+        {
+          "term": "Eviction policy",
+          "def": "سلوك Redis عند امتلاء الذاكرة: `noeviction` (يرفض الكتابة)، `allkeys-lru`، `volatile-lru`، `volatile-ttl`."
+        },
+        {
+          "term": "Cache Stampede",
+          "def": "لحظة انتهاء مفتاح ساخن: مئات الطلبات تحسب نفس القيمة على المصدر معًا."
+        },
+        {
+          "term": "Fencing Token",
+          "def": "رقم تسلسلي متزايد يُمنح مع القفل، ويُفحص عند المورد المحمي — الحماية الحقيقية من القفل المنتهي."
+        },
+        {
+          "term": "Redis Streams",
+          "def": "طابور دائم بمجموعات مستهلكين وACKs وقائمة pending — أقرب لوسيط رسائل حقيقي من Lists."
+        },
+        {
+          "term": "Pub/Sub",
+          "def": "بث لحظي **بلا ضمان تسليم**: المشترك غير المتصل يفقد الرسالة. للإشارات لا للأحداث الحرجة."
+        },
+        {
+          "term": "Keyspace notification",
+          "def": "إشعارات بتغيّر المفاتيح (تحتاج تفعيلها، وتكلف ذاكرة/CPU، وبلا ضمان تسليم)."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم والتشغيل",
+      "code": "\ndotnet add Shop.Api package Microsoft.Extensions.Caching.StackExchangeRedis\ndotnet add Shop.Api package StackExchange.Redis\ndotnet add Shop.Api package Microsoft.Extensions.Caching.Hybrid     # L1+L2 معًا (من درس الكاش)\n\ndocker run --rm -p 6379:6379 --name shop-redis redis:7-alpine\nredis-cli INFO stats | grep -E \"keyspace_hits|keyspace_misses|evicted_keys\"\nredis-cli CONFIG GET maxmemory-policy\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Caching/RedisSetup.cs",
+      "title": "التهيئة الصحيحة: multiplexer واحد + إعدادات أمان",
+      "code": "\nusing StackExchange.Redis;\n\npublic static class RedisSetup\n{\n    public static IServiceCollection AddRedisCache(this IServiceCollection services, IConfiguration config)\n    {\n        var cs = config.GetConnectionString(\"Redis\")\n                 ?? throw new InvalidOperationException(\"ConnectionStrings:Redis مطلوب\");\n\n        // ★ Singleton واحد لكل التطبيق (لا تخلق multiplexer لكل عملية)\n        services.AddSingleton<IConnectionMultiplexer>(_ =>\n            ConnectionMultiplexer.Connect(ConfigurationOptions.Parse(cs, configure: o =>\n            {\n                o.AbortOnConnectFail = false;      // ✓ لا تفشل الإقلاع لو Redis واقع — اخدم من المصدر\n                o.ConnectRetry = 3;\n                o.ConnectTimeout = 5_000;\n                o.SyncTimeout = 2_000;             // سقف زمني للعمليات (وإلا طلباتك تتعلّق)\n                o.AsyncTimeout = 2_000;\n                o.ClientName = $\"shop-api:{Environment.MachineName}\";\n                o.Ssl = config.GetValue<bool>(\"Redis:UseTls\");\n            })));\n\n        // IDistributedCache: واجهة بسيطة (byte[]) — مناسبة لقيم صغيرة\n        services.AddStackExchangeRedisCache(o =>\n        {\n            o.Configuration = cs;\n            o.InstanceName = \"shop:\";              // prefix منطقي لعزل البيئات/التطبيقات\n        });\n\n        // HybridCache: L1 في الذاكرة + L2 في Redis + حماية من stampede (الموصى به للبيانات المحسوبة)\n        services.AddHybridCache(o =>\n        {\n            o.DefaultEntryOptions = new HybridCacheEntryOptions\n            {\n                Expiration = TimeSpan.FromMinutes(10),\n                LocalCacheExpiration = TimeSpan.FromSeconds(30),\n            };\n            o.MaximumPayloadBytes = 256 * 1024;    // ✓ ارفض القيم الضخمة\n        });\n\n        services.AddSingleton<IRedisCacheService, RedisCacheService>();\n        services.AddSingleton<IDistributedLockFactory, RedisLockFactory>();\n\n        return services;\n    }\n}\n\n/// <summary>\n/// غلاف عملي فوق IDatabase: تسلسل JSON قوي النوع + TTL + قياس + فشل آمن (fall-through للمصدر).\n/// </summary>\npublic sealed class RedisCacheService(\n    IConnectionMultiplexer redis, ILogger<RedisCacheService> log, TimeProvider time) : IRedisCacheService\n{\n    private IDatabase Db => redis.GetDatabase();\n\n    public async Task<T?> GetOrSetAsync<T>(\n        string key, Func<CancellationToken, ValueTask<T>> factory,\n        TimeSpan ttl, CancellationToken ct) where T : class\n    {\n        var started = time.GetTimestamp();\n        try\n        {\n            var cached = await Db.StringGetAsync(key);\n            if (cached.HasValue)\n            {\n                CacheMetrics.Hits.Add(1, new(\"key\", Prefix(key)));\n                return JsonSerializer.Deserialize<T>(cached.ToString(), AppJson.Options);\n            }\n        }\n        catch (RedisException ex)\n        {\n            // ★ فشل الكاش لا يُفشل الطلب: اخدم من المصدر وسجّل\n            log.LogWarning(ex, \"redis read failed for {Key}; falling back to source\", key);\n            CacheMetrics.Errors.Add(1, new(\"op\", \"get\"));\n        }\n\n        CacheMetrics.Misses.Add(1, new(\"key\", Prefix(key)));\n        var value = await factory(ct);\n\n        if (value is not null)\n        {\n            try\n            {\n                var payload = JsonSerializer.SerializeToUtf8Bytes(value, AppJson.Options);\n                if (payload.Length > 128 * 1024)\n                    log.LogWarning(\"large cache value {Key}: {Size}KB — راجع التصميم\",\n                        key, payload.Length / 1024);\n\n                await Db.StringSetAsync(key, payload, ttl, When.Always);\n            }\n            catch (RedisException ex)\n            {\n                log.LogWarning(ex, \"redis write failed for {Key}\", key);\n                CacheMetrics.Errors.Add(1, new(\"op\", \"set\"));\n            }\n        }\n\n        CacheMetrics.LoadDuration.Record(time.GetElapsedTime(started).TotalMilliseconds, new(\"key\", Prefix(key)));\n        return value;\n    }\n\n    public async Task InvalidateAsync(string key, CancellationToken ct = default)\n    {\n        await Db.KeyDeleteAsync(key);\n        CacheMetrics.Evictions.Add(1, new(\"key\", Prefix(key)));\n    }\n\n    /// <summary>إبطال بنمط (prefix) — انتبه: KEYS ممنوع في الإنتاج؛ استخدم SCAN.</summary>\n    public async Task<int> InvalidateByPrefixAsync(string prefix, CancellationToken ct)\n    {\n        var server = redis.GetServers().FirstOrDefault(s => s.IsConnected && !s.IsReplica)\n                     ?? throw new InvalidOperationException(\"لا يوجد Redis server متاح\");\n\n        var deleted = 0;\n        // ✓ SCAN (async enumerable) بدل KEYS: لا يحجب الخادم\n        await foreach (var key in server.KeysAsync(db: 0, pattern: $\"{prefix}*\", pageSize: 500).WithCancellation(ct))\n        {\n            await Db.KeyDeleteAsync(key);\n            deleted++;\n        }\n        CacheMetrics.Evictions.Add(deleted, new(\"key\", Prefix(prefix)));\n        return deleted;\n    }\n\n    private static string Prefix(string key) => key.Contains(':') ? key[..key.IndexOf(':')] : key;\n}\n\npublic static class CacheMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Api.cache\", \"1.0.0\");\n    public static readonly Counter<long> Hits = Meter.CreateCounter<long>(\"cache.hits\");\n    public static readonly Counter<long> Misses = Meter.CreateCounter<long>(\"cache.misses\");\n    public static readonly Counter<long> Errors = Meter.CreateCounter<long>(\"cache.errors\");\n    public static readonly Counter<long> Evictions = Meter.CreateCounter<long>(\"cache.evictions\");\n    public static readonly Histogram<double> LoadDuration =\n        Meter.CreateHistogram<double>(\"cache.load.duration\", unit: \"ms\");\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "Redis: 6 قواعد تشغيلية تنقذك",
+      "md": "\n1. **`maxmemory` و`maxmemory-policy` مضبوطان صراحة**: للكاش الخالص استخدم `allkeys-lru` أو `volatile-lru`\n   (مع TTL على كل مفتاح). لو `noeviction` وامتلات الذاكرة → **كل الكتابات تفشل** (بما فيها أقفالك وطوابيرك).\n2. **لا تخزّن بياناتك الأساسية في Redis**: النسخ المتماثل **غير متزامن** (فقدان بيانات في نافذة الفشل)،\n   و`AOF everysec` يعني فقد ثانية. Redis = كاش/تنسيق، مش system of record.\n3. **مفاتيح بأسماء منظمة**: `shop:orders:{id}` و`shop:catalog:list:{hash}` — يسهّل الإبطال والمراقبة وعزل البيئات.\n4. **قيم صغيرة**: كل قيمة > 100KB = مشكلة شبكة وتسلسل. خزّن projection لا كيان كامل.\n5. **TTL على كل مفتاح**: شبكة أمان ضد الإبطال المنسي. مفتاح بلا TTL = تسريب ذاكرة دائم.\n6. **افشل مفتوحًا (fail-open) للكاش**: `RedisException` → اخدم من المصدر وسجّل، ولا تُرجع 500 للمستخدم.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الإبطال: الجزء الصعب فعلًا"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Caching/CacheInvalidation.cs",
+      "title": "3 استراتيجيات + إبطال L1 عبر pub/sub لكل النسخ",
+      "code": "\n/// <summary>\n/// الاستراتيجية ①: مفتاح بإصدار (versioned key) — الأبسط والأأمن.\n/// عند التغيير: زد الإصدار؛ المفاتيح القديمة تموت بـTTL بلا مطاردة.\n/// </summary>\npublic sealed class VersionedCacheKeys(IRedisCacheService cache)\n{\n    public async Task<string> ProductKeyAsync(Guid productId, CancellationToken ct)\n    {\n        var version = await cache.GetOrSetAsync(\n            \"shop:ver:products\",\n            async token => await GetVersionAsync(token),\n            ttl: TimeSpan.FromMinutes(5), ct);\n\n        return $\"shop:products:v{version}:{productId}\";\n    }\n\n    public Task BumpProductsVersionAsync(CancellationToken ct) => SetVersionAsync(ct);\n\n    private Task<int> GetVersionAsync(CancellationToken ct) => Task.FromResult(1);   // من جدول/مفتاح Redis\n    private Task SetVersionAsync(CancellationToken ct) => Task.CompletedTask;           // INCR على مفتاح الإصدار\n}\n\n/// <summary>\n/// الاستراتيجية ②: وسوم (HybridCache) — إبطال مجموعة مفاتيح بنداء واحد.\n/// (راجع درس الكاش في المرحلة 2: RemoveByTagAsync)\n/// </summary>\n\n/// <summary>\n/// الاستراتيجية ③: إبطال L1 في كل النسخ عبر Redis pub/sub.\n/// المشكلة: HybridCache يبقي نسخة محلية؛ النشر بين النسخ يحلّ عدم الاتساق.\n/// </summary>\npublic sealed class CacheInvalidationBroadcaster(\n    IConnectionMultiplexer redis, ILogger<CacheInvalidationBroadcaster> log) : IHostedService\n{\n    private const string Channel = \"shop:cache:invalidate\";\n    private readonly string _nodeId = Guid.NewGuid().ToString(\"N\");\n    private Action<RedisChannel, RedisValue>? _handler;\n\n    public Task StartAsync(CancellationToken ct)\n    {\n        var subscriber = redis.GetSubscriber();\n\n        _handler = async (channel, message) =>\n        {\n            var payload = JsonSerializer.Deserialize<InvalidationMessage>(message.ToString());\n            if (payload is null || payload.NodeId == _nodeId) return;      // تجاهل رسائلك\n\n            log.LogDebug(\"invalidating {Key} from node {Node}\", payload.Key, payload.NodeId);\n            await InvalidateLocalAsync(payload.Key);                        // أزل من L1 المحلي\n        };\n\n        return subscriber.SubscribeAsync(RedisChannel.Literal(Channel), _handler);\n    }\n\n    public Task StopAsync(CancellationToken ct) =>\n        _handler is null ? Task.CompletedTask\n                         : redis.GetSubscriber().UnsubscribeAsync(RedisChannel.Literal(Channel));\n\n    public Task BroadcastAsync(string key, CancellationToken ct) =>\n        redis.GetSubscriber().PublishAsync(RedisChannel.Literal(Channel),\n            JsonSerializer.Serialize(new InvalidationMessage(_nodeId, key)));\n\n    private Task InvalidateLocalAsync(string key) => Task.CompletedTask;   // إزالة من الذاكرة المحلية\n    private sealed record InvalidationMessage(string NodeId, string Key);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "تحذير: pub/sub بلا ضمان تسليم",
+      "md": "\nنسخة كانت مقطوعة لحظة النشر → ما استلمتش الإبطال → **L1 عندها بيانات قديمة حتى انتهاء TTL المحلي**.\nعشان كده `LocalCacheExpiration` القصير (10-30 ثانية) مش رفاهية: هو شبكة الأمان لهذا السيناريو بالظبط.\n\nلو بياناتك لا تتحمل أي عدم اتساق → **لا تستخدم L1** لها (Redis فقط)، أو اجعل TTL المحلي = 0.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الأقفال الموزّعة: بعناية أو لا تستخدمها"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Infrastructure/Locking/RedisLockFactory.cs",
+      "title": "SET NX PX + قيمة فريدة + تحرير بـLua + fencing token",
+      "code": "\nusing StackExchange.Redis;\n\npublic interface IDistributedLock : IAsyncDisposable\n{\n    string Key { get; }\n    long FenceToken { get; }        // ★ رقم تسلسلي يفحصه المورد المحمي\n    bool Acquired { get; }\n}\n\npublic sealed class RedisLockFactory(IConnectionMultiplexer redis, ILogger<RedisLockFactory> log)\n    : IDistributedLockFactory\n{\n    // تحرير ذرّي: احذف فقط لو القيمة بتاعتك (وإلا هتحذف قفل حد تاني)\n    private const string ReleaseScript = \"\"\"\n        if redis.call(\"GET\", @key) == @value then\n            return redis.call(\"DEL\", @key)\n        else\n            return 0\n        end\n        \"\"\";\n\n    public async Task<IDistributedLock?> TryAcquireAsync(\n        string key, TimeSpan lease, TimeSpan wait, CancellationToken ct)\n    {\n        var db = redis.GetDatabase();\n        var value = Guid.NewGuid().ToString(\"N\");\n        var deadline = TimeProvider.System.GetUtcNow() + wait;\n\n        while (TimeProvider.System.GetUtcNow() < deadline)\n        {\n            ct.ThrowIfCancellationRequested();\n\n            // ★ SET key value NX PX ms — ذرّي: إنشاء + انتهاء صلاحية في أمر واحد\n            var acquired = await db.StringSetAsync($\"lock:{key}\", value, lease, When.NotExists);\n            if (acquired)\n            {\n                // fencing token متزايد: يحمي من «قفل انتهى وأنت لسه شغال»\n                var fence = await db.StringIncrementAsync($\"fence:{key}\");\n                return new RedisLock(db, key, value, fence, lease, ReleaseScript, log);\n            }\n\n            await Task.Delay(TimeSpan.FromMilliseconds(100), ct);\n        }\n\n        return null;                                     // ما قدرتش خلال المهلة\n    }\n\n    private sealed class RedisLock(\n        IDatabase db, string key, string value, long fence, TimeSpan lease,\n        string releaseScript, ILogger log) : IDistributedLock\n    {\n        public string Key => key;\n        public long FenceToken => fence;\n        public bool Acquired { get; private set; } = true;\n\n        public async ValueTask DisposeAsync()\n        {\n            try\n            {\n                var released = (int)await db.ScriptEvaluateAsync(releaseScript, new\n                {\n                    key = $\"lock:{key}\",\n                    value = (RedisValue)value,\n                });\n\n                if (released == 0)\n                {\n                    // ★ القفل انتهى قبل ما تخلص شغلك → عملك ممكن يتعارض مع قفل تاني\n                    log.LogWarning(\"lock {Key} expired before release (lease={Lease}) — check work duration\", key, lease);\n                }\n                Acquired = false;\n            }\n            catch (RedisException ex) { log.LogError(ex, \"failed releasing lock {Key}\", key); }\n        }\n    }\n}\n\n// الاستخدام الصحيح: القفل قصير، والمورد المحمي يفحص الـfence token\npublic sealed class ReportGenerator(IDistributedLockFactory locks, AppDbContext db)\n{\n    public async Task<bool> GenerateAsync(DateOnly day, CancellationToken ct)\n    {\n        await using var gate = await locks.TryAcquireAsync(\n            $\"report:{day:yyyy-MM-dd}\", lease: TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(2), ct);\n\n        if (gate is null) return false;                       // حد تاني بيولّده\n\n        // ★ لو المهمة ممكن تتجاوز مدة الإيجار: جدّد الإيجار (watchdog) أو قلّل النطاق\n        // ★ والمورد الحساس (كتابة النتيجة) يتحقق إن fence token الحالي ≥ token العملية\n        await WriteReportAsync(day, gate.FenceToken, ct);\n        return true;\n    }\n\n    private Task WriteReportAsync(DateOnly day, long fence, CancellationToken ct) => Task.CompletedTask;\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "الحقيقة عن الأقفال الموزّعة في Redis",
+      "md": "\nقفل Redis (حتى Redlock) **ليس ضمانًا مطلقًا**: لو توقفت العملية (GC pause طويل، VM migration) بعد أخذ القفل\nوقبل إنهاء الشغل، عملية تانية ممكن تاخد نفس القفل → تنفيذ متزامن.\n\n- **Fencing token** هو الحل العملي: المورد المحمي (جدول/خدمة) بيرفض أي عملية بـtoken أقدم من آخر token نُفّذ.\n- **لو الصوابية حرجة** (مدفوعات، مخزون، فواتير): استخدم **قفل في قاعدة البيانات** —\n  `pg_advisory_lock` (درس BackgroundService) أو قيد فريد/`SELECT … FOR UPDATE`. أقوى وأبسط لأن المصدر نفسه هو الحكم.\n- **لا تمسك قفلًا لعمل طويل**: جدّد الإيجار (watchdog) أو جزّئ الشغل.\n- **احترم مدة الانتظار**: `TryAcquire` بمهلة + فشل واضح أفضل من طابور صامت.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "طوابير خفيفة: Lists مقابل Streams مقابل Pub/Sub"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الآلية",
+        "الدوام",
+        "التسليم",
+        "أنسب حالة",
+        "متى تتركها"
+      ],
+      "rows": [
+        [
+          "Pub/Sub",
+          "✗",
+          "بلا ضمان (غير المتصل يفقد)",
+          "إشارات/إبطال كاش/بث لحظي",
+          "أي حدث يجب ألا يُفقد"
+        ],
+        [
+          "Lists (`LPUSH`/`BRPOP`)",
+          "✓ (بينما في الذاكرة)",
+          "مرة واحدة، بلا ACK",
+          "طوابير عمل بسيطة داخلية",
+          "لو محتاج إعادة تسليم/مستهلكين متعددين منظمين"
+        ],
+        [
+          "**Streams** (`XADD`/`XREADGROUP`)",
+          "✓ + سجل",
+          "مجموعات مستهلكين + ACK + pending",
+          "طابور جاد بخفة Redis",
+          "لو محتاج routing معقد/أولويات/DLQ غني → RabbitMQ/Service Bus"
+        ],
+        [
+          "Sorted Sets (تأخير/جدولة)",
+          "✓",
+          "يدوي (فحص دوري)",
+          "مهام مؤجلة، rate limiting",
+          "حجوم كبيرة → وسيط حقيقي"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Streams: منتج + مجموعة مستهلكين + ACK + معالجة المعلق",
+      "code": "\npublic sealed class RedisStreamWorker(\n    IConnectionMultiplexer redis, IServiceScopeFactory scopeFactory, ILogger<RedisStreamWorker> log)\n    : BackgroundService\n{\n    private const string Stream = \"shop:jobs\";\n    private const string Group = \"workers\";\n    private readonly string _consumer = $\"api-{Environment.MachineName}-{Environment.ProcessId}\";\n\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        var db = redis.GetDatabase();\n\n        // أنشئ المجموعة مرة واحدة (idempotent: BUSYGROUP = موجودة بالفعل)\n        try { await db.StreamCreateConsumerGroupAsync(Stream, Group, createStream: true); }\n        catch (RedisServerException ex) when (ex.Message.Contains(\"BUSYGROUP\")) { /* موجودة */ }\n\n        while (!stoppingToken.IsCancellationRequested)\n        {\n            try\n            {\n                // ① عالج الرسائل المعلقة أولًا (من مستهلك مات) —Claim/Pending\n                await RetryPendingAsync(db, stoppingToken);\n\n                // ② اقرأ رسائل جديدة\n                var entries = await db.StreamReadGroupAsync(\n                    Stream, Group, _consumer, count: 10, noAck: false);\n\n                if (entries is null || entries.Length == 0)\n                {\n                    await Task.Delay(250, stoppingToken);        // لا تدوير ساخن (busy loop)\n                    continue;\n                }\n\n                foreach (var entry in entries)\n                {\n                    try\n                    {\n                        await using var scope = scopeFactory.CreateAsyncScope();\n                        var handler = scope.ServiceProvider.GetRequiredService<IJobHandler>();\n                        await handler.HandleAsync(entry.Values.ToDictionary(n => n.Name.ToString(), n => n.Value.ToString()),\n                                                  stoppingToken);\n\n                        await db.StreamAcknowledgeAsync(Stream, Group, entry.Id);    // ✓ ACK بعد النجاح\n                    }\n                    catch (Exception ex) when (ex is not OperationCanceledException)\n                    {\n                        // لا ACK → الرسالة تفضل pending وتُعاد معالجتها (idempotency ضرورية!)\n                        log.LogError(ex, \"job {EntryId} failed; left pending for retry\", entry.Id.ToString());\n                    }\n                }\n            }\n            catch (OperationCanceledException) { break; }\n            catch (RedisException ex)\n            {\n                log.LogError(ex, \"redis stream read failed; backing off\");\n                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);\n            }\n        }\n    }\n\n    private async Task RetryPendingAsync(IDatabase db, CancellationToken ct)\n    {\n        var pending = await db.StreamPendingMessagesAsync(Stream, Group, count: 20, _consumer);\n        foreach (var p in pending.Where(p => p.DeliveryCount > 3))\n        {\n            // بعد N محاولات: انقلها لطابور dead-letter بدل الدوران اللانهائي\n            await db.StreamAddAsync(\"shop:jobs:dlq\", \"originalId\", p.MessageId.ToString());\n            await db.StreamAcknowledgeAsync(Stream, Group, p.MessageId);\n            log.LogWarning(\"moved {MessageId} to DLQ after {Count} deliveries\", p.MessageId, p.DeliveryCount);\n        }\n    }\n}\n\npublic interface IJobHandler\n{\n    Task HandleAsync(Dictionary<string, string> payload, CancellationToken ct);\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "استخدامات تانية مفيدة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "عدّادات، rate limiting، ومهام مؤجلة",
+      "code": "\n// ① عدّاد بفترة انتهاء (مثال: حد API بسيط مشترك بين النسخ)\npublic async Task<bool> TryIncrementAsync(string key, int limit, TimeSpan window, CancellationToken ct)\n{\n    var db = redis.GetDatabase();\n    var count = await db.StringIncrementAsync(key);\n    if (count == 1) await db.KeyExpireAsync(key, window);      // أول ضربة تحدد النافذة\n    return count <= limit;\n}\n\n// ② نافذة منزلقة بـSorted Set (أدق من العداد الثابت)\npublic async Task<bool> AllowAsync(string key, int limit, TimeSpan window, CancellationToken ct)\n{\n    var db = redis.GetDatabase();\n    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();\n    var batch = db.CreateBatch();\n\n    batch.KeySortedSetRemoveRangeByScoreAsync(key, 0, now - (long)window.TotalMilliseconds);\n    batch.SortedSetAddAsync(key, $\"{now}:{Guid.NewGuid():N}\", now);\n    batch.KeyExpireAsync(key, window);\n    batch.Execute();\n\n    var count = await db.SortedSetLengthAsync(key);\n    return count <= limit;\n}\n\n// ③ مهمة مؤجلة (delayed job) بـSorted Set — بديل خفيف لجدولة كاملة\npublic async Task ScheduleAsync(string payload, DateTimeOffset runAt, CancellationToken ct) =>\n    await redis.GetDatabase().SortedSetAddAsync(\"shop:delayed\", payload, runAt.ToUnixTimeMilliseconds());\n\n// والعامل: XCLAIM/XREAD… ببساطة اقرأ ما استحق\npublic async Task<IReadOnlyList<string>> DueAsync(CancellationToken ct)\n{\n    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();\n    var due = await redis.GetDatabase().SortedSetRangeByScoreAsync(\"shop:delayed\", double.NegativeInfinity, now);\n    foreach (var item in due) await redis.GetDatabase().SortedSetRemoveAsync(\"shop:delayed\", item);\n    return due.Select(v => v.ToString()).ToList();\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أضبط Redis بـmultiplexer واحد وtimeouts و`AbortOnConnectFail=false` وفشل مفتوح للكاش.",
+        "أنفّذ cache-aside بـTTL وقيم صغيرة وقياس hit/miss، وأبطل بطرق مقصودة (إصدار/وسوم/pub-sub).",
+        "أفهم حدود القفل الموزّع وأستخدم fencing token، وألجأ لقفل القاعدة لما الصوابية حرجة.",
+        "أختار بين Lists/Streams/Pub-Sub بحسب الدوام والتسليم، وأعرف متى أنتقل لوسيط رسائل حقيقي."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه `ConnectionMultiplexer` لازم يكون singleton؟",
+          "options": [
+            "متطلب ترجمة",
+            "كل واحد يفتح مجموعة اتصالات خاصة → استنزاف اتصالات Redis وذاكرة؛ المكتبة thread-safe وتدير الاتصالات داخليًا",
+            "أسرع في التسلسل",
+            "يمنع الأقفال"
+          ],
+          "answer": 1,
+          "explain": "خطأ شائع: إنشاء multiplexer لكل طلب/عملية. واحد للتطبيق (أو واحد لكل إعداد مختلف)."
+        },
+        {
+          "q": "`maxmemory-policy` = `noeviction` والذاكرة امتلت. إيه اللي هيحصل؟",
+          "options": [
+            "Redis يحذف أقدم المفاتيح",
+            "كل أوامر الكتابة تفشل بـOOM — بما فيها أقفالك وطوابيرك",
+            "يتباطأ فقط",
+            "يعيد التشغيل"
+          ],
+          "answer": 1,
+          "explain": "للكاش الخالص استخدم `allkeys-lru`/`volatile-lru` + TTL على كل مفتاح. ولو Redis مشترك مع طوابير/أقفال: افصله في instance مختلف."
+        },
+        {
+          "q": "أخذت قفل Redis، وشغلك اتأخر (GC pause) وانتهى الإيجار، وعملية تانية أخذت القفل. النتيجة؟",
+          "options": [
+            "لا شيء — القفل يحميك",
+            "تنفيذ متزامن لنفس العمل الحرج؛ الحماية الحقيقية: fencing token يفحصه المورد المحمي",
+            "Redis يرمي استثناء",
+            "القفل يتجدد تلقائيًا"
+          ],
+          "answer": 1,
+          "explain": "ده جوهر نقد Redlock. الحل: token متزايد + رفض العمليات الأقدم عند المورد، أو استخدم قفل قاعدة البيانات."
+        },
+        {
+          "q": "Pub/Sub مناسب لإيه بالظبط؟",
+          "options": [
+            "طابور مهام حرجة",
+            "إشارات لحظية لا يضر فقدانها (إبطال كاش، إشعارات، بث تحديثات)",
+            "تخزين دائم",
+            "تسليم مضمون بين الخدمات"
+          ],
+          "answer": 1,
+          "explain": "بلا دوام وبلا ضمان تسليم: المشترك غير المتصل يفقد الرسالة. للأحداث الحرجة استخدم Streams أو وسيط رسائل."
+        },
+        {
+          "q": "`KEYS pattern*` في الإنتاج — ليه ممنوع؟",
+          "options": [
+            "غير مدعوم",
+            "يحجب خادم Redis (أحادي الخيط) أثناء فحص كل المفاتيح → تجميد لكل العملاء؛ استخدم `SCAN`",
+            "يرجع نتائج خاطئة",
+            "يستهلك ذاكرة"
+          ],
+          "answer": 1,
+          "explain": "`SCAN`/`KeysAsync` يتصفح تدريجيًا بلا حجب. ولو محتاج إبطال جماعي متكرر: صمّم بمفاتيح إصدار أو وسوم بدل المطاردة."
+        },
+        {
+          "q": "Redis واقع بالكامل — سلوك الـAPI المطلوب؟",
+          "options": [
+            "500 لكل الطلبات",
+            "فشل مفتوح: اخدم من المصدر (مع تحميل أعلى) وسجّل ونبّه، ولا تُفشل الطلبات",
+            "أعد التشغيل",
+            "ارجع بيانات فارغة"
+          ],
+          "answer": 1,
+          "explain": "الكاش تحسين مش اعتماد. `AbortOnConnectFail=false` + `try/catch RedisException` + metric للخطأ = تصميم صحيح."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "Redis في مشروعك (بأمان)",
+          "md": "شغّل Redis بـTestcontainers، وطبّق HybridCache أو `RedisCacheService` على مسار قراءة ساخن، مع TTL ومفاتيح منظمة وإبطال بعد الكتابة وقياس hit/miss. أثبت إن سقوط Redis لا يُفشل الطلبات.",
+          "criteria": [
+            "multiplexer واحد singleton + timeouts مضبوطة + `AbortOnConnectFail=false`",
+            "كل مفتاح له TTL واسم منظم (`app:domain:key`)",
+            "إبطال مقصود بعد كل كتابة مؤثرة (اختبار يثبت القراءة الجديدة)",
+            "نسبة إصابة و`cache.errors` منشورة كـmetrics",
+            "اختبار: إيقاف حاوية Redis → الطلبات تنجح (من المصدر) مع تحذير في اللوج",
+            "لا قيم > 100KB (سجّل أكبر قيمة)"
+          ],
+          "hint": "لو القراءات أبطأ بعد إضافة الكاش: غالبًا القيمة كبيرة أو التسلسل مكلف — خزّن projection أصغر، وقِس تكلفة `Serialize/Deserialize` مقابل تكلفة الاستعلام."
+        },
+        {
+          "id": "t2",
+          "title": "قفل موزّع أو طابور",
+          "md": "اختار واحدة: (أ) قفل Redis بـfencing token يمنع تكرار توليد تقرير يومي، أو (ب) طابور Redis Streams بمجموعة مستهلكين + ACK + DLQ لمهمة خلفية. نفّذها واختبر الحالات الحرجة.",
+          "criteria": [
+            "(أ) اختباران متزامنان → تنفيذ واحد فقط، وتحرير القفل ذرّي بـLua، وسجل تحذيري لو انتهت مدة الإيجار",
+            "(ب) فشل معالج → الرسالة تبقى pending وتُعاد، وبعد N محاولات → DLQ",
+            "قرار مكتوب: هل القفل/الطابور ده كافٍ لو الصوابية حرجة؟ (ولماذا لا تنتقل لـRabbitMQ)",
+            "idempotency في المعالج (إعادة التسليم لا تكرر الأثر)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Redis documentation",
+          "url": "https://redis.io/docs/latest/"
+        },
+        {
+          "label": "StackExchange.Redis basics",
+          "url": "https://stackexchange.github.io/StackExchange.Redis/Basics"
+        },
+        {
+          "label": "Distributed caching in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/performance/caching/distributed"
+        },
+        {
+          "label": "Redis Streams",
+          "url": "https://redis.io/docs/latest/develop/data-types/streams/"
+        },
+        {
+          "label": "How to do distributed locking (Kleppmann)",
+          "url": "https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html"
+        },
+        {
+          "label": "Redis persistence (RDB/AOF)",
+          "url": "https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/"
+        }
+      ]
+    }
+  ]
+}

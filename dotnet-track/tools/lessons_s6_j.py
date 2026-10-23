@@ -1,0 +1,490 @@
+# -*- coding: utf-8 -*-
+"""Stage 6 module 3 (part C): s6-m3-l5 (بيئات متعددة وموافقات)."""
+
+TODAY = "2026-10-22"
+
+_L5 = {
+    "id": "s6-m3-l5",
+    "updatedAt": TODAY,
+    "blocks": [
+        {"type": "text", "md": "أغلب حوادث الإنتاج مش سببها كود غلط — سببها **فرق بين البيئات**: إعداد موجود في staging وناقص في prod · نسخة مكتبة مختلفة · قاعدة بيانات بمخطط أقدم · صلاحية ناقصة. في الدرس ده هتبني **خريطة بيئات حقيقية** (dev · PR preview · staging · prod) بمبدأ **parity**: نفس الإصدارات ونفس المخطط ونفس المفاتيح، والاختلاف فقط في الحجم والتكلفة والبيانات. وهتربط الموافقات بأنواع التغيير (كود · بنية · مخطط · سر · إعداد) بحيث كل تغيير خطير له **موافق موثّق وأدلة محفوظة**، مع مسار طوارئ (break-glass) معروف ومحدود."},
+
+        {"type": "terms", "title": "مصطلحات الدرس", "items": [
+            {"term": "Environment (بيئة)", "def": "مجموعة موارد + إعدادات + صلاحيات لغرض محدد: `dev` (تطوير) · `staging` (مطابق للإنتاج بأصغر حجم) · `prod`. كل واحدة في **resource group** مستقل و**Key Vault** مستقل."},
+            {"term": "Parity (التطابق)", "def": "البيئات متطابقة في **الإصدارات · المخطط · مفاتيح الإعداد · سلوك الميزات**، ومختلفة فقط في **الحجم · التكلفة · البيانات · الصلاحيات**. أي فرق تاني = مصدر حوادث."},
+            {"term": "GitHub Environment", "def": "كيان في المستودع يحمل: **required reviewers** (حتى 6) · **wait timer** · **deployment branch policy** · secrets/variables خاصة. ملاحظات الحماية دي ميزة مدفوعة في المستودعات الخاصة."},
+            {"term": "Promotion (ترقية)", "def": "نقل **نفس القطعة الفنية** بين البيئات: نفس digest الصورة ونفس قالب البنية — مش إعادة بناء. إعادة البناء لكل بيئة = اختلاف غير مقصود."},
+            {"term": "PR preview / ephemeral environment", "def": "بيئة مؤقتة لكل Pull Request (تُنشأ ثم تُحذف) — بيخلي المراجعة على نظام شغال مش على لقطات."},
+            {"term": "نافذة التغيير (change window)", "def": "وقت مسموح فيه النشر (مثال: أيام العمل 10ص–4م) — عشان يكون فيه حد يراقب ويرجع. مش خرافة: زمن الاكتشاف بيتمد لما مفيش حد صاحي."},
+            {"term": "Deployment freeze", "def": "منع النشر في فترات محددة (أعياد · عروض · حوادث جارية) بقرار معلن وتاريخ انتهاء."},
+            {"term": "Break-glass", "def": "مسار طوارئ للنشر خارج القواعد (أثناء حادث)، بشروط: حد محدد · توثيق فوري · **PR خلال 24 ساعة** يرد الكود والبنية للحالة الفعلية."},
+            {"term": "4-eyes (أربع أعين)", "def": "تغييرات محددة تحتاج موافقين اثنين (مثلًا: حذف مورد · تغيير صلاحيات · تدوير سر الإنتاج) — مش موافق واحد."},
+            {"term": "Drift between environments", "def": "فرق تراكمي بين البيئات (إعداد اتضاف في prod يدويًا ونسيته في staging). يُكشف بفحص دوري آلي."},
+            {"term": "Azure Policy", "def": "قواعد مفروضة على مستوى الاشتراك/المجموعة (منع الوصول العام · فرض وسوم · تقييد SKUs) — حماية لا تعتمد على انتباه البشر."},
+            {"term": "تدقيق النشر", "def": "سجل: مين نشر · إيه الإصدار/digest · مين وافق · إمتى · وإيه النتيجة — من GitHub Deployments API وسجلات Azure Activity."},
+        ]},
+
+        # ── 1) الخريطة
+        {"type": "heading", "level": 2, "text": "① خريطة البيئات: من commit لـproduction"},
+        {"type": "code", "lang": "text", "title": "خريطة التدفق والاختلافات المسموحة", "filename": "docs/environments-map.txt", "code": r'''        المطوّر                CI                    البيئات
+  ┌──────────────┐   ┌───────────────────┐   ┌──────────────────────────────┐
+  │  feature     │──▶│  PR checks         │──▶│  ① PR preview (مؤقتة)        │
+  │  branch      │   │  (بلا صلاحيات نشر) │   │     نسخة مصغرة · بيانات وهمية│
+  └──────────────┘   └─────────┬─────────┘   │     تُحذف بعد الدمج/الإغلاق  │
+                               │             └───────────────┬──────────────┘
+                               ▼                             │
+                        ┌──────────────┐                     │
+                        │  main        │─── build image ─────┤
+                        │  (protected) │    + digest ثابت    │
+                        └──────┬───────┘                     ▼
+                               │             ┌──────────────────────────────┐
+                               ├────────────▶│  ② dev                       │
+                               │  تلقائي     │     Burstable · بلا HA       │
+                               │             │     retention 30 · إيقاف ليلي │
+                               │             └───────────────┬──────────────┘
+                               │                             ▼
+                               │             ┌──────────────────────────────┐
+                               ├────────────▶│  ③ staging                   │
+                               │  تلقائي     │     مطابق للإنتاج بأصغر حجم  │
+                               │  (environment: staging)                     │
+                               │             │     smoke tests + قياس أساس   │
+                               │             └───────────────┬──────────────┘
+                               │                             ▼
+                               │             ┌──────────────────────────────┐
+                               └────────────▶│  ④ production                │
+                                  موافقة     │     environment: production   │
+                                  بشرية      │     required reviewers        │
+                                             │     canary ثم 100%            │
+                                             └──────────────────────────────┘
+
+القاعدة الحاكمة: **نفس الـdigest** بيتنقل من ② إلى ③ إلى ④ — بلا إعادة بناء.
+والفرق بين البيئات مسموح فقط في: الحجم (SKU/نسخ) · التكلفة · البيانات · الصلاحيات · الأسرار.
+'''},
+        {"type": "table", "caption": "جدول البيئات — كل خلية قرار مقصود",
+         "head": ["", "① PR preview", "② dev", "③ staging", "④ production"],
+         "rows": [
+             ["الغرض", "مراجعة على نظام شغال", "تطوير وتجارب", "تحقق مطابق للإنتاج + قياس خط الأساس", "خدمة المستخدمين"],
+             ["عمرها", "دقائق–ساعات (تُحذف تلقائيًا)", "دائم", "دائم", "دائم"],
+             ["الحجم", "أصغر شيء ممكن", "Burstable · نسخة واحدة · `minReplicas: 0`", "**نفس إصدارات prod** بحجم أصغر · نسخة واحدة على الأقل", "حسب الحمل · HA · `minReplicas` مدروس"],
+             ["البيانات", "وهمية/مثبتة (fixtures)", "وهمية + بذور (Bogus)", "**نسخة مجهولة من prod** أو بيانات واقعية بلا حساسية", "حقيقية"],
+             ["الأسرار", "بلا أسرار حقيقية (mocks)", "vault تطوير مستقل", "vault مستقل بأسرار **مشابهة في الشكل** لـprod", "vault مستقل + Managed Identity فقط"],
+             ["الموافقة", "لا", "لا (تلقائي)", "لا (تلقائي) — لكن بيقيس خط الأساس", "**نعم**: required reviewers (+ 4-eyes للتغييرات الخطيرة)"],
+             ["نافذة التغيير", "—", "أي وقت", "أي وقت", "أيام العمل 10ص–4م (وتجميد معلن في فترات محددة)"],
+             ["التكلفة الشهرية التقريبية", "قريبة من الصفر (scale-to-zero)", "~30 دولارًا (6.2.5)", "~40–70 دولارًا", "~70–200 دولار حسب الحمل"],
+             ["لو اتكسرت", "مفيش أثر", "توقف تطوير", "**إنذار مبكر** — لا تنشر لـprod", "حادث + رجوع فوري (6.3.3)"],
+         ]},
+
+        # ── 2) الإعدادات
+        {"type": "heading", "level": 2, "text": "② الإعدادات والأسرار لكل بيئة (من غير تكرار ولا نسيان)"},
+        {"type": "code", "lang": "bash", "title": "azure/80-environments.sh", "filename": "azure/80-environments.sh", "code": r'''#!/usr/bin/env bash
+set -euo pipefail
+
+# ═══ 1) مجموعة موارد + vault + هوية لكل بيئة (لا شيء مشترك بين البيئات) ═══
+for ENV in dev staging prod; do
+  RG="rg-shop-$ENV"
+  az group create --name "$RG" --location westeurope \
+    --tags "env=$ENV" "project=shop" "owner=you" "managedBy=bicep"
+
+  # vault مستقل لكل بيئة (6.2.3) — ولو dev/staging صغيرين، خليهم منفصلين:
+  az keyvault create --name "kv-shop-$ENV" --resource-group "$RG" --location westeurope \
+    --enable-rbac-authorization true --enable-purge-protection true --retention-days 90
+
+  # هوية نشر مستقلة لكل بيئة (OIDC — 6.3.1) بصلاحيات على مجموعتها فقط:
+  #   راجع azure/70-oidc.sh وأنشئ federated credential بـsubject:
+  #   repo:org/repo:environment:$ENV
+done
+
+# ═══ 2) البنية نفسها بملف معاملات مختلف (مش قالب مختلف!) ═══
+az deployment group create -g rg-shop-dev    --template-file infra/main.bicep --parameters infra/dev.bicepparam
+az deployment group create -g rg-shop-staging --template-file infra/main.bicep --parameters infra/staging.bicepparam
+az deployment group create -g rg-shop-prod   --template-file infra/main.bicep --parameters infra/prod.bicepparam
+# القالب واحد = parity مضمون؛ الاختلاف في القيم فقط (الحجم/HA/الاحتفاظ).
+
+# ═══ 3) قواعد مفروضة على مستوى الاشتراك (Azure Policy) — حماية لا تعتمد على الانتباه ═══
+# لا تحفظ معرّفات السياسات من الذاكرة (بتتغير): ابحث عنها بالاسم أولًا
+SUB_ID=$(az account show --query id -o tsv)
+POLICY_ID=$(az policy definition list --query "[?contains(displayName, 'public network access') && contains(displayName, 'Storage')].policyRule | [0]" -o tsv 2>/dev/null || true)
+az policy definition list --query "[?contains(displayName,'Storage')].{n:displayName,id:policyDefinitionId}" -o table | head -n 20
+# ثم أسندها بالمعرّف الصحيح من المخرجات أعلاه:
+#   az policy assignment create --name deny-public-storage \
+#     --policy "<policyDefinitionId من المخرجات>" \
+#     --scope "/subscriptions/$SUB_ID/resourceGroups/rg-shop-prod"
+az policy assignment list --output table
+# أمثلة قواعد تستاهل الفرض: منع الوصول العام للتخزين · فرض وسوم env/project ·
+# منع SKU أعلى من المحدد في dev · فرض HTTPS only · منع حذف Key Vault.
+
+# ═══ 4) إعدادات التطبيق لكل بيئة (مفاتيح متطابقة، قيم مختلفة) ═══
+for ENV in dev staging prod; do
+  az containerapp update --name orders --resource-group "rg-shop-$ENV" \
+    --set-env-vars "ASPNETCORE_ENVIRONMENT=$( [ "$ENV" = prod ] && echo Production || echo Staging )" \
+                   "Azure__KeyVaultName=kv-shop-$ENV" \
+                   "Environment=$ENV" 2>/dev/null || echo "⚠ عدّل الأوامر حسب منصتك"
+done
+# ⚠ parity في **المفاتيح**: كل مفتاح موجود في prod لازم موجود في dev/staging
+#   (القيمة تختلف، المفتاح لا) — السكربت في الفقرة ⑤ بيتحقق من ده تلقائيًا.
+'''},
+        {"type": "code", "lang": "bash", "title": "scripts/gh-environments.sh — بيئات GitHub وقواعد الحماية", "filename": "scripts/gh-environments.sh", "code": r'''#!/usr/bin/env bash
+set -euo pipefail
+OWNER=$(gh repo view --json owner -q .owner.login)
+REPO=$(gh repo view --json name -q .name)
+
+# ═══ 1) أنشئ البيئات وقواعد الحماية (API — أدق من الواجهة للتوثيق) ═══
+# dev وstaging: تلقائي (بلا مراجعين)
+gh api -X PUT "repos/$OWNER/$REPO/environments/dev" -f wait_timer=0 >/dev/null
+gh api -X PUT "repos/$OWNER/$REPO/environments/staging" -f wait_timer=0 >/dev/null
+
+# production: موافقة + انتظار + قيود فروع
+REVIEWER_ID=$(gh api user --jq .id)          # أو معرّف الفريق: /orgs/{org}/teams/{slug}
+gh api -X PUT "repos/$OWNER/$REPO/environments/production" \
+  -F wait_timer=0 \
+  -F 'deployment_branch_policy[type]=protected' \
+  -F 'reviewers[][reviewer_id]='"$REVIEWER_ID" \
+  -F 'reviewers[][type]=User' >/dev/null
+
+# ملاحظات:
+#   • wait_timer بالدقائق (حتى 30 يومًا) — مفيد لنوافذ التغيير.
+#   • deployment_branch_policy: protected (الفروع المحمية فقط) أو all أو custom.
+#   • قواعد الحماية في المستودعات الخاصة تحتاج خطة مدفوعة (Team/Enterprise).
+#   • لا تستخدم environment للإنتاج وref-based OIDC معًا (6.3.1) — الـsubject بيتغير.
+
+# ═══ 2) متغيرات (معرّفات) وأسرار لكل بيئة ═══
+gh variable set AZURE_CLIENT_ID     --env production --body "$PROD_APP_ID"
+gh variable set AZURE_TENANT_ID     --env production --body "$TENANT_ID"
+gh variable set AZURE_SUBSCRIPTION_ID --env production --body "$SUB_ID"
+gh secret   set SMTP_API_KEY        --env production --body "$SMTP_KEY"   # سر حقيقي
+gh secret   set SMTP_API_KEY        --env dev        --body "dev-fake-key" # شكل مطابق، قيمة وهمية
+
+# ═══ 3) تدقيق: من وافق ومن نشر ومتى ═══
+gh api "repos/$OWNER/$REPO/deployments?per_page=10" \
+  --jq '.[] | "\(.created_at)  env=\(.environment)  sha=\(.sha[0:8])  by=\(.creator.login)"'
+# وتفاصيل المراجعة/الحالة لكل deployment:
+#   gh api repos/$OWNER/$REPO/deployments/<id>/statuses
+# ومن Azure: سجل النشاط يوضح من نفّذ النشر فعلًا:
+az monitor activity-log list --namespace Microsoft.App -o table --max-items 10
+'''},
+
+        # ── 3) الموافقات
+        {"type": "heading", "level": 2, "text": "③ الموافقات: كل نوع تغيير له موافق وأدلة"},
+        {"type": "table", "caption": "مصفوفة التغييرات — اطبعها وعلّقها في `docs/change-matrix.md`",
+         "head": ["نوع التغيير", "الموافقة", "الأدلة المطلوبة قبل الموافقة", "طريقة النشر", "الرجوع"],
+         "rows": [
+             ["كود تطبيق (ميزة/إصلاح) متوافق",
+              "مراجع PR واحد + موافق بيئة الإنتاج",
+              "CI أخضر (بوابات 6.3.2) · canary ناجح في staging · خط أساس مسجّل",
+              "canary متدرج بالـdigest (6.3.3)", "تحويل 100% للنسخة القديمة — ثوانٍ"],
+             ["**تغيير في مخطط قاعدة البيانات**",
+              "مراجع + موافق بيئة + **مراجعة DBA/مالك البيانات**",
+              "الخطة expand/contract مكتوبة (3.5) · الهجرة مُختبَرة على نسخة من prod · زمن التنفيذ المقدّر · عدم وجود قفل كتابة",
+              "migration job منفصل **قبل** نشر الكود (6.1.2)", "التوسيع لا يُتراجع عنه بسهولة → الرجوع بالكود لا بالمخطط"],
+             ["**تغيير بنية تحتية** (IaC)",
+              "مراجع + موافق بيئة + **4-eyes لو فيه Delete**",
+              "`what-if`/`plan` منشور كتعليق على الـPR · صفر `Delete` غير مبرر · تحقق أمني بعد النشر",
+              "نشر من job `environment: production` (6.3.4)", "إعادة نشر الإصدار السابق من القالب (Git = الحقيقة)"],
+             ["**تدوير سر/مفتاح** في الإنتاج",
+              "مالك الخدمة + موافق أمني (4-eyes)",
+              "الخطة: قيمة جديدة → توزيع → تحقق → إلغاء القديمة · تأكيد إن السر الجديد وصل للتطبيق",
+              "تحديث في Key Vault + `rollout restart` أو مراجع تلقائية (6.2.3)", "الإبقاء على الإصدار القديم من السر لفترة"],
+             ["تغيير إعداد (feature flag/قيمة)",
+              "مالك الميزة (لو غير سلوكي) · موافق بيئة (لو سلوكي)",
+              "قيمة قبل/بعد · الأثر المتوقع · طريقة الإطفاء الفوري",
+              "App Configuration (بلا نشر) أو متغير بيئة + rollout", "إرجاع القيمة السابقة — ثوانٍ"],
+             ["تغيير صلاحيات/RBAC",
+              "**4-eyes** + موافق أمني",
+              "من يحصل على ماذا ولماذا · نطاق الصلاحية · تاريخ مراجعة",
+              "IaC (لا نقر في Portal) + تسجيل في `docs/access-review.md`", "حذف الإسناد (IaC revert)"],
+             ["hotfix أثناء حادث",
+              "**break-glass**: موافق واحد + إخطار فوري",
+              "سبب الحادث · أصغر تغيير ممكن · اختبار في staging لو الوقت يسمح",
+              "نشر مباشر + canary لو ممكن", "إصدار مستقر سابق معروف"],
+             ["حذف بيئة/مورد نهائي",
+              "**4-eyes** + نسخة احتياطية مؤكدة",
+              "تأكيد الاسترجاع (6.2.4) · تصدير البيانات · موافقة المالك",
+              "IaC مع stack `--action-on-unmanage delete`", "استرجاع من نسخة PITR (لو متاحة)"],
+         ]},
+        {"type": "code", "lang": "yaml", "title": ".github/workflows/promote.yml — ترقية نفس القطعة الفنية", "filename": ".github/workflows/promote.yml", "code": r'''name: Promote
+
+# المبدأ: الصورة تُبنى **مرة واحدة**، والـdigest يُرقّى بين البيئات.
+on:
+  workflow_run:
+    workflows: ["Release & Deploy"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: "digest الصورة (sha256:…)"
+        required: true
+      target:
+        description: "البيئة المستهدفة"
+        type: choice
+        options: [dev, staging, production]
+        default: staging
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: acrshopprod.azurecr.io/shop/orders
+
+jobs:
+  resolve:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.get.outputs.digest }}
+    steps:
+      - name: اقرأ الـdigest من مخرجات التشغيل السابق أو من المدخل
+        id: get
+        run: |
+          if [ -n "${{ github.event.inputs.digest }}" ]; then
+            echo "digest=${{ github.event.inputs.digest }}" >> "$GITHUB_OUTPUT"
+          else
+            # من آخر صورة مدفوعة في ACR (خطوتان: أحدث tag ثم digest بتاعه):
+            TAG=$(az acr repository show-tags --name acrshopprod --repository shop/orders \
+                    --orderby time_desc --top 1 -o tsv)
+            DIG=$(az acr repository show --name acrshopprod --image "shop/orders:$TAG" \
+                    --query digest -o tsv)
+            echo "digest=$DIG" >> "$GITHUB_OUTPUT"
+            echo "أحدث صورة: shop/orders:$TAG@$DIG"
+          fi
+
+  promote-staging:
+    needs: resolve
+    runs-on: ubuntu-latest
+    environment: staging          # تلقائي
+    if: contains(fromJSON('["staging","production"]'), github.event.inputs.target || 'production')
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: انشر نفس الـdigest
+        run: |
+          az containerapp update -n orders -g rg-shop-staging \
+            --image "${{ env.IMAGE }}@${{ needs.resolve.outputs.digest }}"
+      - name: Smoke tests + سجّل خط الأساس للإنتاج
+        run: |
+          bash deploy/smoke.sh staging | tee artifacts/baseline-staging.txt
+
+  promote-production:
+    needs: [resolve, promote-staging]
+    runs-on: ubuntu-latest
+    environment: production       # ← هنا بتقف لحد ما المراجع يوافق
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: canary متدرج (6.3.3) بنفس الـdigest
+        run: bash deploy/canary.sh prod "${{ env.IMAGE }}@${{ needs.resolve.outputs.digest }}"
+      - name: أرشفة دليل النشر
+        run: |
+          echo "digest=${{ needs.resolve.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "approved_by=راجع تبويب Deployments" >> "$GITHUB_STEP_SUMMARY"
+          echo "rollback=az containerapp ingress set -n orders -g rg-shop-prod --traffic-split <old-rev>=100" >> "$GITHUB_STEP_SUMMARY"
+'''},
+
+        # ── 4) parity
+        {"type": "heading", "level": 2, "text": "④ Parity: إيه اللي يتطابق وإيه اللي يختلف"},
+        {"type": "table", "caption": "قائمة الفحص — السكربت بالأسفل بيتحقق منها آليًا",
+         "head": ["البعد", "لازم يتطابق (parity)", "مسموح يختلف", "إزاي تكتشف الفرق"],
+         "rows": [
+             ["الكود", "**نفس الـdigest** عبر البيئات", "—", "قارن `latestRevisionFqdn`/digest في كل بيئة"],
+             ["إصدارات المنصة", "إصدار .NET/الـruntime/إصدار PostgreSQL", "—", "`az … show --query` لكل بيئة + مقارنة"],
+             ["المخطط (Schema)", "**نفس إصدار الـmigrations**", "البيانات نفسها", "جدول `__EFMigrationsHistory` / `schema_version`"],
+             ["مفاتيح الإعداد", "**نفس مجموعة المفاتيح**", "القيم (اتصالات · أسماء موارد)", "قارن قائمة المفاتيح لا القيم"],
+             ["feature flags", "نفس الأعلام المعرفة", "**القيم/النسب** (دي نقطة الاختلاف المقصودة)", "قارن الأسماء من App Configuration"],
+             ["الصلاحيات", "نموذج الأدوار (RBAC pattern)", "من يملك الدور (هويات مختلفة)", "`az role assignment list` لكل بيئة"],
+             ["الحجم/التكلفة", "—", "**SKU · عدد النسخ · HA · الاحتفاظ**", "متوقع ومقصود (6.2.5)"],
+             ["البيانات", "—", "وهمية/مجهولة/حقيقية", "متوقع ومقصود"],
+             ["الشبكة", "نمط العزل (private endpoint في prod)", "التفاصيل (VNet لكل بيئة)", "`publicNetworkAccess` لكل بيئة"],
+         ]},
+        {"type": "code", "lang": "bash", "title": "scripts/parity-check.sh — يكشف الانحراف بين البيئات", "filename": "scripts/parity-check.sh", "code": r'''#!/usr/bin/env bash
+set -uo pipefail
+ENVS=(dev staging prod)
+FAIL=0
+
+# ═══ 1) نفس digest الصورة؟ ═══
+echo "── إصدار التطبيق ──"
+declare -A IMG
+for E in "${ENVS[@]}"; do
+  IMG[$E]=$(az containerapp show -n orders -g "rg-shop-$E" \
+            --query "properties.template.containers[0].image" -o tsv 2>/dev/null || echo "n/a")
+  echo "  $E: ${IMG[$E]}"
+done
+[ "${IMG[staging]}" = "${IMG[prod]}" ] || {
+  echo "  ⚠ staging وprod على إصدارين مختلفين — الترقية ناقصة (مقصود أثناء canary فقط)"; FAIL=1; }
+
+# ═══ 2) نفس إصدار migrations؟ (أخطر فرق صامت) ═══
+echo "── إصدار المخطط ──"
+for E in "${ENVS[@]}"; do
+  DSN=$(az keyvault secret show --vault-name "kv-shop-$E" --name "orders-conn" --query value -o tsv 2>/dev/null || echo "")
+  if [ -n "$DSN" ]; then
+    psql "$DSN" -tAc 'SELECT string_agg(m, ', ' ) FROM (SELECT "MigrationId" AS m FROM "__EFMigrationsHistory" ORDER BY m DESC LIMIT 3) t' \
+      2>/dev/null | sed "s/^/  $E: /" || echo "  $E: تعذر الاتصال"
+  fi
+done
+
+# ═══ 3) نفس مجموعة مفاتيح الإعداد؟ (القيم مختلفة — المفاتيح لأ) ═══
+echo "── مفاتيح الإعداد ──"
+for E in "${ENVS[@]}"; do
+  az containerapp show -n orders -g "rg-shop-$E" \
+    --query "properties.template.containers[0].env[].name" -o tsv 2>/dev/null \
+    | sort > "/tmp/env-keys-$E.txt"
+  echo "  $E: $(wc -l < /tmp/env-keys-$E.txt) مفتاح"
+done
+diff /tmp/env-keys-staging.txt /tmp/env-keys-prod.txt > /tmp/keys.diff || {
+  echo "  ✗ فرق في المفاتيح بين staging وprod:"; sed 's/^/    /' /tmp/keys.diff; FAIL=1; }
+
+# ═══ 4) إصدارات المنصة والقاعدة ═══
+echo "── إصدارات المنصة ──"
+for E in "${ENVS[@]}"; do
+  PGV=$(az postgres flexible-server show -n "pg-shop-$E" -g "rg-shop-$E" \
+        --query version -o tsv 2>/dev/null || echo "n/a")
+  PUB=$(az postgres flexible-server show -n "pg-shop-$E" -g "rg-shop-$E" \
+        --query "network.publicNetworkAccess" -o tsv 2>/dev/null || echo "n/a")
+  echo "  $E: postgres=$PGV publicAccess=$PUB"
+done
+# المتوقع: نفس الإصدار في البيئات الثلاث، وpublicAccess=Disabled في prod.
+
+# ═══ 5) الوسوم والصلاحيات (نموذج الأدوار) ═══
+echo "── الأدوار على vaults ──"
+for E in "${ENVS[@]}"; do
+  az role assignment list --scope "$(az keyvault show -n "kv-shop-$E" -g "rg-shop-$E" --query id -o tsv)" \
+    --query "[].roleDefinitionName" -o tsv 2>/dev/null | sort -u | sed "s/^/  $E: /"
+done
+
+echo
+[ "$FAIL" = 0 ] && echo "✅ البيئات متطابقة في الأبعاد الحرجة" \
+                || { echo "❌ فيه انحراف — افتح issue وصحّح الكود/الإعداد"; exit 1; }
+'''},
+        {"type": "callout", "kind": "warn", "title": "أشهر 7 أخطاء في البيئات المتعددة",
+         "md": "**① إعادة بناء الصورة لكل بيئة** → اختلافات غير مرئية؛ ابنِ مرة ورقِّ الـdigest. **② staging أصغر بكتير من prod** بحيث الاختبار بلا معنى (مثال: نسخة واحدة وقاعدة Burstable مقابل 10 نسخ وHA) — خلي الفرق في الحجم معقولًا (نصف prod مثلًا). **③ أسرار prod في dev** «عشان يشتغل» → تسريب واسع الصلاحيات؛ استخدم قيمًا وهمية بشكل مطابق. **④ تعديل prod يدويًا من Portal** ونسيان staging → انحراف (6.3.4). **⑤ مفاتيح إعداد ناقصة في staging** فتظهر المشكلة في prod لأول مرة → فحص parity آلي. **⑥ موافق واحد لكل حاجة** (لا تمييز بين تغيير كود وحذف مورد) → موافقات شكلية. **⑦ بلا تدقيق**: مين نشر إيه وإمتى؟ سجل النشر من GitHub Deployments + Azure Activity Log."},
+
+        # ── 5) السياسة
+        {"type": "heading", "level": 2, "text": "⑤ سياسة التغيير ونافذته ومسار الطوارئ"},
+        {"type": "steps", "title": "روتين الموافقة من PR إلى production (6 خطوات)",
+         "items": [
+             {"title": "1) PR: البوابات الآلية + معاينة البنية",
+              "md": "CI أخضر (6.3.1/6.3.2) · `what-if`/`plan` كتعليق لو فيه تغيير بنية · بيئة PR preview لو التغيير سلوكي. المراجع بيقرأ الدليل مش بيسأل عنه.",
+              "code": "gh pr checks && gh pr view --comments"},
+             {"title": "2) الدمج: بناء قطعة فنية واحدة",
+              "md": "صورة بـdigest + SBOM + توقيع (6.3.1) · قالب بنية بإصدار من Git. الـdigest ده هو اللي هيتنقل لكل البيئات.",
+              "code": "cosign verify $IMAGE@$DIGEST --certificate-identity-regexp 'https://github.com/'"},
+             {"title": "3) dev: نشر تلقائي وفحص سريع",
+              "md": "نشر فوري + smoke tests. لو فشل → رجوع تلقائي وإخطار. مفيش موافقة بشرية هنا (وإلا بقت عنق زجاجة).",
+              "code": "bash deploy/smoke.sh dev"},
+             {"title": "4) staging: تحقق مطابق + قياس خط الأساس",
+              "md": "نفس الـdigest · smoke tests كاملة · **قياس p95 ومعدل الأخطاء وتسجيلها** كخط أساس لـcanary الإنتاج (6.3.3). لو الأرقام أسوأ من staging السابق → وقف قبل الإنتاج.",
+              "code": "bash deploy/verify-and-rollback.sh staging | tee artifacts/baseline-staging.txt"},
+             {"title": "5) production: موافقة بشرية + canary + تحقق",
+              "md": "`environment: production` بـrequired reviewers · المراجع بيشوف: الملخص · نتائج staging · الـdiff · خطة الرجوع. بعد الموافقة: canary متدرج + مراقبة + تحقق بعد النشر.",
+              "code": "gh api repos/$OWNER/$REPO/deployments?per_page=5 --jq '.[] | .environment + \" \" + .created_at'"},
+             {"title": "6) بعد النشر: إغلاق الدائرة",
+              "md": "راقب 30 دقيقة · سجّل النتيجة في `docs/deployments.log` · حدّث خط الأساس · ولو فيه حادث: `docs/incidents/…` مع سبب جذري وإجراء وقائي (مش «خطأ بشري»).",
+              "code": "echo \"$(date -Iseconds) prod digest=$DIGEST approved_by=… result=ok\" >> docs/deployments.log"},
+         ]},
+        {"type": "callout", "kind": "danger", "title": "Break-glass: قواعد مسار الطوارئ (اكتبها قبل ما تحتاجها)",
+         "md": "**إمتى يُسمح:** حادث نشط بخسارة مستمرة، وكل المسارات العادية جُربت أو الوقت لا يسمح. **مين ينفذ:** شخص محدد بالاسم (مش «أي حد») + إخطار فوري في قناة الحوادث. **إيه المسموح:** أصغر تغيير ممكن يحل المشكلة — مش «تحسينات على الماشي». **التوثيق:** خلال الحادث: سطر في سجل الحوادث (الوقت · التغيير · الأمر). **بعد الحادث (إلزامي):** PR خلال 24 ساعة يرد الكود/البنية للحالة الفعلية + مراجعة سبب جذري + إجراء وقائي (مثال: إضافة فحص كان هيمنع الحاجة للطوارئ). **بلا PR لاحق = المسار ده هيتحول للطريقة العادية**، وده اللي بيهدم كل البوابات اللي بنيتها."},
+
+        {"type": "checkpoints", "title": "وقفة تحقق", "items": [
+            "أقدر أرسم خريطة بيئاتي (PR preview · dev · staging · prod) وأقول إيه اللي بيتطابق وإيه اللي يختلف في كل واحدة.",
+            "فاهم مبدأ **parity**: نفس الـdigest · نفس إصدار المنصة · نفس المخطط · نفس مفاتيح الإعداد — والاختلاف في الحجم والتكلفة والبيانات والقيم فقط.",
+            "أقدر أنشئ GitHub Environments بقواعد حماية (reviewers · wait timer · branch policy) وأسند secrets/variables لكل بيئة.",
+            "عندي مصفوفة تغييرات بتقول: كل نوع تغيير → موافق → أدلة → طريقة نشر → رجوع.",
+            "أقدر أكتب سكربت parity-check يكشف فرق الإصدارات/المخطط/المفاتيح بين البيئات.",
+            "أعرف سياسة نافذة التغيير والتجميد، وقواعد **break-glass** بما فيها الـPR الإلزامي خلال 24 ساعة.",
+            "أقدر أجيب تدقيق النشر: مين وافق ومين نشر وإيه الإصدار ومتى (GitHub Deployments + Azure Activity Log).",
+        ]},
+
+        {"type": "quiz", "title": "اختبر نفسك", "intro": "6 أسئلة على البيئات والموافقات.",
+         "questions": [
+             {"q": "مبدأ parity معناه إيه بالظبط؟",
+              "options": ["كل البيئات متطابقة 100% بما فيها البيانات", "**تطابق في الإصدارات والمخطط ومفاتيح الإعداد والسلوك، واختلاف مقصود في الحجم والتكلفة والبيانات والصلاحيات**", "prod وstaging بنفس الحجم", "dev بلا قواعد"],
+              "answer": 1,
+              "explain": "التطابق المطلق مستحيل ومكلف. المقصود: إزالة الفروق اللي بتخفي الأعطال (إصدار مختلف · مفتاح ناقص · مخطط أقدم) والإبقاء على الفروق اللي بتوفر فلوس (SKU · نسخ · HA · احتفاظ)."},
+             {"q": "الصورة بتُبنى مرة في كل بيئة من نفس الكود. المشكلة؟",
+              "options": ["مفيش مشكلة", "**اللي اختُبر في staging مش بالبايت اللي بينزل في prod** (اختلاف زمن البناء/ترتيب الطبقات/إصدارات الحزم العائمة) — الصح: بناء مرة واحدة وترقية الـdigest", "أبطأ", "يستهلك تخزينًا"],
+              "answer": 1,
+              "explain": "ده سبب نشر بـdigest (6.3.1) وترقية نفس القطعة الفنية بين البيئات: يضمن إن الاختبار كان على نفس الشيء اللي بينزل."},
+             {"q": "تغيير في مخطط قاعدة البيانات. إيه اللي بيميزه في مصفوفة الموافقات؟",
+              "options": ["مش مهم لأن migration مُختبَر", "**الرجوع فيه أصعب بكتير**: التوسيع (عمود/جدول جديد) مش بيتراجع بسهولة، فالخطة expand/contract والأدلة (زمن التنفيذ · عدم وجود قفل · اختبار على نسخة من prod) مطلوبة قبل الموافقة", "يحتاج موافقة أقل", "يُنشر بعد الكود"],
+              "answer": 1,
+              "explain": "عشان كده الـmigration job بيشتغل **قبل** نشر الكود (6.1.2) وبيتصمم ليكون متوافقًا مع الإصدارين (6.3.3). الرجوع بالكود سهل؛ الرجوع بالمخطط لأ."},
+             {"q": "إيه فايدة `deployment_branch_policy: protected` على بيئة production؟",
+              "options": ["بيسرع النشر", "**بيمنع أي فرع غير محمي من النشر للإنتاج** — يعني الـOIDC والموافقات ما ينفعش يتجاوزوا بفرع جانبي", "بيقلل التكلفة", "بيشفّر الأسرار"],
+              "answer": 1,
+              "explain": "بدونها، أي فرع يقدر يستهدف البيئة (لو عنده الوصول للـsecrets/التوكن). السياسة دي + الـsubject بـ`environment:production` = سلسلة ثقة مقفولة (6.3.1)."},
+             {"q": "استخدمت break-glass ونشرت مباشرة للإنتاج أثناء حادث. إيه الالتزام اللي بعده؟",
+              "options": ["مفيش — الطوارئ طوارئ", "**PR خلال 24 ساعة يرد الكود/البنية للحالة الفعلية + مراجعة سبب جذري + إجراء وقائي** — وإلا المسار الاستثنائي بيتحول للطريقة العادية", "إخطار فقط", "حذف التغيير بعد انتهاء الحادث"],
+              "answer": 1,
+              "explain": "البوابات بتعيش لما الاستثناء موثق ومؤقت وله ثمن (مراجعة لاحقة). من غير الـPR اللاحق، drift بين الواقع والكود وبتضيع قيمة IaC كله."},
+             {"q": "staging بنسخة واحدة وقاعدة Burstable مقابل prod بـ10 نسخ وHA. الحكم؟",
+              "options": ["ممتاز — توفير", "**فرق حجم كبير بحيث staging ما بيكشفش مشاكل الإنتاج** (اتصالات الـpool · التوسع · سلوك HA · أداء تحت حمل) — خلي الفرق معقولًا (نصف prod مثلًا) مع نفس الإصدارات", "لازم يتطابقوا 100%", "استغنِ عن staging"],
+              "answer": 1,
+              "explain": "المقصود من staging إنه يتنبأ بسلوك prod. لو أصغر بعشر مرات، مشاكل مثل استنزاف اتصالات القاعدة (6.1.5) أو throttling ما تظهرش فيه. القاعدة: نفس الإصدارات والسلوك، وحجم كافٍ لقراءة مؤشرات ذات معنى."},
+         ]},
+
+        {"type": "tasks", "title": "مهمتان", "intro": "بيئات متطابقة + موافقات موثقة.",
+         "items": [
+             {"id": "t1", "title": "مهمة 1: ابنِ 3 بيئات بـparity مثبت آليًا",
+              "md": "**السياق:** عندك بيئة واحدة (أو صفر) ومحتاج dev · staging · production بنفس القالب ومختلفة في القيم.\n\n**المطلوب:**\n1. `infra/{dev,staging,prod}.bicepparam` (أو `.tfvars`) من **قالب واحد**، والفروق فقط في: SKU · عدد النسخ · HA · احتفاظ السجلات · تكلفة.\n2. `azure/80-environments.sh`: resource group + Key Vault + هوية نشر **لكل بيئة** (بلا موارد مشتركة).\n3. `scripts/parity-check.sh` يتحقق من 5 أبعاد على الأقل: digest الصورة · إصدار migrations · مفاتيح الإعداد · إصدار PostgreSQL · `publicNetworkAccess` — ويفشل عند الانحراف.\n4. GitHub Environments بقواعد حماية: `dev`/`staging` تلقائي · `production` بـrequired reviewers + `deployment_branch_policy: protected` — ووثّق الأوامر/API المستخدم.\n5. variables (معرّفات) وsecrets **لكل بيئة**، وقيم dev/staging وهمية بشكل مطابق لأسرار prod (نفس الاسم والشكل).\n6. `docs/environments.md`: جدول البيئات (الغرض · الحجم · البيانات · الأسرار · الموافقة · النافذة · التكلفة التقريبية) + قائمة «مسموح يختلف / ممنوع يختلف».\n7. شغّل `parity-check` بعد ما تنشر نفس الـdigest للثلاث بيئات ووثّق النتيجة (مفروض ✅). بعدين اكسر parity متعمدًا (غيّر متغير بيئة في prod فقط) ووثّق إن السكربت كشفه ❌.\n8. أضف **Azure Policy** واحدة على مجموعة prod (مثال: منع الوصول العام للتخزين أو فرض وسم `env`) ووثّق أثرها.",
+              "criteria": [
+                  "قالب بنية **واحد** و3 ملفات قيم — بلا قوالب مكررة لكل بيئة.",
+                  "لكل بيئة: resource group + Key Vault + هوية نشر مستقلة (موثق بالأوامر).",
+                  "سكربت parity يفحص 5 أبعاد ويفشل عند الانحراف (مُثبت بتجربتين: تطابق ثم كسر متعمد).",
+                  "قواعد حماية production موثقة (reviewers + branch policy) بأوامر `gh api`.",
+                  "أسرار dev/staging وهمية بنفس الأسماء والأشكال (مفيش سر prod خارج prod).",
+                  "`docs/environments.md` بجدول البيئات وقائمة المسموح/الممنوع.",
+                  "Azure Policy واحدة مطبقة على prod مع أثرها الموثق.",
+                  "ملاحظة عن تكلفة كل بيئة (ربط بـ6.2.5) وإيقاف dev ليلًا.",
+              ],
+              "hint": "أرخص طريقة لعمل staging مفيد: نفس إصدارات prod بس SKU أصغر (PostgreSQL Burstable بدل D2ds، ونسخة واحدة بدل 3). ولو الميزانية لا تسمح بـstaging دائم، اعمله **عند الطلب** قبل كل نشر إنتاجي (IaC بيخلي إنشاؤه دقائق) واحذفه بعد التحقق.",
+              "solution": "الهيكل الناتج: `infra/main.bicep` + 3 ملفات `.bicepparam` · `azure/80-environments.sh` (حلقة على dev/staging/prod) · `scripts/parity-check.sh` · `scripts/gh-environments.sh` · `docs/environments.md`. تجربة parity: بعد ترقية digest واحد للثلاث بيئات → السكربت ✅؛ بعد إضافة متغير `Orders__MaxItems` في prod فقط → diff المفاتيح يكشفه ❌ (وده بالظبط نوع الفرق اللي بيسبب حوادث). Azure Policy نموذجية: `Storage accounts should disable public network access` على نطاق `rg-shop-prod` — أثرها: أي محاولة إنشاء storage عام تفشل أو تُبلَّغ كغير متوافقة. التكلفة: dev ~30$ · staging ~45$ · prod ~90$ تقديريًا (6.2.5)، مع إيقاف dev ليلًا لتقليل dev إلى أقل من 20$.",
+              "resources": [
+                  "https://learn.microsoft.com/en-us/azure/architecture/solution-ideas/articles/dev-test-paas",
+                  "https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment",
+                  "https://learn.microsoft.com/en-us/azure/governance/policy/",
+                  "https://12factor.net/dev-prod-parity",
+                  "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/parameter-files",
+              ]},
+             {"id": "t2", "title": "مهمة 2: سياسة تغيير وموافقات + تدقيق قابل للمراجعة",
+              "md": "**السياق:** البيئات جاهزة، ومحتاج القواعد اللي تحكم مين يغيّر إيه وإمتى وإزاي نتحقق بعد كده.\n\n**المطلوب:**\n1. `docs/change-matrix.md`: جدول من 8 صفوف على الأقل (كود · مخطط · بنية · سر · إعداد · صلاحيات · hotfix · حذف مورد) وفي كل صف: الموافقة المطلوبة · الأدلة قبل الموافقة · طريقة النشر · خطة الرجوع · هل 4-eyes مطلوب.\n2. `docs/change-policy.md`: نافذة التغيير · التجميد · قواعد break-glass (بما فيها PR خلال 24 ساعة) · ومين المخوّل بالموافقة (بالاسم/الدور).\n3. اربط الموافقة بالتقنية: `environment: production` بـrequired reviewers + `wait_timer` لو عندك نافذة تغيير + branch policy — ووثّق الأوامر.\n4. **سجل تدقيق**: `docs/deployments.log` (سطر لكل نشر: التاريخ · البيئة · digest · الموافِق · النتيجة) + سكربت `scripts/deployment-audit.sh` يجمعه من GitHub Deployments API وAzure Activity Log ويطبع آخر 20 نشرًا ومين وافق.\n5. **قائمة فحص ما قبل الموافقة** (`docs/approval-checklist.md`) بيستخدمها المراجع فعليًا: CI أخضر · نتائج staging · خط أساس · الـdiff · خطة رجوع · هل التغيير فيه مخطط/بنية/صلاحيات · هل الوقت داخل النافذة.\n6. سيناريو محاكاة: اعمل PR بتغيير مخطط + تغيير بنية معًا، وامشِ على القائمة، ووثّق **قرار الرفض** وسببه (التغييرات الكبيرة المفروض تتقسم) ثم نفّذه مقسمًا.\n7. أضف فحص CI يفشل لو `docs/deployments.log` ما اتحدثش في PR بيغيّر `infra/…` (تشجيع التوثيق آليًا).",
+              "criteria": [
+                  "مصفوفة تغييرات بـ8 صفوف على الأقل وكل صف فيه الموافقة والأدلة والنشر والرجوع.",
+                  "سياسة فيها نافذة تغيير + تجميد + break-glass بـPR إلزامي خلال 24 ساعة + أسماء/أدوار المخوّلين.",
+                  "الموافقة مربوطة بالتقنية فعليًا (reviewers + branch policy + wait timer) بأوامر موثقة.",
+                  "سجل تدقيق يجمع من مصدرين (GitHub + Azure) ويطبع آخر 20 نشرًا مع الموافِق.",
+                  "قائمة فحص ما قبل الموافقة قابلة للاستخدام (checkboxes) ومش عامة.",
+                  "سيناريو محاكاة موثّق فيه **قرار رفض** مبرر ثم تنفيذ مقسم.",
+                  "فحص CI يربط تغييرات البنية بتحديث سجل النشر.",
+                  "فقرة عن الحد: إيه اللي ما ينفعش يفوّض (مثلًا: حذف مورد فيه بيانات) وإيه اللي يتفوّض.",
+              ],
+              "hint": "أبسط سجل تدقيق يعمل فعلًا: `gh api repos/$OWNER/$REPO/deployments --jq '.[] | [.created_at, .environment, .sha[0:8], .creator.login] | @tsv'` + `az monitor activity-log list --caller <upn> --start-time <date>`. ولقائمة الفحص خليها قصيرة (8 بنود) — القوائم الطويلة بتتعمل بلا قراءة.",
+              "solution": "المخرجات: `docs/change-matrix.md` (8 صفوف كما في جدول الدرس) · `docs/change-policy.md` (نافذة: أيام العمل 10ص–4م بتوقيت الفريق · تجميد: الأسبوع الأخير من ديسمبر + أثناء حادث نشط · break-glass: منفذ واحد مسمى + إخطار فوري + PR خلال 24 ساعة + مراجعة سبب جذري) · `scripts/deployment-audit.sh` · `docs/approval-checklist.md` بـ8 بنود · `docs/deployments.log`. سيناريو المحاكاة: PR فيه migration لإعادة تسمية عمود + تغيير في Key Vault معًا → **رفض** بالسبب: «تغييران غير مرتبطين بأحد أخطر نمطين (مخطط + أمان) في نشر واحد = رجوع غير ممكن؛ قسّمه» → نُفّذ على PRين: الأول المخطط بـexpand (مع مراجعة الخطة وزمن التنفيذ)، والثاني البنية بـwhat-if منشور كتعليق. أهم نتيجة: القواعد مكتوبة **قبل** الحاجة ليها، والموافقة بقت قراءة دليل مش سؤال.",
+              "resources": [
+                  "https://docs.github.com/en/rest/deployments/deployments",
+                  "https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/activity-log",
+                  "https://sre.google/sre-book/managing-incidents/",
+                  "https://sre.google/workbook/postmortem-culture/",
+                  "https://docs.github.com/en/actions/deployment/targeting-different-environments/managing-environments-for-deployment",
+              ]},
+         ]},
+
+        {"type": "resources", "title": "مصادر", "items": [
+            {"label": "The Twelve-Factor App: تكافؤ البيئات", "url": "https://12factor.net/dev-prod-parity"},
+            {"label": "GitHub: إدارة البيئات للنشر", "url": "https://docs.github.com/en/actions/deployment/targeting-different-environments/managing-environments-for-deployment"},
+            {"label": "GitHub Deployments API (تدقيق)", "url": "https://docs.github.com/en/rest/deployments/deployments"},
+            {"label": "Azure Policy", "url": "https://learn.microsoft.com/en-us/azure/governance/policy/"},
+            {"label": "Azure Activity Log", "url": "https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/activity-log"},
+            {"label": "Google SRE: إدارة الحوادث", "url": "https://sre.google/sre-book/managing-incidents/"},
+            {"label": "Google SRE Workbook: ثقافة ما بعد الحادث", "url": "https://sre.google/workbook/postmortem-culture/"},
+            {"label": "ملفات معاملات Bicep", "url": "https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/parameter-files"},
+        ]},
+    ],
+}
+
+LESSONS_S6_J = [_L5]

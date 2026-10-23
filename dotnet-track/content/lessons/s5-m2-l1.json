@@ -1,0 +1,404 @@
+{
+  "id": "s5-m2-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nلحد دلوقتي الأحداث كانت بتتنقل **داخل العملية** (MediatR notifications) أو عبر **outbox** لجدول في نفس القاعدة.\nالخطوة التالية: وسيط رسائل حقيقي بين الخدمات — وده بيغيّر ضماناتك: التسليم بقى at-least-once،\nالترتيب بقى محليًا، والفشل بقى جزئيًا.\n\nالاختيار الأشهر في أنظمة .NET: **RabbitMQ** (وسيط رسائ عام، قوي في التوجيه والاعتمادية)\n+ **MassTransit** (تجريد فوقه بيديك consumers وretry وsagas وoutbox واختبارات جاهزة).\n\nالدرس ده بيمشي من الصفر: مفاهيم AMQP اللي بتحدد سلوكك فعلًا (exchanges، queues، acks، prefetch، DLX)،\nثم MassTransit بإعداد إنتاجي (retry، redelivery، outbox، صحة، مراقبة)، ثم اختبارات بلا وسيط حقيقي.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Exchange",
+          "def": "نقطة استقبال الرسائل من الناشر وتوجيهها لقوائم بحسب قواعد (bindings). الأنواع: `direct`, `topic`, `fanout`, `headers`."
+        },
+        {
+          "term": "Binding / Routing Key",
+          "def": "قاعدة الربط بين exchange وqueue. في `topic`: نمط مثل `order.*.created` أو `order.#`."
+        },
+        {
+          "term": "Queue",
+          "def": "مخزن الرسائل لمستهلك واحد أو مجموعة (competing consumers). **قائمة لكل مجموعة مستهلكين**، مش قائمة مشتركة لكل الأنواع."
+        },
+        {
+          "term": "Publish مقابل Send",
+          "def": "Publish = حدث لمستهلكين غير معروفين (fan-out). Send = أمر لمستقبل محدد (queue واحدة)."
+        },
+        {
+          "term": "ACK / NACK",
+          "def": "تأكيد المستهلك بالاستلام/المعالجة. **manual ack بعد النجاح** هو النمط الآمن."
+        },
+        {
+          "term": "Prefetch (QoS)",
+          "def": "كم رسالة تُسلَّم للمستهلك قبل التأكيد — يحدد التوازن بين الإنتاجية والتوزيع العادل."
+        },
+        {
+          "term": "Durability",
+          "def": "queue دائمة + رسائل persistent = بقاء بعد إعادة تشغيل الوسيط. بلاها: فقد رسائل عند أي restart."
+        },
+        {
+          "term": "Publisher Confirms",
+          "def": "تأكيد الوسيط للناشر إن الرسالة استُلمت وحُفظت — بدونه النشر «best effort»."
+        },
+        {
+          "term": "DLX (Dead Letter Exchange)",
+          "def": "مصير الرسائل المرفوضة/المنتهية/الزائدة عن حد القائمة — ضروري للتشغيل."
+        },
+        {
+          "term": "Quorum Queue",
+          "def": "قائمة مبنية على Raft (نسخ متماثل قوي) — الموصى بها بدل classic mirrored في RabbitMQ الحديث."
+        },
+        {
+          "term": "Poison Message",
+          "def": "رسالة تفشل كل مرة (بيانات غلط/bug) — لازم تروح لـDLQ بدل ما توقف القائمة."
+        },
+        {
+          "term": "Consumer Group (MassTransit endpoint)",
+          "def": "كل `IConsumer<T>` له receive endpoint؛ النوع الواحد في أكتر من endpoint = نسخ متعددة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) الوسيط: تشغيل ومفاهيم بتحدد سلوكك"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "تشغيل RabbitMQ + أدوات الفحص",
+      "code": "\n# ✓ صورة رسمية مع لوحة الإدارة (15672) وquorum queues\ndocker run -d --name shop-rabbit -p 5672:5672 -p 15672:15672 \\\n  -e RABBITMQ_DEFAULT_USER=shop -e RABBITMQ_DEFAULT_PASS=shop-dev-pass \\\n  rabbitmq:4-management-alpine\n\n# فحص سريع من سطر الأوامر\ndocker exec shop-rabbit rabbitmqctl list_queues name messages consumers message_bytes\ndocker exec shop-rabbit rabbitmqctl list_exchanges name type\ndocker exec shop-rabbit rabbitmqctl list_bindings\ndocker exec shop-rabbit rabbitmq-diagnostics check_running check_local_alarms\n\n# ⚠ أهم إنذارين في التشغيل:\n#   • طول قائمة > 0 باستمرار  → المستهلك أبطأ من الناشر (أو واقع)\n#   • ذاكرة/قرص alarm         → الوسيط بيحجب النشر (block)\n"
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "filename": "docker-compose.yml",
+      "title": "إعداد إنتاجي مصغّر في compose",
+      "code": "\nservices:\n  rabbitmq:\n    image: rabbitmq:4-management-alpine\n    hostname: shop-rabbit                     # ★ مهم: الاسم يحدد هوية العقدة في الـcluster\n    environment:\n      RABBITMQ_DEFAULT_USER: shop\n      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}\n      RABBITMQ_DEFAULT_VHOST: /shop\n      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >\n        -rabbit max_memory 512MB\n    volumes:\n      - rabbitmq-data:/var/lib/rabbitmq\n      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro   # ★ بنية معلنة ككود\n    ports: [\"5672:5672\", \"15672:15672\"]\n    healthcheck:\n      test: [\"CMD\", \"rabbitmq-diagnostics\", \"-q\", \"ping\"]\n      interval: 10s\n      timeout: 5s\n      retries: 5\n      start_period: 20s\n    deploy:\n      resources: { limits: { memory: 768M, cpus: \"1.0\" } }\n\n  orders-api:\n    build: ./src/Services/Orders\n    depends_on:\n      rabbitmq: { condition: service_healthy }\n      postgres:  { condition: service_healthy }\n    environment:\n      ConnectionStrings__RabbitMq: amqp://shop:${RABBIT_PASSWORD}@rabbitmq:5672/shop\n\nvolumes: { rabbitmq-data: {} }\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "نوع Exchange",
+        "التوجيه",
+        "الحالة النموذجية",
+        "مثال"
+      ],
+      "rows": [
+        [
+          "`direct`",
+          "routing key مطابق تمامًا",
+          "أحداث بنوع واحد محدد",
+          "`order.created` → قائمة الفوترة"
+        ],
+        [
+          "`topic`",
+          "نمط (`order.*.created`, `order.#`)",
+          "★ الأشهر: اشتراك مرن بحسب المجال/النوع",
+          "`shipping.#` لكل أحداث الشحن"
+        ],
+        [
+          "`fanout`",
+          "لكل القوائم المرتبطة (بلا مفتاح)",
+          "بث لعدة أنظمة",
+          "إشعار تغيير سعر لكل المستهلكين"
+        ],
+        [
+          "`headers`",
+          "مطابقة رؤوس الرسالة",
+          "نادر (أبطأ وأقل وضوحًا)",
+          "—"
+        ],
+        [
+          "`(default/AMQP default)`",
+          "اسم القائمة كـrouting key",
+          "أوامر مباشرة لقائمة محددة",
+          "MassTransit `Send`"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "قرارات RabbitMQ اللي بتحدد الموثوقية (اكتبها في ADR)",
+      "md": "\n1. **قوائم quorum** (مش classic mirrored): نسخ متماثل قوي بـRaft، وموصى به في الإصدارات الحديثة.\n2. **دوام كامل**: queue durable + messages persistent (`delivery_mode=2`) → بقاء بعد إعادة تشغيل.\n3. **Publisher confirms** مفعّلة على الناشر → تعرف إن الرسالة وصلت فعلًا (MassTransit بيدعمها).\n4. **manual ack بعد المعالجة الناجحة** → لا `auto-ack` لعمل حرج (فقد عند الانهيار).\n5. **`prefetch` محدود** (مثلاً 10-50 لكل مستهلك): بلا حدود، مستهلك واحد ياخد كل الرسائل والقوائم التانية تجوع.\n6. **DLX + DLQ لكل قائمة عمل**: الرسائل المرفوضة بعد المحاولات تروح لمكان تُفحص فيه.\n7. **قائمة لكل مجموعة مستهلكين** (مش قائمة مشتركة لأنواع مختلفة) → وإلا خدمة تانية هتاخد رسائلك.\n8. **TTL للرسائل والقوائم** حيث يناسب (مثلاً: طلب تصدير قديم بلا قيمة).\n9. **مراقبة إلزامية**: طول القائمة، معدل الاستهلاك، الذاكرة/القرص، عدد الاتصالات، وحالات unacked.\n10. **حدود حجم الرسالة**: رسائل كبيرة → **claim check** (خزّن الحمولة في blob/S3 ومرّر المرجع).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) MassTransit: إعداد إنتاجي"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add src/Services/Orders package MassTransit\ndotnet add src/Services/Orders package MassTransit.RabbitMQ\ndotnet add src/Services/Orders package MassTransit.EntityFrameworkCore   # outbox/saga persistence\ndotnet add src/Services/Orders package Microsoft.Extensions.Diagnostics.HealthChecks\ndotnet add tests/Shop.Orders.Tests package MassTransit.Testing\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Messaging/BusRegistration.cs",
+      "title": "التهيئة الكاملة: retry، redelivery، outbox، صحة، مراقبة",
+      "code": "\nusing MassTransit;\n\npublic static class BusRegistration\n{\n    public static IServiceCollection AddOrderMessaging(this IServiceCollection services, IConfiguration config)\n    {\n        services.AddMassTransit(x =>\n        {\n            // ① المستهلكون من نفس التجميع + تسجيل endpoints تلقائيًا بأسماء kebab-case\n            x.AddConsumers(typeof(OrderPlacedConsumer).Assembly);\n            x.AddSagaStateMachines(typeof(OrderFulfillmentStateMachine).Assembly);\n\n            // ★ ② Outbox مدمج مع EF Core: الرسالة تُكتب في معاملة البيانات (درس 4.2.3)\n            x.AddEntityFrameworkOutbox<AppDbContext>(o =>\n            {\n                o.UsePostgres();                    // أو UseSqlServer/UseSqlite\n                o.UseBusOutbox();                   // ✓ الناشر يكتب في outbox لا للوسيط مباشرة\n                o.QueryDelay = TimeSpan.FromSeconds(1);\n                o.DisableInboxCleanupInterval = TimeSpan.FromMinutes(5);\n            });\n\n            // ✓ ③ Inbox (إلغاء تكرار على جانب المستهلك) مدمج مع EF outbox نفسه —\n            //   بلا حاجة لفلتر يدوي: `UseBusOutbox` بيخزن الرسائل الواردة المعالَجة ويمنع إعادة التنفيذ.\n\n            x.UsingRabbitMq((context, cfg) =>\n            {\n                cfg.Host(new Uri(config[\"RabbitMq:Host\"]!), h =>\n                {\n                    h.Username(config[\"RabbitMq:Username\"]!);\n                    h.Password(config[\"RabbitMq:Password\"]!);\n                    h.Heartbeat(TimeSpan.FromSeconds(30));           // ✓ كشف الاتصال الميت\n                });\n\n                cfg.UseTimeout(t => t.Timeout = TimeSpan.FromSeconds(30));\n\n                // ★ ④ إعادة المحاولة: فوري (لأخطاء عابرة) ثم redelivery (لفشل أطول)\n                cfg.UseMessageRetry(r =>\n                {\n                    r.Interval(3, TimeSpan.FromSeconds(1));          // 3 محاولات فورية\n                    r.Ignore<ValidationException>();                 // ✗ لا تُعد محاولة خطأ بيانات\n                    r.Ignore<NotFoundException>();                   // ✗ ولا حالة غير موجودة\n                    r.Handle<HttpRequestException>();                // ✓ أخطاء اعتماديات خارجية\n                    r.Handle<RabbitMqConnectionException>();\n                });\n\n                cfg.UseDelayedRedelivery(r => r.Intervals(\n                    TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15)));\n\n                // ⑤ ترتيب المعالجة داخل consumer واحد (لو محتاج تسلسلًا صارمًا)\n                // cfg.UseInMemoryOutbox();   // ← فقط لو لسه ما استخدمتش EF outbox\n\n                // ⑥ مراقبة: OpenTelemetry + مقاييس + health\n                cfg.UseOpenTelemetry(otel => otel\n                    .SetServiceName(\"orders-bus\")\n                    .AddSource(\"MassTransit\"));\n\n                // ⑦ حدود عامة تُطبق على كل endpoints (ولكل consumer إعدادات أدق إن لزم)\n                cfg.PrefetchCount = 16;                    // ✓ لا unlimited (توزيع عادل بين المستهلكين)\n                cfg.ConcurrentMessageLimit = 8;            // حد التوازي داخل المستهلك الواحد\n\n                // ⑧ endpoints تلقائية بأسماء kebab-case (endpoint لكل نوع رسالة)\n                cfg.ConfigureEndpoints(context, new KebabCaseEndpointNameFormatter(\"orders\", false));\n\n                // ✓ قوائم الأخطاء تلقائية في MassTransit: `<endpoint>_error` للرسائل الفاشلة\n                //   و`<endpoint>_skipped` للرسائل غير القابلة للتوجيه — راقب طولهما وأنشئ إنذارًا.\n            });\n        });\n\n        // ✓ فحص صحة الوسيط (لـreadiness probe) — AddMassTransit يسجّل فحصًا تلقائيًا كمان\n        services.AddHealthChecks().AddMassTransitBusCheck();\n\n        return services;\n    }\n}\n\n// استثناءات مخصصة تستخدمها سياسات إعادة المحاولة والاستهلاك:\npublic sealed class PoisonMessageException(string reason, Exception? inner = null)\n    : Exception($\"رسالة غير قابلة للمعالجة: {reason}\", inner);\n\n/// <summary>فحص صحة مخصص للوسيط (يُستخدم في readiness probe).</summary>\npublic sealed class MessagingHealthCheck(IEventPublisher publisher) : IHealthCheck\n{\n    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default) =>\n        Task.FromResult(HealthCheckResult.Healthy(\"messaging provider registered\"));\n}\n\n/// <summary>للتطوير المحلي: outbox يُكتب لكن بلا وسيط (بلا رسائل طائرة في بيئتك).</summary>\npublic sealed class NoopPublisher(ILogger<NoopPublisher> log) : IEventPublisher\n{\n    public Task PublishAsync<TEvent>(string topic, string partitionKey, TEvent evt, CancellationToken ct)\n        where TEvent : IIntegrationEvent\n    {\n        log.LogDebug(\"outbox-only mode: {Type} → {Topic} (لم يُنشر)\", typeof(TEvent).Name, topic);\n        return Task.CompletedTask;\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Messaging/Contracts.cs",
+      "title": "عقود الرسائل: records في مشروع مشترك",
+      "code": "\n// ★ الرسائل في مشروع `Shop.Contracts` مستقل — لا في خدمة واحدة (المستهلكون يحتاجونها)\nnamespace Shop.Contracts.Orders;\n\n/// <summary>\n/// حدث ماضٍ، غير قابل للتعديل، ذاتي الاحتواء.\n/// ⚠ قواعد العقد: إضافة حقل اختياري = آمن. حذف/تغيير اسم أو دلالة = كاسر (درس 5.1.2).\n/// </summary>\npublic sealed record OrderPlaced(\n    Guid OrderId,\n    Guid CustomerId,\n    decimal TotalMinorUnits,          // ★ minor units (لا decimal عبر بعض الوسائط، ولا double أبدًا)\n    string Currency,\n    string Country,\n    int LineCount,                    // ✓ بيانات كافية للتوجيه (لا كيان كامل — claim check للأحمال الكبيرة)\n    DateTimeOffset OccurredAt,\n    int SchemaVersion = 2);           // ✓ إصدار المخطط داخل الرسالة\n\npublic sealed record OrderCancelled(Guid OrderId, string Reason, DateTimeOffset OccurredAt, int SchemaVersion = 1);\npublic sealed record OrderShipped(Guid OrderId, DateTimeOffset OccurredAt, int SchemaVersion = 1);\n\n/// <summary>أمر (Send، مش Publish): مستقبل محدد ومسؤولية واحدة.</summary>\npublic sealed record ReserveStock(Guid OrderId, IReadOnlyList<StockLine> Lines, Guid IdempotencyKey);\npublic sealed record StockLine(Guid ProductId, int Quantity);\n\n/// <summary>رد على أمر (request/response).</summary>\npublic sealed record StockReserved(Guid OrderId, Guid ReservationId, DateTimeOffset ExpiresAt);\npublic sealed record StockReservationFailed(Guid OrderId, string Reason, IReadOnlyList<Guid> UnavailableProducts);\n\n/// <summary>حدث تكاملي من موديول تاني (يُستهلك لتحديث نسخة محلية).</summary>\npublic sealed record ProductPriceChanged(Guid ProductId, decimal PriceMinorUnits, string Currency, DateTimeOffset OccurredAt);\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Shipping/Consumers/OrderPlacedConsumer.cs",
+      "title": "مستهلك إنتاجي: idempotent، نطاق DI، فشل صريح",
+      "code": "\nusing MassTransit;\n\n/// <summary>\n/// ✓ كل مستهلك = نطاق DI خاص (scoped) — MassTransit بيحل الاعتماديات لكل رسالة.\n/// ✓ الاستثناء = إعادة محاولة (بحسب السياسة). بلا استثناء = ack تلقائي.\n/// </summary>\npublic sealed class OrderPlacedConsumer(\n    ShippingDbContext db, IShipmentScheduler scheduler, ILogger<OrderPlacedConsumer> log)\n    : IConsumer<OrderPlaced>\n{\n    public async Task Consume(ConsumeContext<OrderPlaced> context)\n    {\n        var message = context.Message;\n\n        // ① idempotency طبيعية: إعادة التسليم لا تُنشئ شحنة مكررة (درس 4.2.3)\n        if (await db.Shipments.AnyAsync(s => s.OrderId == message.OrderId, context.CancellationToken))\n        {\n            log.LogInformation(\"shipment already exists for {OrderId} — duplicate delivery\", message.OrderId);\n            return;                                    // ✓ ack بلا أثر\n        }\n\n        // ② تجاهل صريح للرسائل القديمة جدًا (لا شغل بلا قيمة)\n        if (message.OccurredAt < DateTimeOffset.UtcNow.AddDays(-7))\n        {\n            log.LogWarning(\"discarding stale order.placed for {OrderId}\", message.OrderId);\n            return;\n        }\n\n        // ③ العمل في معاملة واحدة مع سجل الـinbox\n        await using var tx = await db.Database.BeginTransactionAsync(context.CancellationToken);\n\n        var shipment = await scheduler.ScheduleAsync(\n            orderId: message.OrderId,\n            country: message.Country,\n            weightHint: message.LineCount,\n            ct: context.CancellationToken);\n\n        db.Shipments.Add(shipment);\n        await db.SaveChangesAsync(context.CancellationToken);\n\n        // ④ حدث تابع (يُنشر عبر outbox لو مفعّل — وإلا بعد الالتزام)\n        await context.Publish(new ShipmentScheduled(shipment.Id, message.OrderId, shipment.Carrier, DateTimeOffset.UtcNow),\n                              context.CancellationToken);\n\n        await tx.CommitAsync(context.CancellationToken);\n\n        log.LogInformation(\"shipment {ShipmentId} scheduled for {OrderId}\", shipment.Id, message.OrderId);\n    }\n}\n\n/// <summary>\n/// مستهلك لأمر (Send): يردّ بـRespond — نمط request/response.\n/// </summary>\npublic sealed class ReserveStockConsumer(IStockService stock, ILogger<ReserveStockConsumer> log)\n    : IConsumer<ReserveStock>\n{\n    public async Task Consume(ConsumeContext<ReserveStock> context)\n    {\n        var result = await stock.TryReserveAsync(context.Message.OrderId, context.Message.Lines,\n                                                 context.Message.IdempotencyKey, context.CancellationToken);\n\n        if (result.Success)\n            await context.RespondAsync(new StockReserved(context.Message.OrderId, result.ReservationId, result.ExpiresAt));\n        else\n            await context.RespondAsync(new StockReservationFailed(context.Message.OrderId, result.Reason, result.Missing));\n            // ✓ الرد بفشل صريح أفضل من رمي استثناء (الاستثناء = إعادة محاولة بلا فائدة)\n    }\n}\n\n/// <summary>الناشر من مسار الكتابة — عبر IPublishEndpoint (بيكتب في outbox لو مفعّل).</summary>\npublic sealed class OrderEventPublisher(IPublishEndpoint publishEndpoint) : IOrderEventPublisher\n{\n    public Task PublishPlacedAsync(Order order, CancellationToken ct) =>\n        publishEndpoint.Publish(new OrderPlaced(\n            order.Id, order.CustomerId,\n            (long)Math.Round(order.Total.Amount * 100m), order.Total.Currency,\n            order.ShippingAddress.Country, order.CreatedAt), ct);\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Clients/StockClient.cs",
+      "title": "request/response بمهلة، وفحص الصحة والمراقبة",
+      "code": "\n// ═══ ① طلب/رد مع مهلة صريحة (بلاها: نداء متعلّق للأبد) ═══\npublic sealed class StockClient(IBus bus, ILogger<StockClient> log) : IStockClient\n{\n    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);\n\n    public async Task<StockReservation> ReserveAsync(Guid orderId, IReadOnlyList<StockLine> lines, CancellationToken ct)\n    {\n        var client = bus.CreateRequestClient<ReserveStock>(RequestTimeout);\n\n        try\n        {\n            var response = await client.GetResponse<StockReserved, StockReservationFailed>(\n                new ReserveStock(orderId, lines, IdempotencyKey: orderId), ct);\n\n            // ✓ MassTransit بيرجع أي نوع من الاثنين — فحص أيهما وصل\n            if (response.TryGetMessage(out Response<StockReserved> reserved))\n                return StockReservation.Ok(reserved.Message.ReservationId, reserved.Message.ExpiresAt);\n\n            if (response.TryGetMessage(out Response<StockReservationFailed> failed))\n                return StockReservation.Rejected(failed.Message.Reason, failed.Message.UnavailableProducts);\n\n            throw new InvalidOperationException(\"رد غير متوقع من خدمة المخزون\");\n        }\n        catch (RequestTimeoutException ex)\n        {\n            log.LogWarning(ex, \"stock service timed out for {OrderId}\", orderId);\n            throw new DependencyUnavailableException(\"stock\");       // → 503 (لا تخمين)\n        }\n    }\n}\n\n// ═══ ② فحص صحة مخصص: هل الوسيط متصل **ويستهلك فعلًا**؟ ═══\npublic sealed class RabbitHealthCheck(IBusControl bus, IConfiguration config) : IHealthCheck\n{\n    public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default)\n    {\n        if (bus.ConnectStatus != BusConnectStatus.Connected)\n            return HealthCheckResult.Unhealthy(\"RabbitMQ غير متصل\",\n                data: new Dictionary<string, object> { [\"status\"] = bus.ConnectStatus.ToString() });\n\n        // ✓ جاهزية مش بس اتصال: هل فيه receive endpoints نشطة؟\n        var endpoints = bus.GetReceiveEndpoints().Count();\n        return endpoints > 0\n            ? HealthCheckResult.Healthy($\"متصل بـ{endpoints} endpoint\")\n            : HealthCheckResult.Degraded(\"متصل لكن بلا receive endpoints\");\n    }\n}\n\n// ═══ ③ مقاييس تشغيلية مهمة (انشرها في Grafana) ═══\n// من لوحة RabbitMQ (prometheus plugin):\n//   rabbitmq_queue_messages                 ← طول القائمة (الأهم: إنذار لو > حد لفترة)\n//   rabbitmq_queue_messages_unacknowledged ← رسائل مسلَّمة بلا تأكيد (مستهلك عالق)\n//   rabbitmq_queue_messages_ready          ← منتظرة (ضغط استهلاك)\n//   rabbitmq_connections / channels        ← تسريب اتصالات\n//   rabbitmq_channel_messages_published_total / delivered_total  ← معدل النشر مقابل الاستهلاك\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) الاختبارات: بلا وسيط حقيقي وبوسيط حقيقي"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.Orders.Tests/Messaging/ConsumerTests.cs",
+      "title": "TestHarness (in-memory) + Testcontainers (تكامل)",
+      "code": "\n// ═══ ① اختبار مستهلك معزول (الأسرع — للمنطق) ═══\npublic class OrderPlacedConsumerTests\n{\n    [Fact]\n    public async Task Duplicate_delivery_creates_single_shipment()\n    {\n        await using var provider = new ServiceCollection()\n            .AddDbContext<ShippingDbContext>(o => o.UseNpgsql(TestDb.ConnectionString))\n            .AddMassTransitTestHarness(x => x.AddConsumer<OrderPlacedConsumer>())\n            .BuildServiceProvider(true);\n\n        var harness = provider.GetRequiredService<ITestHarness>();\n        await harness.Start();\n\n        var message = new OrderPlaced(Guid.NewGuid(), Guid.NewGuid(), 25050, \"EGP\", \"EG\", 2, DateTimeOffset.UtcNow);\n\n        await harness.Bus.Publish(message);          // ★ النشر 3 مرات = إعادة تسليم\n        await harness.Bus.Publish(message);\n        await harness.Bus.Publish(message);\n\n        Assert.True(await harness.Consumed.Any<OrderPlaced>(x => x.Context.Message.OrderId == message.OrderId,\n                                                            TimeSpan.FromSeconds(10)));\n\n        var db = provider.GetRequiredService<ShippingDbContext>();\n        (await db.Shipments.CountAsync(s => s.OrderId == message.OrderId)).Should().Be(1, \"idempotent\");\n\n        await harness.Stop();\n    }\n\n    [Fact]\n    public async Task Validation_failure_is_not_retried_and_faults_once()\n    {\n        await using var provider = new ServiceCollection()\n            .AddMassTransitTestHarness(x =>\n            {\n                x.AddConsumer<ThrowingConsumer>(c => c.UseMessageRetry(r => r.Ignore<ValidationException>()));\n            })\n            .BuildServiceProvider(true);\n\n        var harness = provider.GetRequiredService<ITestHarness>();\n        await harness.Start();\n\n        await harness.Bus.Publish(new OrderCancelled(Guid.NewGuid(), \"\", DateTimeOffset.UtcNow));\n\n        // ✓ الخطأ المتجاهل لا يُعاد → fault واحد فقط\n        Assert.True(await harness.Consumed.Any<Fault<OrderCancelled>>(TimeSpan.FromSeconds(5)));\n        ThrowingConsumer.Attempts.Should().Be(1);\n\n        await harness.Stop();\n    }\n}\n\n// ═══ ② اختبار تكامل على RabbitMQ حقيقي (Testcontainers) — للتوجيه والـretry والـDLQ ═══\npublic class RabbitIntegrationTests : IAsyncLifetime\n{\n    private readonly RabbitMqContainer _rabbit = new RabbitMqBuilder()\n        .WithImage(\"rabbitmq:4-management-alpine\")\n        .WithUsername(\"shop\").WithPassword(\"test-pass\")\n        .Build();\n\n    // helper محلي: RabbitMQ Management HTTP API على منفذ 15672 (list_queues)\n\n    public async ValueTask InitializeAsync() => await _rabbit.StartAsync();\n    public async ValueTask DisposeAsync() => await _rabbit.DisposeAsync();\n\n    [Fact]\n    public async Task Poison_message_lands_in_error_queue_after_retries()\n    {\n        var services = new ServiceCollection()\n            .AddMassTransit(x =>\n            {\n                x.AddConsumer<AlwaysFailingConsumer>();\n                x.UsingRabbitMq((ctx, cfg) =>\n                {\n                    cfg.Host(_rabbit.GetConnectionString());\n                    cfg.UseMessageRetry(r => r.Immediate(2));       // محاولتان ثم فشل\n                    cfg.ConfigureEndpoints(ctx);\n                });\n            });\n\n        await using var provider = services.BuildServiceProvider(true);\n        var bus = provider.GetRequiredService<IBusControl>();\n        await bus.StartAsync();\n\n        await bus.Publish(new PoisonMessage(Guid.NewGuid()));\n        await Task.Delay(TimeSpan.FromSeconds(5));                  // انتظر المحاولات\n\n        // ✓ التحقق من قائمة الأخطاء عبر API الإدارة\n        var errorCount = await RabbitManagement.GetQueueLengthAsync(_rabbit, \"always-failing_error\");\n        errorCount.Should().Be(1, \"الرسالة السامة وصلت لـerror queue بدل ما توقف القائمة\");\n\n        AlwaysFailingConsumer.Attempts.Should().Be(3);              // 1 + محاولتان\n        await bus.StopAsync();\n    }\n\n    [Fact]\n    public async Task Messages_survive_broker_restart_when_durable()\n    {\n        // انشر → أوقف الحاوية → شغّلها → تحقق إن الرسالة لسه موجودة (durable + persistent)\n        // ★ ده الاختبار اللي بيثبت إن إعدادات الدوام مش مجرد كلام\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) أخطاء بتكلّفك رسائل ضائعة أو نظام واقع"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الخطأ",
+        "النتيجة",
+        "الإصلاح"
+      ],
+      "rows": [
+        [
+          "النشر قبل/خارج معاملة الحفظ",
+          "رسالة شبحية أو ضائعة",
+          "**outbox** في نفس المعاملة (MassTransit EF outbox)"
+        ],
+        [
+          "إعادة محاولة كل الاستثناءات",
+          "رسالة بيانات غلط تدور للأبد وتوقف القائمة",
+          "`Ignore<ValidationException>`/`NotFoundException` + DLQ"
+        ],
+        [
+          "بلا idempotency في المستهلك",
+          "أثر مضاعف عند أي إعادة تسليم",
+          "inbox أو idempotency طبيعية (فحص وجود)"
+        ],
+        [
+          "`prefetch` بلا حد",
+          "مستهلك واحد يحتكر الرسائل والآخرون يجوعون",
+          "16-64 + `ConcurrentMessageLimit`"
+        ],
+        [
+          "قائمة مشتركة لأنواع مختلفة",
+          "رسائل تروح لمستهلك غلط وتُفقد",
+          "endpoint لكل نوع رسالة (MassTransit بيعمله تلقائيًا)"
+        ],
+        [
+          "`Send` بدل `Publish` للأحداث",
+          "اقتران بمستقبل محدد وبلا fan-out",
+          "أحداث → `Publish`؛ أوامر → `Send`"
+        ],
+        [
+          "اتصال/قناة جديدة لكل رسالة",
+          "استنزاف موارد وبطء شديد",
+          "اتصال واحد (IBus singleton) — MassTransit بيديره"
+        ],
+        [
+          "تجاهل `_error`/`_skipped` queues",
+          "رسائل فاشلة تتراكم بلا حد يلاحظ",
+          "مراقبة + إنذار + أداة إعادة تشغيل"
+        ],
+        [
+          "رسائل ضخمة (> 100KB)",
+          "ضغط على الذاكرة وشبكة وبطء عام",
+          "claim check: الحمولة في blob والمرجع في الرسالة"
+        ],
+        [
+          "بلا مهلة في request/response",
+          "طلب متعلّق لحد ما ينفد الـpool",
+          "`CreateRequestClient<T>(timeout)` صريح"
+        ],
+        [
+          "الاعتماد على ترتيب القوائم العام",
+          "ترتيب غير مضمون مع مستهلكين متعددين",
+          "رتّب منطقيًا (إصدار/تاريخ في الرسالة) أو استخدم قائمة واحدة بمستهلك واحد"
+        ],
+        [
+          "إعادة تشغيل الوسيط بلا قوائم دائمة",
+          "فقد كل الرسائل",
+          "durable queues + persistent messages + confirms"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أشغّل RabbitMQ بإعداد معلن ككود (definitions.json) وأعرف قرارات الموثوقية العشرة.",
+        "أضبط MassTransit بإعداد إنتاجي: retry + delayed redelivery + استثناءات متجاهلة + EF outbox + prefetch.",
+        "أفرّق بين `Publish` (حدث) و`Send` (أمر) وأصمم عقود الرسائل كـrecords بإصدار مخطط.",
+        "أكتب مستهلكين idempotent بنطاق DI لكل رسالة، وأختبر بالـTestHarness وعلى حاوية حقيقية."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "الفرق بين `Publish` و`Send` في MassTransit؟",
+          "options": [
+            "لا فرق",
+            "Publish = حدث يُوجَّه لكل المستهلكين المهتمين (fan-out عبر exchange)؛ Send = أمر لقائمة/مستقبل محدد واحد",
+            "Send أسرع",
+            "Publish للأوامر"
+          ],
+          "answer": 1,
+          "explain": "القاعدة الدلالية: حدث (ماضي، «حصل كذا») → Publish. أمر (مستقبلي، «اعمل كذا») → Send."
+        },
+        {
+          "q": "ليه `Ignore<ValidationException>` في سياسة إعادة المحاولة؟",
+          "options": [
+            "للأداء",
+            "لأن خطأ البيانات لن يُصلح نفسه بإعادة المحاولة — الرسائل دي لازم تروح لـDLQ بدل ما تستهلك المحاولات وتوقف القائمة",
+            "مطلب MassTransit",
+            "لتقليل اللوجات"
+          ],
+          "answer": 1,
+          "explain": "أعد المحاولة للأخطاء العابرة (شبكة، timeout، 503). الأخطاء الدائمة (تحقق، غير موجود، حالة غير صالحة) → فشل صريح + DLQ."
+        },
+        {
+          "q": "رسالة وصلت لمستهلكين مختلفين مرتين. إيه المطلوب؟",
+          "options": [
+            "إيقاف الوسيط",
+            "لا شيء على مستوى الوسيط (at-least-once متوقع) — المطلوب idempotency في المستهلك",
+            "تقليل prefetch",
+            "استخدام fanout"
+          ],
+          "answer": 1,
+          "explain": "التكرار جزء من العقد. الحل: فحص وجود الأثر، أو inbox بمعرّف الرسالة، أو قيد فريد في قاعدة المستهلك."
+        },
+        {
+          "q": "طول قائمة RabbitMQ بي زاد باستمرار. أول تشخيص؟",
+          "options": [
+            "الوسيط بطيء",
+            "هل المستهلكون يعملون؟ (عدد المستهلكين، رسائل unacknowledged، أخطاء في اللوج) ثم: هل معدل الإنتاج زاد فعليًا؟",
+            "زد الذاكرة",
+            "احذف الرسائل"
+          ],
+          "answer": 1,
+          "explain": "قائمة بتزيد = مستهلك ميت/بطيء أو إنتاج ارتفع. `messages_unacknowledged` عالي معناه مستهلك عالق في معالجة طويلة."
+        },
+        {
+          "q": "ليه outbox مهم حتى مع وسيط موثوق؟",
+          "options": [
+            "للأداء",
+            "لأن المشكلة في **الذرّية بين القاعدة والوسيط**: الوسيط لا يحل dual write — الالتزام ثم النشر قد يفشل في المنتصف",
+            "مطلب MassTransit",
+            "لتقليل الرسائل"
+          ],
+          "answer": 1,
+          "explain": "`AddEntityFrameworkOutbox` بيكتب الرسالة في معاملة البيانات نفسها، فالمُرسِل بيضمن النشر لاحقًا."
+        },
+        {
+          "q": "رسالة 5MB فيها تفاصيل طلب كاملة. الحكم؟",
+          "options": [
+            "عادي",
+            "claim check: خزّن الحمولة في blob/object storage ومرّر المعرّف + الحقول الأساسية فقط في الرسالة",
+            "قسمها لـ10 رسائل",
+            "اضغطها بـgzip"
+          ],
+          "answer": 1,
+          "explain": "الرسائل الكبيرة تضغط ذاكرة الوسيط وتبطئ الجميع. الرسالة المثالية: معرّفات + بيانات كافية للتوجيه (< 10KB)."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "حدث حقيقي بين موديولين/خدمتين",
+          "md": "شغّل RabbitMQ في compose، وانشر حدثًا من خدمة (outbox عبر EF Core) واستهلكه في خدمة تانية بمستهلك idempotent. أضف retry باستثناءات متجاهلة، DLQ، وhealth check. اختبر الحالات الحرجة.",
+          "criteria": [
+            "مشروع `Contracts` مشترك للرسائل (records + `SchemaVersion` + minor units للمال)",
+            "النشر عبر outbox (اختبار: rollback يلغي الرسالة، وانهيار محاكى بعد الالتزام → الرسالة تُنشر لاحقًا)",
+            "مستهلك idempotent (اختبار نشر مكرر ×3 → أثر واحد)",
+            "`UseMessageRetry` مع `Ignore` لخطأين دائمين على الأقل + delayed redelivery",
+            "رسالة سامة تصل لقائمة الأخطاء (اختبار على حاوية حقيقية)",
+            "health check للوسيط في readiness + 4 مقاييس مراقبة موثقة (طول القائمة، unacked، معدل النشر/الاستهلاك)",
+            "README يشرح إزاي تشغّل كل حاجة بأمر واحد"
+          ],
+          "hint": "لو الاختبارات بتستنى كتير: استخدم `harness.Consumed.Any<T>(timeout)` بدل `Task.Delay` ثابت، وشغّل الوسيط مرة واحدة لكل fixture (IAsyncLifetime)."
+        },
+        {
+          "id": "t2",
+          "title": "request/response + مراقبة",
+          "md": "أضف مسار request/response (مثل حجز مخزون قبل تأكيد الطلب) بمهلة صريحة وردّين محتملين (نجاح/رفض)، واربط لوحة مراقبة محلية (Prometheus + Grafana) بمقاييس الوسيط والـbus.",
+          "criteria": [
+            "`CreateRequestClient<T>(timeout)` صريح + معالجة `RequestTimeoutException` → 503 (لا تخمين)",
+            "ردّان محتملان (`GetResponse<TSuccess, TFailure>`) مع معالجة الاثنين",
+            "idempotency key في الأمر (لا حجز مضاعف عند إعادة الطلب)",
+            "compose فيه Prometheus + Grafana مع dashboard محفوظ في الـrepo (JSON)",
+            "إنذاران موثقان: طول قائمة > حد لمدة دقيقتين، وارتفاع unacknowledged",
+            "اختبار: مهلة منتهية → استجابة 503 ورسالة سجل واضحة"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "MassTransit documentation",
+          "url": "https://masstransit.io/documentation"
+        },
+        {
+          "label": "MassTransit — RabbitMQ configuration",
+          "url": "https://masstransit.io/documentation/configuration/transports/rabbitmq"
+        },
+        {
+          "label": "MassTransit — Entity Framework Outbox",
+          "url": "https://masstransit.io/documentation/configuration/outbox"
+        },
+        {
+          "label": "RabbitMQ documentation",
+          "url": "https://www.rabbitmq.com/docs"
+        },
+        {
+          "label": "RabbitMQ — Quorum queues",
+          "url": "https://www.rabbitmq.com/docs/quorum-queues"
+        },
+        {
+          "label": "AMQP 0-9-1 model explained",
+          "url": "https://www.rabbitmq.com/tutorials/amqp-concepts"
+        },
+        {
+          "label": "Testcontainers for .NET — RabbitMQ",
+          "url": "https://testcontainers.com/modules/rabbitmq/"
+        }
+      ]
+    }
+  ]
+}

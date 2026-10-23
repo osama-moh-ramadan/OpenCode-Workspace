@@ -1,0 +1,385 @@
+{
+  "id": "s9-m1-l5",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "آخر درس في وحدة تصميم الأنظمة، وأكثرها «هندسة»: **التقسيم (Sharding) · النسخ (Replication) · إعادة التوازن** — ومعه السؤال اللي بيتكرر: *ليه بياناتي بتظهر قديمة؟*\n\nهنا تتعلم تختار `shard key` وتبرّرها، وتشرح `replication lag` بأثر ملموس، وتصمّم نقل بيانات **بلا توقف**."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات",
+      "items": [
+        {
+          "term": "Shard / Partition",
+          "def": "تجزئة أفقية لجدول عبر عقد متعددة. `Shard key` تحدد القطعة. الهدف: حجم وكتابة أكبر من عقدة واحدة."
+        },
+        {
+          "term": "Shard key مرشّح",
+          "def": "الحقل الذي تقسم به. الخصائص: توزيع متساوٍ · يظهر في كل استعلام ساخن · لا يُحدَّث · لا يخلق نقاطًا ساخنة."
+        },
+        {
+          "term": "Hot shard / skew",
+          "def": "قطعة تحمل حصة أكبر من غيرها (مستخدم ضخم/تاريخ اليوم) → تصبح عنق الزجاجة رغم التوزيع."
+        },
+        {
+          "term": "Directory / Lookup service",
+          "def": "خدمة صغيرة تحوّل `key → shard`، تتيح إعادة التوازن بلا إعادة حساب عند العملاء."
+        },
+        {
+          "term": "Consistent hashing",
+          "def": "توزيع على حلقة: إضافة/حذف عقدة تنقل ~1/N فقط من المفاتيح بدل إعادة توزيع كامل."
+        },
+        {
+          "term": "Replication lag",
+          "def": "تأخر النسخة المتابعة عن الأساسية. ينتج: قراءة قديمة، فقدان بيانات عند failover، واختناق قراءة."
+        },
+        {
+          "term": "Read-your-writes",
+          "def": "ضمان أن المستخدم يرى كتابته هو على الأقل. تحقّقه بـ: قراءة من الأساسي بعد الكتابة، أو session stickiness، أو انتظار LSN."
+        },
+        {
+          "term": "Failover",
+          "def": "ترقية نسخة بديلة عند فشل الأساسي. خطرها: فقدان كتابات غير منسوخة (RPO>0) أو تقسيم دماغ (split-brain)."
+        },
+        {
+          "term": "Dual-write / dual-read",
+          "def": "مرحلة انتقالية: اكتب للقديم والجديد، اقرأ من الجديد مع fallback — أساس الترحيل الآمن."
+        },
+        {
+          "term": "Resharding",
+          "def": "إعادة توزيع البيانات على قطع أكثر. تُنفَّذ بـcopy + dual-write + cutover + cleanup."
+        },
+        {
+          "term": "Quorum (R+W > N)",
+          "def": "في أنظمة N نسخ: نجاح القراءة/الكتابة عند R/W نسخ. `R+W>N` تعطي تماسكًا أقوى (مثال N=3, R=2, W=2)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① اختيار Shard key: 5 معايير وحكم"
+    },
+    {
+      "type": "table",
+      "caption": "ثلاثة مرشحين على نظام طلبات",
+      "head": [
+        "المفتاح",
+        "التوزيع",
+        "الاستعلامات الساخنة",
+        "الثمن"
+      ],
+      "rows": [
+        [
+          "`customer_id`",
+          "متساوٍ عادةً",
+          "كل استعلامات العميل تصل لقطعة واحدة ✅",
+          "عميل ضخم = hot shard · تقارير كلية تحتاج جولة على كل القطع"
+        ],
+        [
+          "`order_id` (hash)",
+          "متساوٍ جدًا",
+          "الوصول المباشر ممتاز ✅ لكن «طلبات العميل» تصبح جولة على كل القطع ❌",
+          "استعلامات النطاق مكلفة"
+        ],
+        [
+          "`created_at` (شهري)",
+          "حسب الزمن ⇒ قطعة اليوم ساخنة",
+          "تقارير زمنية ممتازة",
+          "**أسوأ خيار للكتابة** (كل الكتابات على قطعة واحدة)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "القاعدة الذهبية",
+      "md": "**`shard key` = الحقل الموجود في أشهر استعلام + الأكثر توزيعًا.**\nفي نظام SaaS متعدد المستأجرين، `tenant_id` هو الجواب في 90% من الحالات: كل شيء عن مستأجر واحد يقع في مكان واحد، والعزل أسهل، والاحتفاظ/الحذف يصبح أسهل (مقابل: عميل ضخم يحتاج قطعة خاصة — «pinning»).\n**وأي مفتاح تختاره، اكتب قرارك في ADR:** لماذا · ما الثمن · ما الاستعلامات التي أصبحت مكلفة · متى تعيد التقييم."
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Sharding/ShardRouter.cs — توجيه بمفتاح + دليل + قراءة مُقاسة",
+      "filename": "src/Sharding/ShardRouter.cs",
+      "code": "/// <summary>\n/// توجيه بسيط: hash(tenantId) % N. عيبه: تغيير N يعيد توزيع كل شيء.\n/// الحل عند التوسع: consistent hashing أو شاردات منطقية (virtual shards).\n/// </summary>\npublic sealed class ShardRouter(IShardDirectory directory)\n{\n    public async Task<ShardConnection> ResolveAsync(string tenantId, CancellationToken ct)\n    {\n        var shardId = await directory.GetShardAsync(tenantId, ct)\n            ?? InlineHash(tenantId);\n        return await directory.GetConnectionAsync(shardId, ct);\n    }\n\n    /// <summary>توزيع محلي حتمي — نفس المستأجر دائمًا نفس القطعة.</summary>\n    private static string InlineHash(string tenantId)\n    {\n        // FNV-1a: سريع وحتمي (لا يعتمد على GetHashCode المتغيّر بين العمليات)\n        var hash = 2166136261u;\n        foreach (var c in tenantId)\n        {\n            hash ^= c;\n            hash *= 16777619u;\n        }\n        return $\"shard-{hash % 16:D2}\";    // 16 قطعة منطقية\n    }\n}\n\n/// <summary>\n/// 16 قطعة منطقية → عدد قليل من قواعد البيانات.\n/// إضافة قاعدة جديدة = نقل 3–4 قطع منطقية فقط ⇒ حركة بيانات محدودة.\n/// </summary>\npublic sealed class ShardDirectory(IConfiguration config) \n{\n    private static readonly IReadOnlyDictionary<string, string> LogicalToPhysical =\n        new Dictionary<string, string>\n        {\n            [\"shard-00\"] = \"db0\", [\"shard-01\"] = \"db0\", [\"shard-02\"] = \"db0\", [\"shard-03\"] = \"db0\",\n            [\"shard-04\"] = \"db1\", [\"shard-05\"] = \"db1\", [\"shard-06\"] = \"db1\", [\"shard-07\"] = \"db1\",\n            [\"shard-08\"] = \"db2\", [\"shard-09\"] = \"db2\", [\"shard-10\"] = \"db2\", [\"shard-11\"] = \"db2\",\n            [\"shard-12\"] = \"db3\", [\"shard-13\"] = \"db3\", [\"shard-14\"] = \"db3\", [\"shard-15\"] = \"db3\",\n        };\n\n    public Task<string?> GetShardAsync(string tenantId, CancellationToken ct) =>\n        Task.FromResult<string?>($\"shard-{Fnv(tenantId) % 16:D2}\");\n\n    public Task<ShardConnection> GetConnectionAsync(string shardId, CancellationToken ct)\n    {\n        var physical = LogicalToPhysical[shardId];\n        return Task.FromResult(new ShardConnection(\n            physical,\n            config.GetConnectionString(physical)!));\n    }\n\n    private static uint Fnv(string s)\n    {\n        var hash = 2166136261u;\n        foreach (var c in s) { hash ^= c; hash *= 16777619u; }\n        return hash;\n    }\n}\n\npublic sealed record ShardConnection(string ShardId, string ConnectionString);\n"
+    },
+    {
+      "type": "table",
+      "caption": "متى لا تُقسّم",
+      "head": [
+        "الحالة",
+        "القرار"
+      ],
+      "rows": [
+        [
+          "جدول < 500GB وكتابة < 5k/ث",
+          "**لا تُقسّم** — فهرس + replica + أرشفة"
+        ],
+        [
+          "تقارير كلية (cross-tenant)",
+          "تُقسّم لكن مع مستودع تحليلي منفصل (OLAP)"
+        ],
+        [
+          "مشروع جديد غير متأكد من الشكل",
+          "لا تُقسّم — لكن **ضع `tenant_id` في كل جدول من اليوم الأول** (أرخص قرار)"
+        ],
+        [
+          "حاجة لعزل تنظيمي/إقامة بيانات",
+          "قسّم بحسب المنطقة لا بالحجم"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② النسخ وreplication lag: من أين تأتي المشكلة"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "مسار النسخة المتابعة",
+      "filename": "docs/replication.txt",
+      "code": "\n  كتابة ──► Primary ──(WAL stream)──► Replica1\n                  │                    Replica2\n                  └──────────────►  Replica3 (تحليلات)\n\nتأخر النسخ (lag) يزداد بسبب:\n  1) كتابة كثيفة على الأساسي (WAL أكثر مما تستطيع النسخة تطبيقه)\n  2) نسخة مشغولة باستعلامات ثقيلة (تنافس على I/O)\n  3) شبكة بين المنطقتين (عبر المناطق = ms عشرات)\n  4) نسخة جديدة تبني/تعيد المزامنة\n\nالأثر الملموس (وإن كان lag = 200ms فقط):\n  مستخدم ينشئ طلبًا ثم يفتح قائمته فورًا → لا يرى طلبه ⇒ «النظام ضاع بياناتي!»\n  الإصلاح: read-your-writes (قراءة من الأساسي لفترة قصيرة أو عبر LSN).\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Replication/ReadYourWrites.cs — تجاوز النسخة المتابعة عند الحاجة",
+      "filename": "src/Sharding/ReadYourWrites.cs",
+      "code": "using Microsoft.EntityFrameworkCore;\n\n/// <summary>\n/// سياسة قراءة تحترم read-your-writes:\n///   • بعد كتابة المستخدم (خلال نافذة قصيرة) ⇒ قراءة من الأساسي.\n///   • غير ذلك ⇒ قراءة من نسخة متابعة (أرخص وأسرع).\n/// </summary>\npublic sealed class ReadRouter(\n    IDbContextFactory<ShopDbContext> primary,\n    IDbContextFactory<ShopDbContext> replica,\n    IWriteMarker marker)\n{\n    public async Task<T> QueryAsync<T>(string userId, Func<ShopDbContext, Task<T>> query, CancellationToken ct)\n    {\n        var usePrimary = await marker.HasRecentWriteAsync(userId, ct)\n            // أول قراءة بعد الكتابة قد تكون على نفس الاتصال المفتوح\n            || marker.IsFirstReadAfterWrite(userId);\n\n        await using var db = usePrimary\n            ? await primary.CreateDbContextAsync(ct)\n            : await replica.CreateDbContextAsync(ct);\n\n        return await query(db);\n    }\n}\n\n/// <summary>يُستدعى في أي endpoint كتابة: يعلّم أن هذا المستخدم كتب للتو.</summary>\npublic sealed class WriteMarker(IDistributedCache cache)\n{\n    private static readonly TimeSpan Window = TimeSpan.FromSeconds(5);\n\n    public async Task MarkAsync(string userId, CancellationToken ct) =>\n        await cache.SetStringAsync($\"rw:{userId}\", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(),\n            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = Window }, ct);\n\n    public async Task<bool> HasRecentWriteAsync(string userId, CancellationToken ct) =>\n        await cache.GetStringAsync($\"rw:{userId}\", ct) is not null;\n\n    public bool IsFirstReadAfterWrite(string userId) => true;   // مبسّط: نعتمد على النافذة\n}\n\n/*\n بديل أدق (بلا كاش): بعد الكتابة أعِد LSN/`xmin` ثم في القراءة\n انتظر النسخة حتى تصل لهذا الـLSN:\n   SELECT pg_current_wal_insert_lsn();      -- بعد الكتابة\n   SELECT pg_last_wal_replay_lsn();         -- على النسخة\n   while (replay < target) await Task.Delay(5, ct);\n هذا يضمن الرؤية بدقة وبلا نافذة زمنية عشوائية — لكنه يقيّدك بـPostgreSQL.\n*/\n"
+    },
+    {
+      "type": "table",
+      "caption": "3 ضمانات اتساق تختار بينها صراحة",
+      "head": [
+        "الضمان",
+        "كيف تحققه",
+        "التكلفة"
+      ],
+      "rows": [
+        [
+          "Read-your-writes",
+          "قراءة من الأساسي في نافذة 5 ثوانٍ بعد الكتابة · أو انتظار LSN",
+          "حمل أعلى قليلًا على الأساسي"
+        ],
+        [
+          "Monotonic reads",
+          "تثبيت المستخدم على نسخة واحدة (sticky بمعرّف الجلسة)",
+          "توزيع أقل كفاءة"
+        ],
+        [
+          "Consistent prefix",
+          "قراءة من نفس المصدر خلال جلسة/عملية",
+          "تعقيد أقل من SLA دقيق"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ إعادة التوازن بلا توقف: 6 مراحل"
+    },
+    {
+      "type": "steps",
+      "title": "Resharding دون downtime",
+      "items": [
+        {
+          "title": "① جهّز الوجهة",
+          "md": "قاعدة/قطعة جديدة بنفس المخطط + فهارس (بلا فهارس غير ضرورية أثناء النسخ — تُنشأ بعده).\n**ناتج:** destination جاهزة ومتاحة للكتابة."
+        },
+        {
+          "title": "② انسخ لقطة (snapshot)",
+          "md": "`pg_dump`/لقطة فيزيائية أو `COPY` على دفعات بالليل؛ سجّل **LSN/نقطة البداية**.\n**ناتج:** غالبية البيانات موجودة."
+        },
+        {
+          "title": "③ مزامنة الفرق (catch-up)",
+          "md": "طبّق تغييرات WAL منذ LSN (logical replication) أو dual-write من الآن.\n**ناتج:** الفرق صغير وقابل للحاق."
+        },
+        {
+          "title": "④ مفتاح التوجيه (Switching)",
+          "md": "حدّث الدليل `tenant → shard` في **ترانزاكشن واحد**؛ اجعل القراءة dual-read (جديد ثم قديم عند الفشل).\n**ناتج:** القراءات تذهب للجديد تدريجيًا (1% → 10% → 100%)."
+        },
+        {
+          "title": "⑤ أوقف الكتابة على القديم",
+          "md": "بعد التأكد من صفر فرق (تأخير < ثانية) ومراقبة الأخطاء. أبقِ القديم للقراءة فقط أسبوعًا.\n**ناتج:** rollback ممكن في دقائق."
+        },
+        {
+          "title": "⑥ نظّف",
+          "md": "أرشف القديم + أزل dual-write + وثّق. لا تحذف قبل أسبوعين على الأقل.\n**ناتج:** تكلفة أقل وتعقيد أقل."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "5 أخطاء في resharding",
+      "md": "**① نسخ بلا قياس معدل** — يستهلك I/O ويوقف الإنتاج.\n**② نشر التوجيه لكل العملاء دفعة واحدة** — أي خطأ = انقطاع كامل.\n**③ حذف القديم فورًا** — بلا rollback.\n**④ نسيان الفهارس/القيود/التسلسلات على الوجهة** — أعطال غريبة بعد النقل.\n**⑤ نسيان «المستأجرين المتجولين»** — بيانات تخص مستأجر في قطعة أخرى (تحقق آلي: كل صف يجب أن يطابق shard الخاص بمستأجره)."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "تختار `shard key` من الاستعلامات الساخنة لا من الراحة، وتشرح الثمن.",
+        "تعرف لماذا `created_at` مفتاح سيئ للكتابة، ومتى يكون مفيدًا (تقارير/أرشفة).",
+        "تستخدم قطعًا منطقية أكثر من الفيزيائية لتقليل حركة البيانات.",
+        "تشرح `replication lag` بأثر منتج ملموس وليس بتعريف.",
+        "تنفّذ read-your-writes بنافذة زمنية أو بانتظار LSN.",
+        "تعرف مخاطر failover (RPO>0، split-brain) وكيف تقللها.",
+        "تصمّم resharding بـ6 مراحل مع rollback في كل مرحلة.",
+        "تعرف متى **لا** تُقسّم وتذكر شرط إعادة النظر رقميًا."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة.",
+      "questions": [
+        {
+          "q": "اخترت `created_at` كـshard key لجدول أحداث. ما النتيجة؟",
+          "options": [
+            "توزيع مثالي",
+            "كل الكتابات على قطعة اليوم = hot shard؛ أما التقارير الزمنية فممتازة",
+            "لا يمكن التقسيم",
+            "تحتاج UUID"
+          ],
+          "answer": 1,
+          "explain": "التقسيم بالزمن يعطي «قطعة واحدة ساخنة» لكل الكتابات الحالية. مناسب للأرشفة/الاحتفاظ (احذف الشهر القديم بسرعة)، غير مناسب للكتابة الحية."
+        },
+        {
+          "q": "ما فائدة القطع المنطقية (virtual shards) أكثر من الفيزيائية؟",
+          "options": [
+            "أسرع في الاستعلام",
+            "إضافة قاعدة جديدة تنقل عددًا محدودًا من القطع المنطقية بدل إعادة توزيع كل المفاتيح",
+            "تقليل التكلفة فقط",
+            "لا فائدة"
+          ],
+          "answer": 1,
+          "explain": "لو عندك 16 قطعة منطقية على 4 قواعد، فإضافة قاعدة تعني نقل 3–4 قطع منطقية فقط — حركة بيانات محسوبة، وقابلة للتنفيذ تدريجيًا بلا downtime."
+        },
+        {
+          "q": "مستخدم ينشئ طلبًا فلا يرى طلبه في القائمة فورًا. السبب والحل؟",
+          "options": [
+            "خطأ في الواجهة",
+            "replication lag — اقرأ من الأساسي في نافذة قصيرة بعد الكتابة (read-your-writes)",
+            "فهرس ناقص",
+            "كاش قديم"
+          ],
+          "answer": 1,
+          "explain": "الكتابة ذهبت للأساسي والقراءة من نسخة متأخرة. الحل: نافذة read-your-writes في الكاش، أو انتظار LSN على النسخة — وكلاهما يجب توثيقه كقرار واختباره."
+        },
+        {
+          "q": "ما خطر failover بلا فحص تأخير النسخ؟",
+          "options": [
+            "لا خطر",
+            "فقدان كتابات لم تُنسخ (RPO>0) وقد يحدث split-brain إذا لم يُعزل القديم",
+            "بطء القراءة",
+            "تكلفة أعلى"
+          ],
+          "answer": 1,
+          "explain": "ترقية نسخة متأخرة تعني فقدان آخر الكتابات. الحلول: quorum/synchronous replication حسب الحاجة، وعزل الأساسي القديم (fencing) لمنع الكتابة المزدوجة."
+        },
+        {
+          "q": "أي مرحلة يجب أن تسبق نشر التوجيه الجديد؟",
+          "options": [
+            "حذف القديم",
+            "اللحاق الكامل (صفر فرق) + مزامنة الفروق + فحص عدد الصفوف/المجاميع",
+            "إيقاف التطبيق",
+            "زيادة الفهارس على القديم"
+          ],
+          "answer": 1,
+          "explain": "نشر التوجيه قبل اللحاق = قراءات ناقصة. الأمان: تحقق من التطابق (عدد صفوف + checksums + عينات)، ثم نشر التوجيه تدريجيًا مع dual-read."
+        },
+        {
+          "q": "متى يكون القرار الصحيح «لا تُقسّم»؟",
+          "options": [
+            "دائمًا",
+            "عندما يكون الجدول < 500GB والكتابة < 5k/ث: فهرس + replica + أرشفة كافية",
+            "عند وجود مستأجرين",
+            "عند استخدام PostgreSQL"
+          ],
+          "answer": 1,
+          "explain": "التقسيم يضيف تعقيدًا (استعلامات موزعة، معاملات، إعادة توازن). يُؤجَّل حتى تُستنفد البدائل. لكن ضع `tenant_id` في كل جدول من اليوم الأول — قرار رخيص يفتح الباب لاحقًا."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "قرار تقسيم + خطة ترحيل.",
+      "items": [
+        {
+          "id": "s9-m1-l5-t1",
+          "title": "ADR: shard key وخطة إعادة توازن",
+          "md": "اكتب قرار تقسيم لجدول كبير في مشروعك: المفتاح · البدائل · الثمن · خطة إعادة التوازن من 6 مراحل · إجراء rollback.",
+          "criteria": [
+            "3 مرشحين للمفتاح مع تحليل (توزيع · استعلام ساخن · hot shard · استعلامات كلية).",
+            "قرار مبرّر + الاستعلامات التي أصبحت مكلفة وطريقة معالجتها.",
+            "تصميم قطع منطقية (N) على قواعد فيزيائية (M) وعدد القطع المنقولة عند التوسع.",
+            "خطة resharding 6 مراحل مع **خطر وrollback لكل مرحلة**.",
+            "ضمان read-your-writes مكتوب (نافذة/LSN) واختبار له.",
+            "حدود إعادة النظر رقميًا (حجم/كتابة/skew).",
+            "سطر «لا نُقسّم الآن لأن…» إن كان هذا القرار."
+          ],
+          "hint": "ابدأ بكتابة **أشهر 5 استعلامات** في نظامك ثم ابحث عن الحقل المشترك. لو كانت الاستعلامات تبدأ دائمًا بـ`WHERE tenant_id = @t` فالجواب محسوم. وتذكّر: عميل واحد ضخم قد يحتاج «تثبيتًا» على قطعة خاصة (`pinned shard`) — اذكر ذلك كحالة معالجة لا استثناء مفاجئ.",
+          "solution": "القرار النموذجي: `tenant_id` كمفتاح + 16 قطعة منطقية على 4 قواعد + تثبيت العملاء الضخمين + تقارير عبر OLAP. أهم ما في المراجعة: وجود **rollback مكتوب** لكل مرحلة، وحد رقمي لإعادة النظر، وتصريح بالاستعلامات التي ستتألم (تقارير كلية).",
+          "resources": [
+            "https://learn.microsoft.com/azure/architecture/patterns/sharding",
+            "https://learn.microsoft.com/azure/architecture/patterns/index-table",
+            "https://www.postgresql.org/docs/current/wal-intro.html",
+            "https://learn.microsoft.com/azure/architecture/patterns/materialized-view"
+          ]
+        },
+        {
+          "id": "s9-m1-l5-t2",
+          "title": "قياس تأخير النسخ واختبار read-your-writes",
+          "md": "شغّل PostgreSQL أساسيًا + نسخة متابعة (compose)، قِس التأخير، واكتب اختبارًا يُثبت أن سياسة read-your-writes تُصلح المشكلة.",
+          "criteria": [
+            "`compose.yaml` بـPostgreSQL primary + replica.",
+            "قياس `pg_last_wal_replay_lsn()` مقابل `pg_current_wal_insert_lsn()` في تقرير (لقطات).",
+            "إنتاج تأخير مقصود (استعلام ثقيل/`pg_sleep`/كتابة كثيفة) وقياسه رقميًا.",
+            "اختبار يوضح: قراءة من النسخة = لا يرى؛ قراءة من الأساسي = يرى.",
+            "شرح مكتوب لنافذة الـ5 ثوانٍ ومتى يجب استخدام LSN بدلًا منها."
+          ],
+          "hint": "أسهل طريقة لتوليد تأخير مقصود: `SELECT pg_wal_replay_pause()` على النسخة، نفّذ كتابات على الأساسي، قِس الفرق، ثم `pg_wal_replay_resume()`. للقياس اليومي استخدم `pg_stat_replication` (عمود `replay_lag`) لا LSN فقط، لأنه يعطيك تأخيرًا زمنيًا مباشرًا.",
+          "solution": "النتيجة: تأخير مقاس من 50ms إلى ثوانٍ حسب الحمل. الأهم: إثبات أن السياسة صحيحة — القراءة الفورية من النسخة لا ترى الصف الجديد بينما الأساسي يراه. ثم اختبار يمر: بعد الكتابة، القراءة تذهب للأساسي خلال النافذة، وبعد 5 ثوانٍ تعود للنسخة.",
+          "resources": [
+            "https://www.postgresql.org/docs/current/warm-standby.html",
+            "https://www.postgresql.org/docs/current/monitoring-stats.html",
+            "https://learn.microsoft.com/azure/architecture/patterns/cqrs"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Sharding pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/sharding"
+        },
+        {
+          "label": "Index Table pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/index-table"
+        },
+        {
+          "label": "PostgreSQL: WAL والنسخ",
+          "url": "https://www.postgresql.org/docs/current/wal-intro.html"
+        },
+        {
+          "label": "PostgreSQL: Warm Standby",
+          "url": "https://www.postgresql.org/docs/current/warm-standby.html"
+        },
+        {
+          "label": "CQRS pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/cqrs"
+        },
+        {
+          "label": "Materialized View",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/materialized-view"
+        }
+      ]
+    }
+  ]
+}

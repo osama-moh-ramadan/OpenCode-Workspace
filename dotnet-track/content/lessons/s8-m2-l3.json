@@ -1,0 +1,628 @@
+{
+  "id": "s8-m2-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "React في 2026 لسه **أكبر سوق للتوظيف** في الواجهات — ولو إعلان الوظيفة بيقول «.NET + React» فده معناه إنك هتكتب الاتنين. الخبر الحلو إن React **بسيط فكريًا**: مكوّنات هي دوال، والحالة قيم، والواجهة = دالة في الحالة (`UI = f(state)`). الخبر الوحش إن الفروق الدقيقة (قواعد الـhooks · الـclosures القديمة · التبعيات · إعادة الرسم) بتوقّع مطوري الـBackend أسابيع.\n\nالدرس ده **مش كورس React كامل** — ده **الحد الأدنى الكافي لمطور .NET**: مكوّنات وprops وحالة · قواعد الـhooks · `useEffect` الصح والغلط · القوائم والمفاتيح · النماذج بـReact 19 (`useActionState`/`useOptimistic`) · السياق · تقسيم الحزم والـSuspense · وأخطاء النماذج الذهنية اللي بتتكرر مع كل مطور C#."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس (بمقابلها في .NET)",
+      "items": [
+        {
+          "term": "JSX/TSX",
+          "def": "صياغة بتشبه HTML داخل TS — بتتحول لنداءات دوال. **مش قوالب** (مفيش syntax خاص زي Razor): كل شيء تعبير JS. `{expr}` = إدراج قيمة، والشرط بـ`&&` أو `?:`."
+        },
+        {
+          "term": "Component",
+          "def": "دالة بترجع JSX: `function OrderRow(props: Props) { … }`. مقابلها في Blazor: `.razor` — بس هنا مفيش ملف منفصل ولا `@code`؛ المنطق والـmarkup في نفس المكان (co-location)."
+        },
+        {
+          "term": "Props",
+          "def": "معاملات المكوّن (**للقراءة فقط** — زي `[Parameter]` في Blazor بس بلا تعديل داخلي). تغييرها من الأب = إعادة رسم الابن."
+        },
+        {
+          "term": "State",
+          "def": "قيم المكوّن اللي بتتغير: `const [x, setX] = useState(0)`. **الـsetter مش متزامن بالمعنى اللي تتوقعه** — React بيجمّع التحديثات (batching) وبيعيد الرسم بعدها."
+        },
+        {
+          "term": "Rules of Hooks",
+          "def": "الـhooks بتُنادى **بنفس الترتيب في كل رسمة**: ممنوع داخل شروط/حلقات/دوال متداخلة. React بيعتمد على الترتيب لربط الحالة بالمكوّن — مخالفتها = أخطاء غامضة أو انفجار."
+        },
+        {
+          "term": "Re-render",
+          "def": "إعادة تنفيذ دالة المكوّن لما تتغير الحالة/الـprops (أو الأب بيرسم). **مش إعادة تحميل الصفحة** — React بيقارن الناتج ويحدّث الـDOM بالفرق (reconciliation)."
+        },
+        {
+          "term": "Key",
+          "def": "هوية عنصر في قائمة: `<li key={order.id}>`. غلط (index أو مفقود) = أخطاء حالة وتركيز عند الحذف/الترتيب — نظير `@key` في Blazor (8.2.2)."
+        },
+        {
+          "term": "Effect (useEffect)",
+          "def": "مزامنة مع **نظام خارجي** (اشتراك · مؤقت · DOM · WebSocket) — **مش** مكان لجلب البيانات ولا لاشتقاق قيم. البنية: `useEffect(fn, deps)` + دالة تنظيف."
+        },
+        {
+          "term": "Ref (useRef)",
+          "def": "قيمة باقية بين الرسمات **بلا** إعادة رسم + مقبض على عنصر DOM. تُستخدم للـtimer/الـAbortController وللتركيز."
+        },
+        {
+          "term": "Context",
+          "def": "تمرير قيمة لأسفل الشجرة بلا props متسلسلة (ثيم · مصادقة · لغة) — مقابل `CascadingValue` في Blazor. **مش** بديل لإدارة حالة كبيرة."
+        },
+        {
+          "term": "React Compiler",
+          "def": "مترجم بيحسّن التذكير (memoization) تلقائيًا — **1.0 في أكتوبر 2025** واختياري (مفعّل افتراضيًا في قوالب Vite/Next/Expo الجديدة). لو مفعّل، `useMemo`/`useCallback` بتقل أهميتها."
+        },
+        {
+          "term": "Suspense / lazy",
+          "def": "تأجيل تحميل جزء من الشجرة (`React.lazy` + `<Suspense fallback>`) — تقسيم الحزم (code splitting). مفيد لصفحات ثقيلة (تقارير/رسوم)."
+        },
+        {
+          "term": "Error boundary",
+          "def": "مكوّن بيمسك أخطاء العرض ويعرض بديلًا — **لازم class component** أو مكتبة (`react-error-boundary`)؛ الـhooks ما بتمسكش أخطاء العرض (8.1.4)."
+        },
+        {
+          "term": "StrictMode",
+          "def": "في التطوير بيستدعي المكوّنات والـeffects **مرتين** عن قصد لكشف التنظيف الناقص — مش خطأ، وبيختفي في الإنتاج. اللي بيكشفه أخطاء حقيقية."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① المكوّن: دالة + props + حالة"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "src/components/OrderRow.tsx — مكوّن بسيط بكل الأساسيات",
+      "filename": "src/components/OrderRow.tsx",
+      "code": "// مكوّن = دالة. Props = معاملات للقراءة فقط.\n// ملاحظة: React 19 مش محتاج import لـReact في المشاريع الحديثة (JSX transform جديد).\n\nexport type OrderStatus = \"placed\" | \"paid\" | \"shipped\" | \"cancelled\";\n\nexport interface OrderRowProps {\n  readonly order: {\n    readonly id: string;\n    readonly status: OrderStatus;\n    readonly total: string;      // decimal كنص (8.1.1)\n    readonly currency: \"EGP\" | \"USD\";\n  };\n  readonly selected?: boolean;\n  /** الحدث بيطلع لفوق — زي EventCallback في Blazor */\n  readonly onSelect?: (id: string) => void;\n}\n\nconst STATUS_LABEL: Record<OrderStatus, string> = {\n  placed: \"تم الطلب\",\n  paid: \"مدفوع\",\n  shipped: \"تم الشحن\",\n  cancelled: \"ملغي\",\n};\n\nexport function OrderRow({ order, selected = false, onSelect }: OrderRowProps) {\n  return (\n    <li\n      className={\n        \"card flex items-center justify-between gap-3 \" +\n        (selected ? \"outline outline-2 outline-brand-600\" : \"\")\n      }\n    >\n      <div className=\"min-w-0\">\n        <p className=\"truncate font-medium\" dir=\"ltr\">{order.id}</p>\n        <p className=\"text-sm text-ink-muted\">{STATUS_LABEL[order.status]}</p>\n      </div>\n      <p className=\"tabular-nums text-sm\" dir=\"ltr\">{order.total} {order.currency}</p>\n      <button\n        type=\"button\"\n        className=\"rounded-md border px-3 py-1.5 text-sm\"\n        // تمرير الحدث لأعلى. لاحظ: (id) هنا مش (event)\n        onClick={() => onSelect?.(order.id)}\n        disabled={!onSelect}\n      >\n        تفاصيل\n      </button>\n    </li>\n  );\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "useState/useReducer — الحالة والقواعد",
+      "filename": "src/components/CounterDemo.tsx",
+      "code": "import { useReducer, useState } from \"react\";\n\n/** useState: حالة بسيطة. */\nexport function Counter() {\n  const [count, setCount] = useState(0);\n\n  return (\n    <div className=\"card flex items-center gap-3\">\n      <button\n        type=\"button\"\n        className=\"rounded-md border px-3 py-1.5\"\n        // ⚠️ setCount(count + 1) مرتين متتاليتين = +1 مش +2\n        //    لأن React بيجمّع التحديثات (batching) وكلاهما يقرأ نفس count القديم.\n        //    الصح للتحديث المتسلسل: الدالة (updater function)\n        onClick={() => {\n          setCount((c) => c + 1);\n          setCount((c) => c + 1);   // الآن النتيجة +2\n        }}\n      >\n        +2\n      </button>\n      <span className=\"tabular-nums\">{count}</span>\n      <button type=\"button\" className=\"rounded-md border px-3 py-1.5\" onClick={() => setCount(0)}>\n        تصفير\n      </button>\n    </div>\n  );\n}\n\n/** useReducer: حالة مركّبة/انتقالات واضحة (نظير آلة الحالات من 8.1.4). */\ntype Action =\n  | { type: \"typing\"; value: string }\n  | { type: \"submit\" }\n  | { type: \"success\" }\n  | { type: \"failure\"; error: string };\n\ninterface FormState {\n  value: string;\n  status: \"idle\" | \"submitting\" | \"success\" | \"error\";\n  error?: string;\n}\n\nconst initialState: FormState = { value: \"\", status: \"idle\" };\n\nfunction reducer(state: FormState, action: Action): FormState {\n  switch (action.type) {\n    case \"typing\":\n      return { ...state, value: action.value, error: undefined };\n    case \"submit\":\n      return { ...state, status: \"submitting\", error: undefined };\n    case \"success\":\n      return { ...state, status: \"success\", value: \"\" };\n    case \"failure\":\n      return { ...state, status: \"error\", error: action.error };\n    default: {\n      // exhaustiveness: لو أضفت action جديد، المترجم هيصرخ هنا\n      const _exhaustive: never = action;\n      return state;\n    }\n  }\n}\n\nexport function useOrderForm() {\n  const [state, dispatch] = useReducer(reducer, initialState);\n  return { state, dispatch };\n}\n"
+    },
+    {
+      "type": "table",
+      "caption": "من C#/Blazor إلى React — ترجمة سريعة",
+      "head": [
+        "المفهوم",
+        "Blazor / C#",
+        "React / TS",
+        "الفخّ"
+      ],
+      "rows": [
+        [
+          "واجهة المكوّن",
+          "`[Parameter]`",
+          "`props` (interface للـprops)",
+          "Props للقراءة فقط — لا تعدّلها"
+        ],
+        [
+          "حدث للأب",
+          "`EventCallback<T>`",
+          "`onSomething: (v: T) => void`",
+          "لا تمرّر الحدث كـ`onClick={handler(id)}` — بتستدعيها فورًا"
+        ],
+        [
+          "حالة محلية",
+          "حقل في `@code` + `StateHasChanged`",
+          "`useState`",
+          "الـsetter غير متزامن — والتحديث المتسلسل محتاج updater function"
+        ],
+        [
+          "حالة مركّبة",
+          "enum + record",
+          "`useReducer` + discriminated union",
+          "`switch` بلا exhaustiveness = حالة غير معالَجة بصمت"
+        ],
+        [
+          "مزامنة مع نظام خارجي",
+          "`OnAfterRenderAsync` + JS interop",
+          "`useEffect` + تنظيف",
+          "الـdeps الناقصة = قيم قديمة؛ الزائدة = حلقات"
+        ],
+        [
+          "مفتاح العنصر",
+          "`@key`",
+          "`key` prop",
+          "استخدام index في قائمة قابلة للتعديل"
+        ],
+        [
+          "تمرير عبر الشجرة",
+          "`CascadingValue`",
+          "`createContext` + `useContext`",
+          "الإفراط فيه = صعوبة تتبع مصدر القيمة"
+        ],
+        [
+          "إعادة الرسم",
+          "`StateHasChanged()`",
+          "تلقائي عند تغيّر الحالة/الـprops",
+          "لا تستدعي دالة الرسم يدويًا — تغيّر الحالة هو اللي بيرسم"
+        ],
+        [
+          "خطأ في العرض",
+          "`<ErrorBoundary>`",
+          "class component / `react-error-boundary`",
+          "الـtry/catch حوالين JSX مش بيمسك أخطاء العرض"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② قواعد الـhooks — اللي بتفشل بصمت"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "hooks-rules.tsx — الأخطاء الأربعة الشائعة وإصلاحها",
+      "filename": "src/examples/hooks-rules.tsx",
+      "code": "import { useEffect, useRef, useState } from \"react\";\n\n// ❌ خطأ 1: hook داخل شرط/حلقة — الترتيب بيتغير بين الرسمات\nfunction BadConditional({ isAdmin }: { isAdmin: boolean }) {\n  // if (isAdmin) { const [a, setA] = useState(0); }  ← ممنوع\n  return <div />;\n}\n\n// ✅ الصح: نادِ كل الـhooks دائمًا، وغيّر المنطق لا عدد النداءات\nfunction GoodConditional({ isAdmin }: { isAdmin: boolean }) {\n  const [count, setCount] = useState(0);\n  return isAdmin ? <button onClick={() => setCount(count + 1)}>{count}</button> : null;\n}\n\n// ❌ خطأ 2: effect بلا dep فيه متغير متغير → حلقة لا نهائية\nfunction BadLoop() {\n  const [items, setItems] = useState<number[]>([]);\n  // useEffect(() => { setItems([...items, 1]); });  ← بلا deps: بيرسم → يعدّل → يرسم …\n  return <ul>{items.map((i) => <li key={i}>{i}</li>)}</ul>;\n}\n\n// ✅ الصح: deps صحيحة (أو لا تعدّل حالة غير مرتبطة بالـeffect)\nfunction GoodLoop() {\n  const [items, setItems] = useState<number[]>([1]);\n  const [add, setAdd] = useState(false);\n\n  useEffect(() => {\n    if (!add) return;\n    setItems((prev) => [...prev, prev.length + 1]);   // updater: بلا اعتماد على items في الـclosure\n    setAdd(false);\n  }, [add]);\n\n  return (\n    <div>\n      <button onClick={() => setAdd(true)}>أضف</button>\n      <ul>{items.map((i) => <li key={i}>{i}</li>)}</ul>\n    </div>\n  );\n}\n\n// ❌ خطأ 3: stale closure — الـeffect شاف قيمة قديمة\nfunction BadStale() {\n  const [count, setCount] = useState(0);\n\n  useEffect(() => {\n    const id = setInterval(() => {\n      // count هنا بقى 0 للأبد (من أول رسمة) — لأن deps فاضية\n      setCount(count + 1);\n    }, 1000);\n    return () => clearInterval(id);\n  }, []);\n\n  return <p>{count}</p>;\n}\n\n// ✅ الصح: updater function (أو ضيف count للـdeps مع إعادة إنشاء المؤقت)\nfunction GoodCounter() {\n  const [count, setCount] = useState(0);\n\n  useEffect(() => {\n    const id = setInterval(() => setCount((c) => c + 1), 1000);\n    return () => clearInterval(id);          // ✅ تنظيف إلزامي\n  }, []);\n\n  return <p className=\"tabular-nums\">{count}</p>;\n}\n\n// ❌ خطأ 4: تعديل الحالة مباشرة (mutation) — React مش هيرسم\nfunction BadMutation() {\n  const [, force] = useState(0);\n  const items = useRef<number[]>([]);\n  const add = () => {\n    items.current.push(1);       // تعديل بلا رسم — الواجهة مش هتتحدث\n    force((n) => n + 1);         // hack: بنجبر رسم يدويًا\n  };\n  return <button onClick={add}>{items.current.length}</button>;\n}\n\n// ✅ الصح: حالة جديدة دائمًا (immutable update)\nfunction GoodImmutable() {\n  const [items, setItems] = useState<number[]>([]);\n  return (\n    <button onClick={() => setItems((prev) => [...prev, 1])}>\n      {items.length}\n    </button>\n  );\n}\n\nexport { BadConditional, GoodConditional, BadLoop, GoodLoop, BadStale, GoodCounter, BadMutation, GoodImmutable };\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "أربع قواعد إن حفظتها تجنبت 80% من أخطاء React",
+      "md": "**① الـhooks بترتيب ثابت**: ممنوع في شرط/حلقة/دالة عادية. لو محتاج شرطًا، حط الشرط **داخل** الـhook أو حوالين الـJSX.\n**② الحالة غير قابلة للتعديل**: `setItems(prev => [...prev, x])` — مش `items.push(x)`.\n**③ كل effect له تنظيف**: اشتراك/مؤقت/مستمع/`AbortController` → `return () => cleanup()`، وإلا تسريب وسلوك مكرر (وده اللي `StrictMode` بيكشفه في التطوير).\n**④ الـsetter غير متزامن**: لو التحديث الجديد بيعتمد على القديم، استخدم الصيغة الدالة `setX(prev => …)` — وإلا هتقرأ قيمة قديمة (زي حقل عداد بيفضل ثابت)."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ useEffect: إمتى تستخدمه — وإمتى تكون بتعمل غلط"
+    },
+    {
+      "type": "table",
+      "caption": "قرار سريع: هل تحتاج effect؟",
+      "head": [
+        "الحالة",
+        "استخدم effect؟",
+        "البديل الصح"
+      ],
+      "rows": [
+        [
+          "جلب بيانات من API",
+          "**لا**",
+          "TanStack Query/RTK Query (8.1.2 ⑤) — بتديك كاش وتحميل/خطأ وإلغاء"
+        ],
+        [
+          "اشتقاق قيمة من props/state",
+          "**لا**",
+          "احسبها في نفس الرسمة (`const total = items.reduce(…)`)"
+        ],
+        [
+          "إعادة ضبط الحالة عند تغيّر prop",
+          "**لا**",
+          "`key` على المكوّن (يعيد إنشاءه) أو حساب مشتق"
+        ],
+        [
+          "الاستجابة لحدث مستخدم",
+          "**لا**",
+          "داخل الـhandler نفسه"
+        ],
+        [
+          "مؤقت/interval",
+          "**نعم**",
+          "effect + `clearInterval` في التنظيف"
+        ],
+        [
+          "الاشتراك في WebSocket/EventSource",
+          "**نعم**",
+          "effect + إغلاق في التنظيف (2.2.11)"
+        ],
+        [
+          "قراءة/تعديل DOM (مكتبة رسم، تمرير، تركيز)",
+          "**نعم**",
+          "effect + `ref`"
+        ],
+        [
+          "حفظ تفضيل في `localStorage`",
+          "نعم (بحذر)",
+          "effect على القيمة — أو اكتب وقت الحدث نفسه"
+        ],
+        [
+          "تحليل/تحليلات عند تغيير شاشة",
+          "نعم",
+          "effect مربوط بمفتاح المسار"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "useEffect الصحيح: اشتراك + تنظيف + إلغاء (نمط حقيقي)",
+      "filename": "src/hooks/useOrderUpdates.ts",
+      "code": "import { useEffect, useRef, useState } from \"react\";\n\n/**\n * يفتح EventSource لأحداث الطلب ويغلقها عند تفكيك المكوّن/تغيير المعرّف.\n * (الخادم: SSE من 2.2.11 — نفس النمط ينطبق على SignalR/WebSocket.)\n */\nexport function useOrderUpdates(orderId: string): {\n  lastStatus: string | null;\n  connected: boolean;\n  error: string | null;\n} {\n  const [lastStatus, setLastStatus] = useState<string | null>(null);\n  const [connected, setConnected] = useState(false);\n  const [error, setError] = useState<string | null>(null);\n  const sourceRef = useRef<EventSource | null>(null);\n\n  useEffect(() => {\n    if (!orderId) return;\n\n    const source = new EventSource(`/api/orders/${encodeURIComponent(orderId)}/events`);\n    sourceRef.current = source;\n\n    const onOpen = () => { setConnected(true); setError(null); };\n    const onStatus = (e: MessageEvent) => setLastStatus(String(e.data));\n    const onError = () => {\n      // EventSource بيعيد المحاولة تلقائيًا — ما نعرضش خطأ نهائي إلا لو أُغلق\n      setConnected(false);\n      if (source.readyState === EventSource.CLOSED) {\n        setError(\"انقطع الاتصال بالأحداث. أعد تحميل الصفحة للمتابعة.\");\n      }\n    };\n\n    source.addEventListener(\"open\", onOpen);\n    source.addEventListener(\"status\", onStatus as EventListener);\n    source.addEventListener(\"error\", onError);\n\n    // ✅ التنظيف: أغلق الاتصال وأزل المستمعين\n    return () => {\n      source.removeEventListener(\"open\", onOpen);\n      source.removeEventListener(\"status\", onStatus as EventListener);\n      source.removeEventListener(\"error\", onError);\n      source.close();\n      sourceRef.current = null;\n      setConnected(false);\n    };\n  }, [orderId]);   // ← dep صحيح: يُعاد الاشتراك عند تغيّر الطلب\n\n  return { lastStatus, connected, error };\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "`useEffectEvent`: قيم حديثة بلا إعادة اشتراك (React 19.2)",
+      "md": "المشكلة الكلاسيكية: عندك اشتراك لازم يفضل زي ما هو، بس الـcallback محتاج يقرأ **أحدث** قيمة (زي `theme` أو `onMessage`). الحل القديم: `ref` بيتحدّث في effect — والحل الجديد في React 19.2 هو **`useEffectEvent`**:\n\n~~~tsx\nconst onMessage = useEffectEvent((msg: Msg) => {\n  // بيقرأ أحدث props/state دائمًا، ولا يجب إضافته للـdeps\n  showToast(`${msg.text} (${theme})`);\n});\n\nuseEffect(() => {\n  const s = subscribe(onMessage);\n  return () => s.unsubscribe();\n}, []);   // ← اشتراك واحد، والقيم حديثة\n~~~\n\nالقواعد: `useEffectEvent` **ما ينفعش** يُنادى خارج الـeffects، ولا يُمرَّر كـprop. لو إصدارك أقدم، استخدم نمط `useRef` (احفظ أحدث قيمة في ref واقرأها من الـsubscription)."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ القوائم والمفاتيح والرسم الشرطي"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "lists-conditional.tsx — الأخطاء الأربعة في القوائم والشرط",
+      "filename": "src/examples/lists-conditional.tsx",
+      "code": "import { useState } from \"react\";\n\ninterface Item { id: string; name: string }\n\nexport function ListsDemo() {\n  const [items, setItems] = useState<Item[]>([\n    { id: \"a\", name: \"أ\" },\n    { id: \"b\", name: \"ب\" },\n    { id: \"c\", name: \"ج\" },\n  ]);\n  const [count, setCount] = useState(0);\n\n  return (\n    <div className=\"grid gap-4\">\n      {/* ✅ المفتاح = هوية ثابتة (id) */}\n      <ul>\n        {items.map((item) => (\n          <li key={item.id}>{item.name}</li>\n        ))}\n      </ul>\n\n      {/* ❌ المفتاح = index: عند الحذف من الأول بتتنقل الحالة/التركيز للعنصر الغلط */}\n      {/* {items.map((item, i) => <li key={i}>{item.name}</li>)} */}\n\n      {/* ❌ فخّ الرقم صفر: count && … بيطبع 0 عندما count = 0 */}\n      {/* {count && <p>لديك {count} عناصر</p>} */}\n\n      {/* ✅ حوّلها لمنطق منطقي */}\n      {count > 0 && <p>لديك {count} عناصر</p>}\n\n      {/* ✅ للبدائل الأربعة: ternary أو switch في دالة */}\n      {items.length === 0 ? <p>لا عناصر</p> : <p>{items.length} عنصر</p>}\n\n      <button type=\"button\" className=\"rounded-md border px-3 py-1.5\"\n              onClick={() => setItems((prev) => prev.slice(1))}>\n        احذف الأول\n      </button>\n\n      {/* ✅ قائمة قابلة للتعديل: مرّر الحالة للابن عبر props وليس index */}\n      <ul className=\"grid gap-2\">\n        {items.map((item) => (\n          <EditableRow\n            key={item.id}\n            name={item.name}\n            onRename={(name) =>\n              setItems((prev) => prev.map((x) => (x.id === item.id ? { ...x, name } : x)))\n            }\n          />\n        ))}\n      </ul>\n\n      <button type=\"button\" onClick={() => setCount((c) => c + 1)}>زد العداد</button>\n    </div>\n  );\n}\n\nfunction EditableRow({ name, onRename }: { name: string; onRename: (n: string) => void }) {\n  const [draft, setDraft] = useState(name);   // حالة محلية — آمنة لأن المكوّن مربوط بمفتاح ثابت\n  return (\n    <li className=\"flex gap-2\">\n      <input value={draft} onChange={(e) => setDraft(e.target.value)} className=\"rounded-md border px-2 py-1\" />\n      <button type=\"button\" className=\"rounded-md border px-2 py-1\" onClick={() => onRename(draft)}>\n        حفظ\n      </button>\n    </li>\n  );\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "React 19: النماذج بـActions (useActionState) + useOptimistic",
+      "filename": "src/components/OrderForm.tsx",
+      "code": "import { useActionState, useOptimistic, useState } from \"react\";\nimport { createOrder } from \"../api/orders\";\n\n/**\n * React 19: <form action={fn}> بتدي حالة الانتظار والنتيجة بلا useState/useEffect يدوية.\n * useActionState: [state, formAction, isPending]\n * - state: نتيجة آخر action (أو القيمة الابتدائية)\n * - formAction: تمرّرها لـ<form action>\n * - isPending: true أثناء التنفيذ (لتعطيل الزر وإظهار مؤشر)\n */\nexport function OrderForm() {\n  const [result, formAction, isPending] = useActionState(\n    async (_prev: { ok: boolean; message: string } | null, formData: FormData) => {\n      const sku = String(formData.get(\"sku\") ?? \"\").trim();\n      const qty = Number(formData.get(\"qty\") ?? 1);\n\n      if (!sku) return { ok: false, message: \"أدخل رمز المنتج.\" };\n      if (!Number.isInteger(qty) || qty < 1) return { ok: false, message: \"الكمية يجب أن تكون 1 أو أكثر.\" };\n\n      try {\n        await createOrder({ sku, qty });\n        return { ok: true, message: \"تم إنشاء الطلب.\" };\n      } catch (err) {\n        const e = err as { title?: string; detail?: string };\n        return { ok: false, message: e.title ?? e.detail ?? \"تعذر إنشاء الطلب.\" };\n      }\n    },\n    null,\n  );\n\n  return (\n    <form action={formAction} className=\"card grid gap-3\">\n      <label className=\"grid gap-1\">\n        <span className=\"text-sm font-medium\">رمز المنتج</span>\n        <input name=\"sku\" required className=\"rounded-md border px-3 py-2\" />\n      </label>\n      <label className=\"grid gap-1\">\n        <span className=\"text-sm font-medium\">الكمية</span>\n        <input name=\"qty\" type=\"number\" min={1} defaultValue={1}\n               className=\"rounded-md border px-3 py-2 tabular-nums\" />\n      </label>\n\n      <button type=\"submit\" disabled={isPending} className=\"btn-primary\">\n        {isPending ? \"جارٍ الإنشاء…\" : \"إنشاء الطلب\"}\n      </button>\n\n      {/* إعلان النتيجة لقارئ الشاشة (8.1.4) */}\n      {result ? (\n        <p role={result.ok ? \"status\" : \"alert\"}\n           className={result.ok ? \"text-sm text-success\" : \"text-sm text-danger\"}>\n          {result.message}\n        </p>\n      ) : null}\n    </form>\n  );\n}\n\n/**\n * useOptimistic: تحديث متفائل — بيرجع للحالة الأصلية تلقائيًا عند الفشل\n * (نفس فكرة 8.1.4 ⑤ بس بلا snapshot يدوي).\n */\nexport function CartList({ items }: { items: { sku: string; name: string }[] }) {\n  const [pendingAdd, setPendingAdd] = useState<string | null>(null);\n  const [optimisticItems, addOptimistic] = useOptimistic(\n    items,\n    (current, sku: string) => [...current, { sku, name: \"…\" }],\n  );\n\n  async function handleAdd(sku: string) {\n    setPendingAdd(sku);\n    addOptimistic(sku);                     // يظهر فورًا داخل <form action> أو transition\n    try {\n      await fetch(`/api/cart/${encodeURIComponent(sku)}`, { method: \"POST\", headers: { \"X-Csrf\": \"1\" } });\n    } finally {\n      setPendingAdd(null);\n    }\n  }\n\n  return (\n    <ul>\n      {optimisticItems.map((i) => <li key={i.sku}>{i.name}</li>)}\n      <button type=\"button\" onClick={() => void handleAdd(\"SKU-1\")} disabled={pendingAdd !== null}>\n        أضف للسلة\n      </button>\n    </ul>\n  );\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ السياق والأداء والتنظيم"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "theme-context.tsx — سياق ثيم مع provider تركيب",
+      "filename": "src/context/ThemeContext.tsx",
+      "code": "import { createContext, useContext, useMemo, useState, type ReactNode } from \"react\";\n\ntype Theme = \"light\" | \"dark\";\n\ninterface ThemeContextValue {\n  theme: Theme;\n  toggle: () => void;\n}\n\nconst ThemeContext = createContext<ThemeContextValue | null>(null);\n\nexport function ThemeProvider({ children }: { children: ReactNode }) {\n  const [theme, setTheme] = useState<Theme>(() => {\n    const saved = localStorage.getItem(\"theme\");\n    return saved === \"dark\" ? \"dark\" : \"light\";\n  });\n\n  // القيمة مُعاد بناؤها فقط عند تغيّر theme — وإلا كل مستهلك بيرسم مع كل رسمة للأب\n  const value = useMemo<ThemeContextValue>(() => ({\n    theme,\n    toggle: () => setTheme((t) => {\n      const next = t === \"dark\" ? \"light\" : \"dark\";\n      localStorage.setItem(\"theme\", next);\n      document.documentElement.dataset.theme = next;\n      return next;\n    }),\n  }), [theme]);\n\n  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;\n}\n\nexport function useTheme(): ThemeContextValue {\n  const ctx = useContext(ThemeContext);\n  if (!ctx) throw new Error(\"useTheme يجب أن يُستخدم داخل <ThemeProvider>\");\n  return ctx;\n}\n"
+    },
+    {
+      "type": "table",
+      "caption": "أداء React: 6 أدوات — وما تغيّر مع React Compiler",
+      "head": [
+        "الأداة",
+        "تحل إيه",
+        "مع React Compiler (1.0)",
+        "الفخّ"
+      ],
+      "rows": [
+        [
+          "**`key` صحيح**",
+          "صحّة القوائم والحالة",
+          "لسه إلزامي",
+          "index/مفقود"
+        ],
+        [
+          "**`React.lazy` + `Suspense`**",
+          "حجم الحزمة الأول (تقسيم)",
+          "لسه أساسي",
+          "تقسيم مفرط = طلبات كثيرة ومؤشرات تحميل"
+        ],
+        [
+          "**`useMemo`/`useCallback`**",
+          "تقليل إعادة الحساب/تغيير الهوية",
+          "**مترجم بيعملها تلقائيًا** في الغالب",
+          "إضافتها بلا قياس = تعقيد بلا فائدة"
+        ],
+        [
+          "**`memo`**",
+          "منع إعادة رسم مكوّن ثقيل",
+          "مترجم بيتعامل معاها",
+          "مقارنة props ضحلة — كائن جديد كل رسمة = بلا فائدة"
+        ],
+        [
+          "**`useTransition`/`startTransition`**",
+          "تحديثات ثقيلة بلا تجميد الواجهة",
+          "لسه مفيد",
+          "استخدامه لعمليات شبكة بدل حالات الحساب"
+        ],
+        [
+          "**`Virtualize` (مكتبة)**",
+          "قوائم ضخمة",
+          "لسه ضروري",
+          "— (البديل: `@tanstack/react-virtual`)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قاعدة الأداء: قِس قبل، وقِس بعد",
+      "md": "**①** React بيحذّر: «لا تُحسّن قبل القياس». استخدم **React DevTools → Profiler** وحدد المكوّن الغالي فعلًا.\n**②** مع React Compiler (مفعّل في القوالب الجديدة) أغلب `useMemo`/`useCallback` بقت غير ضرورية — **لو شغّال على نسخة 19.2+** راجع التوثيق قبل إضافتها يدويًا.\n**③** أهم تحسينين عمليًا: **تقسيم الحزم** (Suspense + lazy للصفحات) و**Virtualize** للقوائم الكبيرة — مش التذكير الدقيق.\n**④** إعادة الرسم مش مشكلة في حد ذاتها: مشكلة لو الرسمة غالية (حسابات/عناصر كثيرة) أو متكررة بلا داعٍ (timer بلا سبب)."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑥ التنظيم: هيكل مشروع React لمطور .NET"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "هيكل مقترح — Vertical Slice (4.2) لكن للواجهة",
+      "filename": "docs/react-structure.txt",
+      "code": "src/\n├── main.tsx                  # نقطة الدخول: createRoot + Providers\n├── app/\n│   ├── App.tsx               # التوجيه (router) + الـlayout\n│   ├── providers.tsx         # QueryClient · ThemeProvider · AuthProvider\n│   └── routes.tsx            # تعريف المسارات (lazy للصفحات الثقيلة)\n├── api/\n│   ├── client.ts             # العميل الموحّد (8.1.2)\n│   ├── types.ts              # الأنواع (مولّدة من OpenAPI حيث ممكن)\n│   └── orders.ts             # endpoints الخاصة بالطلبات\n├── features/                 # ← العمود الفقري: كل ميزة مجلد\n│   ├── orders/\n│   │   ├── OrdersPage.tsx\n│   │   ├── OrderForm.tsx\n│   │   ├── useOrders.ts      # query/mutation\n│   │   └── orders.test.tsx\n│   └── customers/…\n├── components/               # مكوّنات عامة قابلة لإعادة الاستخدام (Button · DataState)\n├── context/                  # Theme/Auth/Toast\n├── hooks/                    # hooks عامة (useDebounced · useOnline)\n├── styles/app.css            # Tailwind v4 (8.1.3)\n└── test/setup.ts             # Vitest + Testing Library + msw\n\n## قواعد\n1) الميزة الواحدة في مجلد واحد (features/orders) — مفيش مجلد global للـcomponents الخاصة بميزة.\n2) `components/` للمكوّنات العامة فقط (بلا معرفة بمجال الأعمال).\n3) كل استدعاء API عبر `api/` أو hook الميزة — ممنوع `fetch` موزّع في المكوّنات.\n4) كل صفحة lazy-loaded في الراوتر (تقسيم الحزم).\n5) الاختبار بجنب الكود (`*.test.tsx`) — والاختبارات على السلوك لا التنفيذ.\n6) لا أسرار ولا مفاتيح (8.1.1 ⑦) — كل شيء في الحزمة مكشوف.\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "إعداد المشروع + Router + الاختبار",
+      "filename": "terminal/react-setup.sh",
+      "code": "# 1) المشروع (Vite + React + TS)\nnpm create vite@latest shop-web -- --template react-ts\ncd shop-web\nnpm install\n\n# 2) التوجيه (React Router v7 — الوضع المكتبي/SPA)\nnpm install react-router\n\n# 3) طبقة البيانات (TanStack Query — تُستخدم في 8.2.4)\nnpm install @tanstack/react-query\nnpm install -D @tanstack/react-query-devtools\n\n# 4) الاختبار\nnpm install -D vitest @testing-library/react @testing-library/user-event @testing-library/jest-dom jsdom msw\nnpm pkg set scripts.test=\"vitest run\"\nnpm pkg set scripts.typecheck=\"tsc --noEmit\"\nnpm pkg set scripts.lint=\"eslint src --max-warnings=0\"\n\n# 5) Tailwind v4 (8.1.3)\nnpm install tailwindcss @tailwindcss/vite\n\n# 6) تشغيل\nnpm run dev\nnpm run typecheck\nnpm run test\n\n# ملاحظة: React 19 بيتطلب JSX transform جديد (افتراضي في قالب Vite الحالي) —\n# فمش محتاج import React في كل ملف.\n"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "app/routes.tsx + DataState بسيط (نفس فلسفة 8.1.4)",
+      "filename": "src/app/routes.tsx",
+      "code": "import { lazy, Suspense } from \"react\";\nimport { createBrowserRouter, RouterProvider } from \"react-router\";\n\n// كل صفحة في حزمة منفصلة — تحميل أولي أصغر\nconst OrdersPage = lazy(() => import(\"../features/orders/OrdersPage\"));\nconst CustomersPage = lazy(() => import(\"../features/customers/CustomersPage\"));\n\nfunction PageFallback() {\n  return (\n    <div className=\"grid gap-2 p-6\" aria-busy=\"true\">\n      <p className=\"sr-only\" role=\"status\">جارٍ تحميل الصفحة</p>\n      <div className=\"h-6 w-40 animate-pulse rounded bg-gray-200\" />\n      <div className=\"h-24 w-full animate-pulse rounded bg-gray-200\" />\n    </div>\n  );\n}\n\nconst router = createBrowserRouter([\n  {\n    path: \"/\",\n    // عناصر الـlayout (شريط تنقل) — تُحمَّل مرة واحدة\n    element: <AppLayout />,\n    children: [\n      { index: true, element: <Suspense fallback={<PageFallback />}><OrdersPage /></Suspense> },\n      { path: \"orders\", element: <Suspense fallback={<PageFallback />}><OrdersPage /></Suspense> },\n      { path: \"customers\", element: <Suspense fallback={<PageFallback />}><CustomersPage /></Suspense> },\n      { path: \"*\", element: <NotFound /> },\n    ],\n  },\n]);\n\nexport function App() {\n  return <RouterProvider router={router} />;\n}\n\n// مكوّنات بديلة صغيرة (توضيحية)\nfunction AppLayout() { return <main className=\"min-h-screen bg-surface p-6\" />; }\nfunction NotFound() { return <p className=\"p-6\">الصفحة غير موجودة — <a href=\"/\">رجوع</a></p>; }\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑦ عشر عادات تفصل مطور .NET الجاد عن «كتب حاجة React»"
+    },
+    {
+      "type": "table",
+      "caption": "أخطاء النماذج الذهنية — وما تفعله بدلًا منها",
+      "head": [
+        "#",
+        "العادة الخاطئة",
+        "الصحيح"
+      ],
+      "rows": [
+        [
+          "1",
+          "جلب البيانات في `useEffect` يدويًا",
+          "TanStack/RTK Query — كاش وإلغاء وتحليل حالات مجاني"
+        ],
+        [
+          "2",
+          "حالة مشتقة في state (`useState` ثم effect يحدّثها)",
+          "احسب المشتق في الرسمة"
+        ],
+        [
+          "3",
+          "`useEffect` بيزامن props مع state",
+          "`key` على المكوّن لإعادة الإنشاء"
+        ],
+        [
+          "4",
+          "تعديل الكائن/المصفوفة مباشرة",
+          "استبدال غير قابل للتعديل (`{...x}`, `[…arr]`)"
+        ],
+        [
+          "5",
+          "استدعاء الحدث في الـJSX: `onClick={save(id)}`",
+          "`onClick={() => save(id)}`"
+        ],
+        [
+          "6",
+          "مفتاح = index في قائمة قابلة للتعديل",
+          "معرّف ثابت"
+        ],
+        [
+          "7",
+          "تجاهل التنظيف في الـeffects",
+          "دالة تنظيف لكل اشتراك/مؤقت/AbortController"
+        ],
+        [
+          "8",
+          "`fetch` موزّع في المكوّنات",
+          "طبقة `api/` + hook لكل ميزة"
+        ],
+        [
+          "9",
+          "إخفاء عناصر حسب الدور كحماية",
+          "التفويض في الـAPI + إخفاء للعرض فقط (7.2.3)"
+        ],
+        [
+          "10",
+          "`useMemo`/`useCallback` في كل مكان",
+          "قِس أولًا؛ ومع React Compiler قلّلها"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أشرح `UI = f(state)` وأعرف إن إعادة الرسم = إعادة تنفيذ الدالة ثم تحديث الـDOM بالفرق.",
+        "أكتب مكوّنًا بـTSX بـprops للقراءة فقط وحدث `(v: T) => void` للأعلى.",
+        "أعرف الأربع قواعد الذهبية: ترتيب الـhooks · الحالة غير قابلة للتعديل · تنظيف الـeffects · الـsetter غير متزامن (استخدم updater).",
+        "أفرّق بين ما يحتاج `useEffect` وما لا يحتاجه (جلب/اشتقاق/أحداث = لا).",
+        "أستخدم `useRef` و`useEffectEvent` للقيم الحديثة بلا إعادة اشتراك.",
+        "أكتب قوائم بمفاتيح صحيحة، وأتجنب فخّ `count && …` مع القيمة 0، وأستخدم ternary/switch.",
+        "أستخدم React 19: `<form action>` + `useActionState` + `useOptimistic` بدل يدوي.",
+        "أبني سياقًا بـprovider + `useMemo` للقيمة وحماية الاستخدام بـ`useContext` مع خطأ واضح.",
+        "أقسّم الحزم بـ`React.lazy` + `Suspense`، وأفهم أثر React Compiler على `useMemo`/`useCallback`.",
+        "أرتّب المشروع بـfeatures + api + components، وأختبر بـVitest/Testing Library."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "8 أسئلة على React لمطور .NET.",
+      "questions": [
+        {
+          "q": "`onClick={() => { setCount(count + 1); setCount(count + 1); }}` — ما النتيجة؟",
+          "options": [
+            "+2",
+            "+1 لأن كلا الاستدعاءين قرأ نفس القيمة القديمة",
+            "خطأ ترجمة",
+            "صفر"
+          ],
+          "answer": 1,
+          "explain": "React بيجمّع التحديثات في نفس الحدث؛ كل استدعاء بـ`count` القديم فالناتج نفسه. الصحيح للتحديث المتسلسل: `setCount(c => c + 1)` مرتين."
+        },
+        {
+          "q": "أي مما يلي **لا** يحتاج `useEffect`؟",
+          "options": [
+            "فتح WebSocket وإغلاقه",
+            "مؤقت يعمل كل ثانية",
+            "اشتقاق إجمالي السلة من عناصرها",
+            "قراءة مستمع حدث على `window`"
+          ],
+          "answer": 2,
+          "explain": "القيم المشتقة تُحسب في نفس الرسمة (`items.reduce(…)`) — لا state ولا effect. الباقي مزامنة مع نظام خارجي فتحتاج effect + تنظيف."
+        },
+        {
+          "q": "لماذا `useEffect` بلا مصفوفة تبعيات (ولا تنظيف) مع `setState` داخلية قد تسبب حلقة لا نهائية؟",
+          "options": [
+            "لأن React بطيء",
+            "لأن الـeffect يعمل بعد كل رسمة، وتعديل الحالة يسبب رسمة جديدة → effect جديد… وهكذا",
+            "لأن setState محظور في effects",
+            "لأن المصفوفة الفارغة إلزامية"
+          ],
+          "answer": 1,
+          "explain": "بلا deps الـeffect بينفذ بعد كل رسمة؛ ولو عدّل حالة بلا شرط توقف داخل حلقة. الحل: deps صحيحة، أو شرط داخل الـeffect، أو — الأفضل — تحويل المنطق لمكانه الصحيح (handler/قيمة مشتقة/مكتبة بيانات)."
+        },
+        {
+          "q": "قائمة أدوات بأزرار حذف، والمفتاح هو `index`. ما الخطر؟",
+          "options": [
+            "لا خطر",
+            "React بيعيد استخدام حالة/عناصر DOM للموضع نفسه، فيتنقل التركيز/الحالة لعنصر آخر بعد الحذف",
+            "بطء في الأداء فقط",
+            "خطأ ترجمة"
+          ],
+          "answer": 1,
+          "explain": "index مش هوية — بعد حذف العنصر الأول، العنصر التاني بياخد index 0 فيورّث حالة/تركيز العنصر السابق. استخدم معرّفًا ثابتًا (`order.id`) زي `@key` في Blazor."
+        },
+        {
+          "q": "`{count && <Badge count={count} />}` عندما `count = 0` — ماذا يُعرض؟",
+          "options": [
+            "لا شيء",
+            "الرقم 0 نفسه (لأن 0 falsy وتُعاد قيمته)",
+            "خطأ",
+            "Badge بقيمة 0"
+          ],
+          "answer": 1,
+          "explain": "أشهر فخّ في JSX: `&&` بترجع المعامل الأيسر لو كان falsy — فبيظهر «0». استخدم `count > 0 && …` أو ternary."
+        },
+        {
+          "q": "ما فائدة `useActionState` في React 19؟",
+          "options": [
+            "إدارة الحالة العامة",
+            "<form action> بياخد دالة async، وتاخد [state, formAction, isPending] — فتحصل على نتيجة الانتظار والحالة بلا useEffect يدوي",
+            "بديل لـuseReducer فقط",
+            "لجلب البيانات"
+          ],
+          "answer": 1,
+          "explain": "دي طريقة React 19 للنماذج: الفورم بيعمل submit للـaction (server أو client)، و`isPending` بيديك مؤشر الانتظار، و`state` نتيجة آخر تنفيذ — فبتختفي الحاجة لـ`useState` للتحميل والخطأ."
+        },
+        {
+          "q": "بعد تفعيل React Compiler، ما موقف `useMemo`/`useCallback`؟",
+          "options": [
+            "ممنوعة",
+            "بتقل أهميتها لأن المترجم بيعمل تحسين التذكير تلقائيًا — فالأفضل قياس الحاجة قبل إضافتها يدويًا",
+            "إلزامية كما هي",
+            "بتشتغل في الإنتاج فقط"
+          ],
+          "answer": 1,
+          "explain": "React Compiler 1.0 (أكتوبر 2025) بيحلل المكوّنات ويضيف التذكير تلقائيًا. مع ذلك: لسه فيه حالات تحتاج تحكمًا يدويًا، والقاعدة العامة «قِس قبل ما تحسّن» (8.2.3 ⑤)."
+        },
+        {
+          "q": "مكوّن `OrderRow` استثمر `onSelect` في `onClick={onSelect(order.id)}`. ما المشكلة؟",
+          "options": [
+            "بطء",
+            "الاستدعاء بيحصل وقت الرسم مش عند الضغط — الحل `onClick={() => onSelect(order.id)}`",
+            "لا مشكلة",
+            "خطأ ترجمة"
+          ],
+          "answer": 1,
+          "explain": "`onClick={fn(x)}` بينفذ `fn` فورًا ويحط ناتجها (عادة undefined) كـhandler. لازم تمرر دالة: `() => fn(x)`. غلطة رقم 5 في جدول العادات."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "صفحة React كاملة + إصلاح أخطاء حقيقية.",
+      "items": [
+        {
+          "id": "s8-m2-l3-t1",
+          "title": "مهمة 1: صفحة طلبات React كاملة (بلا مكتبة بيانات)",
+          "md": "ابنِ صفحة طلبات في Vite + React 19 + TS: قائمة بحالات التحميل/الفراغ/الخطأ (بلا TanStack — عشان تفهم الأساس قبل 8.2.4)، بحث بـdebounce وإلغاء، نموذج إنشاء بـ`<form action>` + `useActionState`، وتفاصيل مع `ErrorBoundary`. استخدم Tailwind v4 من 8.1.3 ونفس مفاهيم 8.1.4.",
+          "criteria": [
+            "`tsconfig` صارم (من 8.1.1) و`eslint` بصفر تحذيرات + `npm run typecheck` و`npm test` ناجحان.",
+            "قائمة بمفاتيح `id` وأزرار حذف/تفاصيل — مع دليل إن الحالة/التركيز لا تنتقل بالخطأ (اختبار أو لقطة).",
+            "بحث: `useDebounced` بـ`useEffect` + تنظيف + `AbortController` وإلغاء الطلب السابق، و`AbortError` مش خطأ.",
+            "نموذج `<form action>` + `useActionState`: `isPending` بيعطّل الزر ويعرض «جارٍ الإنشاء»، ونتيجة النجاح/الفشل بـ`role=status`/`role=alert`.",
+            "`ErrorBoundary` حوالين منطقة المحتوى (class component أو `react-error-boundary`) مع زر إعادة ضبط.",
+            "**صفر** `useEffect` لجلب البيانات في أول تحميل — الجلب في hook واضح مع حالات (وده مقصود قبل TanStack).",
+            "3 اختبارات Vitest + Testing Library: حالة خطأ 403 · إرسال نموذج ناجح · بحث بيستدعي الـAPI مرة واحدة بعد debounce.",
+            "ملف `docs/react-vs-blazor.md`: 8 فروق من جدول الدرس بأمثلة من كودك."
+          ],
+          "hint": "اختبار الـdebounce: `vi.useFakeTimers()` + `await vi.advanceTimersByTimeAsync(300)` ثم تحقق من عدد الاستدعاءات. واختبار `useActionState`: `userEvent.type` ثم `userEvent.click` على submit، وانتظر النص الجديد بـ`findByRole` (React 19 بيعمل transitions فلازم `await`). ولو الـ`ErrorBoundary` مش بيمسك خطأ: تأكد إن الخطأ بيحصل **أثناء العرض** لا داخل event handler (أخطاء الـhandlers مش بتمسكها boundaries).",
+          "solution": "النتائج النموذجية: أول نسخة بتقع في فخّ الجلب في `useEffect` بلا إلغاء → استجابة قديمة بتكتب فوق الجديدة؛ والتجربة بتكشفها. تاني أكبر مشكلة: نموذج بـ`useState` لكل حقل ثم `onSubmit` يدوي — وReact 19 بيخليها أبسط بـ`action`. وفي الاختبارات، أكثر عقبة هي الانتظار الصحيح (transitions) — استخدم `findBy*` بدل `getBy*`. النتيجة المتوقعة: ~350 سطرًا موزعة على 6–8 ملفات، و3 اختبارات تعدي، وصفحة شبه مطابقة لسلوك نسخة Blazor من 8.2.2 — وده بيخلي الفرق بين التقنيتين واضحًا في ذهنك.",
+          "resources": [
+            "https://react.dev/learn",
+            "https://react.dev/reference/react/useActionState",
+            "https://testing-library.com/docs/react-testing-library/intro/",
+            "https://vitest.dev/guide/",
+            "https://reactrouter.com/"
+          ]
+        },
+        {
+          "id": "s8-m2-l3-t2",
+          "title": "مهمة 2: تشريح 4 مكوّنات فيها أخطاء (وامنع تكرارها بـlint)",
+          "md": "خد الأربع حالات الخاطئة من كود الدرس (`hooks-rules.tsx`: شرط حول hook · حلقة effect · stale closure · mutation) وأعد إنتاجها في مشروعك، وسجّل السلوك الفعلي (رسالة الخطأ/الواجهة المكسورة)، ثم أصلح كل واحدة واشرح المبدأ. وأضف قواعد ESLint تمنع تكرارها.",
+          "criteria": [
+            "4 تقارير: الحالة · العَرَض الفعلي (رسالة React في console أو سلوك UI مصوّر) · السبب · الإصلاح · المبدأ.",
+            "`hooks/rules-of-hooks` و`react-hooks/exhaustive-deps` مفعّلتان في ESLint — مع مثال على تحذير حقيقي ومحتواه.",
+            "إثبات أثر `StrictMode`: effect بينفذ مرتين في التطوير، وسلوكك **صحيح مع التنظيف** (لقطة/سجل).",
+            "مثال `useEffectEvent` (أو نمط `useRef`) بديلًا عن deps مضللة — مع شرح لماذا الاشتراك ما بيعادش.",
+            "اختبار يفشل قبل الإصلاح وينجح بعده (واحد على الأقل من الأربعة).",
+            "خلاصة نصف صفحة: أي اثنين من الأخطاء الأربعة شفتهم فعلًا في كود إنتاج/مشروع سابق؟"
+          ],
+          "hint": "استخدم `npx eslint --print-config src/file.tsx` للتأكد من تفعيل القواعد. ولو `react-hooks/exhaustive-deps` بيصرخ على دالة داخلية: لفّها في `useCallback` أو انقلها خارج المكوّن، أو استخدم `useEffectEvent` لو الحالة ده هو الصح. ولإثبات `StrictMode`: عدّاد في `console.log` داخل effect — هتشوف 2 في التطوير و1 في الإنتاج (بعد `npm run build && npm run preview`).",
+          "solution": "الأعراض النموذجية: (1) hook داخل شرط → «Rendered more hooks than during the previous render» أو ترتيب حالة غلط؛ (2) effect بلا deps مع setState → «Maximum update depth exceeded»؛ (3) stale closure → العداد بيفضل 0 أو القيمة القديمة (وده أخبثها لأنه **ما بيرميش خطأ**)؛ (4) mutation → الواجهة ما بتتحدثش. القاعدة العملية اللي بتطلع من التجربة: **أخطاء React الصامتة (stale closure/mutation) أغلى بكتير من اللي بترمي**، فالقواعد الآلية (ESLint + `strict` + React Compiler) مش رفاهية — هي اللي بتمسك الصامت. وأكتر فائدة مستدامة: تحويل الـ4 أنماط لاختبارات/قواعد في الريبو تمنع رجوعها.",
+          "resources": [
+            "https://react.dev/reference/rules",
+            "https://react.dev/learn/synchronizing-with-effects",
+            "https://react.dev/learn/you-might-not-need-an-effect",
+            "https://react.dev/reference/react/useEffectEvent",
+            "https://www.npmjs.com/package/eslint-plugin-react-hooks"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "React: التعلّم",
+          "url": "https://react.dev/learn"
+        },
+        {
+          "label": "React: قواعد React",
+          "url": "https://react.dev/reference/rules"
+        },
+        {
+          "label": "React: قد لا تحتاج إلى Effect",
+          "url": "https://react.dev/learn/you-might-not-need-an-effect"
+        },
+        {
+          "label": "React: useActionState",
+          "url": "https://react.dev/reference/react/useActionState"
+        },
+        {
+          "label": "React: useEffectEvent",
+          "url": "https://react.dev/reference/react/useEffectEvent"
+        },
+        {
+          "label": "React Router",
+          "url": "https://reactrouter.com/"
+        },
+        {
+          "label": "Testing Library",
+          "url": "https://testing-library.com/docs/react-testing-library/intro/"
+        },
+        {
+          "label": "eslint-plugin-react-hooks",
+          "url": "https://www.npmjs.com/package/eslint-plugin-react-hooks"
+        }
+      ]
+    }
+  ]
+}

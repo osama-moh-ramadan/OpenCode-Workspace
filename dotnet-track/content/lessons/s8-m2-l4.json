@@ -1,0 +1,515 @@
+{
+  "id": "s8-m2-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "بعد ما فهمت الأساس (8.2.3)، الخطوة العملية هي **طبقة بيانات منظمة** بدل `fetch` موزّع في المكوّنات: كاش · إعادة جلب · إلغاء · تحميل/خطأ · إبطال بعد الطفرة · وإعادة محاولة ذكية. وفي نفس الوقت: **مصادقة صحيحة** لم تطبّقها في 8.1.2 (نمط BFF) بشكل كامل في تطبيق React منفصل.\n\nالدرس ده بيعطيك **الخريطة الكاملة**: جدول قرار بين TanStack Query وRTK Query · إعداد RTK Query بالكامل (baseQuery بـrefresh وإلغاء وتحويل ProblemDetails) · العلامات (tags) والإبطال بعد الطفرة · حماية المسارات حسب الصلاحيات · والفرق العملي بين **BFF** (موصى به) و**OIDC من الـSPA بـPKCE** (لما مفيش خادم تملكه) — مع الكود والتحذيرات."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "طبقة بيانات (data layer)",
+          "def": "الطبقة المسؤولة عن جلب/كاش/تحديث بيانات الخادم — لا المكوّنات. الفكرة: كل مكوّن يسأل «عايز الطلبات» والطبقة تدير الباقي (مفتاح، كاش، إعادة جلب، إلغاء)."
+        },
+        {
+          "term": "RTK Query",
+          "def": "طبقة بيانات مدمجة في **Redux Toolkit**: `createApi` + `fetchBaseQuery` + endpoints + hooks مولّدة (`useGetOrdersQuery`) + **tags** للإبطال. مناسبة لو فريقك على Redux أو عايز codegen قوي من OpenAPI."
+        },
+        {
+          "term": "TanStack Query",
+          "def": "مكتبة كاش مستقلة عن إدارة الحالة (v5.104 في أكتوبر 2026): `useQuery`/`useMutation` + `queryKey` + `staleTime`/`gcTime` + `invalidateQueries`. أخف وأشيع في المشاريع الحديثة."
+        },
+        {
+          "term": "Tag-based invalidation",
+          "def": "نمط RTK: كل endpoint بيعلن `providesTags`، وكل mutation بتعلن `invalidatesTags` — فأي تغيير بيجبر الاستعلامات المرتبطة تعيد الجلب تلقائيًا. بديله في TanStack: `invalidateQueries({ queryKey })`."
+        },
+        {
+          "term": "codegen من OpenAPI",
+          "def": "توليد endpoints وأنواع من مستند OpenAPI 3.1 بتاع الـAPI (2.1.1) — يمنع أخطاء الأسماء ويخلي تغيير العقد يظهر كخطأ ترجمة."
+        },
+        {
+          "term": "BFF للمصادقة",
+          "def": "المتصفح بياخد **كوكي جلسة HttpOnly** فقط؛ الخادم يحمل التوكنات ويوكّل الطلبات. (نفس 8.1.2 — وده النمط الموصى به من RFC 10017)."
+        },
+        {
+          "term": "OIDC في الـSPA (public client)",
+          "def": "SPA بيعمل Authorization Code + **PKCE** بنفسه مع مزود الهوية، ويحمل access token قصير في الذاكرة. يُستخدم لما مفيش خادم تملكه — بقيود أمنية (8.1.2)."
+        },
+        {
+          "term": "Silent renew / refresh",
+          "def": "جلب access token جديد قبل انتهائه: في BFF بنداء `/auth/refresh` يقرأ كوكي الـrefresh · في SPA بـ`oidc-client-ts`/`msal-browser` (تجديد صامت + تدوير)."
+        },
+        {
+          "term": "Protected route",
+          "def": "مسار بيتطلب حالة مصادقة/دور. مهم: هو **تجربة مستخدم** — الحماية الحقيقية في الـAPI (7.2.3)."
+        },
+        {
+          "term": "Optimistic mutation",
+          "def": "تحديث الكاش محليًا قبل تأكيد الخادم (RTK: `onQueryStarted` + `updateQueryData`)، مع تراجع عند الفشل (pattern 8.1.4 ⑤)."
+        },
+        {
+          "term": "Polling / refetchInterval",
+          "def": "إعادة جلب دورية للبيانات شبه الحية القصيرة (حالة طلب) بدل WebSocket — أرخص تعقيدًا وأسوأ زمن استجابة (2.2.11 يقارن SSE/WebSocket)."
+        },
+        {
+          "term": "Error normalization",
+          "def": "تحويل كل فشل (HTTP/شبكة/انتهاء جلسة) لشكل واحد يفهمه UI — في RTK عبر `baseQuery` مخصص بيرجع `{ error }` من ProblemDetails."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① TanStack Query أو RTK Query؟"
+    },
+    {
+      "type": "table",
+      "caption": "المقارنة العملية — اختار واحد وامشِ",
+      "head": [
+        "المعيار",
+        "**TanStack Query v5**",
+        "**RTK Query**",
+        "ملاحظة"
+      ],
+      "rows": [
+        [
+          "الفلسفة",
+          "كاش لبيانات الخادم فقط (مش إدارة حالة عامة)",
+          "جزء من Redux Toolkit (بتستخدمه جوه store)",
+          "لو فريقك بلا Redux، TanStack أخف"
+        ],
+        [
+          "الحجم",
+          "~12KB gzip",
+          "~14KB + Redux",
+          "فرق بسيط عمليًا"
+        ],
+        [
+          "التوليد من OpenAPI",
+          "يدوي/بسيط (أنواع + fetcher)",
+          "**codegen قوي** (`@rtk-query/codegen-openapi`)",
+          "قوة RTK الحقيقية في المشاريع الكبيرة"
+        ],
+        [
+          "إبطال الكاش",
+          "`invalidateQueries({ queryKey })`",
+          "**tags** `providesTags`/`invalidatesTags`",
+          "tags أوضح للفرق الكبيرة"
+        ],
+        [
+          "DevTools",
+          "ممتازة (مخصصة)",
+          "Redux DevTools (مع كل الـstore)",
+          "الاتنان كافيان"
+        ],
+        [
+          "التكامل مع Blazor/SSR",
+          "دعم SSR/hydration ناضج",
+          "ممكن لكن أقل شيوعًا",
+          "لو عندك SSR، TanStack أسهل"
+        ],
+        [
+          "أشيع في السوق (2026)",
+          "**الأوسع** في مشاريع React الحديثة",
+          "شائع مع فرق Redux القائمة",
+          "لو بتبدأ من صفر: TanStack"
+        ],
+        [
+          "قرار الدرس",
+          "—",
+          "**نكتب RTKQuery** لأنه بيدّي أوضح مثال على تحويل الأخطاء وtags + codegen",
+          "والتطبيق يتنقل بينهما بسهولة"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② RTK Query: الإعداد الكامل (baseQuery + تحويل الأخطاء)"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "src/api/baseQuery.ts — ترويسات، كوكي، CSRF، تحويل ProblemDetails",
+      "filename": "src/api/baseQuery.ts",
+      "code": "import {\n  fetchBaseQuery,\n  type BaseQueryFn,\n  type FetchArgs,\n  type FetchBaseQueryError,\n} from \"@reduxjs/toolkit/query/react\";\nimport type { ApiError } from \"./types\";\n\n/** الترويسات الموحدة: كوكي الجلسة + دفاع CSRF (8.1.2). */\nconst rawBaseQuery = fetchBaseQuery({\n  baseUrl: import.meta.env.VITE_API_BASE ?? \"/api\",\n  credentials: \"include\",                 // نمط BFF: كوكي HttpOnly فقط\n  prepareHeaders: (headers) => {\n    headers.set(\"Accept\", \"application/json\");\n    headers.set(\"X-Csrf\", \"1\");           // ترويسة مطلوبة للطلبات المعدّلة\n    return headers;\n  },\n});\n\n/**\n * baseQuery مناسب للإنتاج:\n *   • يحوّل أي فشل إلى ApiError موحّد (شكل واحد للـUI).\n *   • عند 401: محاولة تجديد **مرة واحدة** ثم إعادة الطلب (single-flight — 8.1.2).\n *   • بلا تكرار لا نهائي: نمنع إعادة المحاولة لطلب التجديد نفسه.\n */\nexport const baseQueryWithReauth: BaseQueryFn<\n  string | FetchArgs,\n  unknown,\n  ApiError\n> = async (args, api, extraOptions) => {\n  let result = await rawBaseQuery(args, api, extraOptions);\n\n  if (result.error?.status === 401 && !isAuthEndpoint(args)) {\n    const refreshed = await tryRefresh();\n    if (refreshed) {\n      result = await rawBaseQuery(args, api, extraOptions);\n    }\n  }\n\n  if (result.error) {\n    return { error: normalizeError(result.error) };\n  }\n\n  return { data: result.data };\n};\n\n// إشارة مشتركة: طلبات متعددة فاشلة بـ401 → تجديد واحد فقط\nlet refreshPromise: Promise<boolean> | null = null;\n\nasync function tryRefresh(): Promise<boolean> {\n  refreshPromise ??= (async () => {\n    try {\n      const res = await fetch(\"/auth/refresh\", {\n        method: \"POST\",\n        credentials: \"include\",\n        headers: { \"X-Csrf\": \"1\" },\n        signal: AbortSignal.timeout(10_000),\n      });\n      return res.ok;\n    } catch {\n      return false;\n    } finally {\n      // نترك الإشارة تُصفَّر بعد دورة الحدث التالية\n      setTimeout(() => { refreshPromise = null; }, 0);\n    }\n  })();\n\n  const ok = await refreshPromise;\n  if (!ok) {\n    // في BFF: إعادة توجيه لتسجيل الدخول مع الرجوع لنفس المسار\n    // (الخادم يتحقق أن returnUrl نسبي — 8.1.2)\n    const back = encodeURIComponent(window.location.pathname + window.location.search);\n    window.location.assign(`/bff/login?returnUrl=${back}`);\n  }\n  return ok;\n}\n\nfunction isAuthEndpoint(args: string | FetchArgs): boolean {\n  const url = typeof args === \"string\" ? args : args.url;\n  return url.startsWith(\"/auth/\") || url.startsWith(\"/bff/\");\n}\n\n/** يحوّل خطأ fetchBaseQuery إلى ApiError (نفس الشكل في كل التطبيق). */\nexport function normalizeError(err: FetchBaseQueryError): ApiError {\n  // خطأ شبكة/إلغاء/مهلة: FetchBaseQueryError بـstatus === 'FETCH_ERROR' أو 'TIMEOUT_ERROR' أو 'CUSTOM_ERROR'\n  if (typeof err.status === \"string\") {\n    const isTimeout = err.status === \"TIMEOUT_ERROR\";\n    return {\n      status: 0,\n      title: isTimeout ? \"انتهت مهلة الاتصال\" : \"تعذر الوصول إلى الخادم\",\n      detail: isTimeout ? undefined : \"تحقق من الاتصال ثم أعد المحاولة.\",\n    };\n  }\n\n  const data = err.data as Partial<{\n    title: string; detail: string; traceId: string;\n    errors: Record<string, string[]>;\n  }> | undefined;\n\n  return {\n    status: err.status,\n    title: data?.title ?? defaultTitle(err.status),\n    detail: data?.detail,\n    correlationId: data?.traceId,\n    fieldErrors: data?.errors,\n  };\n}\n\nfunction defaultTitle(status: number): string {\n  if (status === 403) return \"ليست لديك صلاحية لهذا الإجراء\";\n  if (status === 404) return \"العنصر غير موجود\";\n  if (status === 409) return \"تعارض مع حالة أحدث — حدّث البيانات\";\n  if (status === 429) return \"طلبات كثيرة — حاول بعد قليل\";\n  if (status >= 500) return \"خطأ في الخادم\";\n  return `طلب غير ناجح (${status})`;\n}\n\n"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "src/api/shopApi.ts — createApi + endpoints + tags + تحويل النتائج",
+      "filename": "src/api/shopApi.ts",
+      "code": "import { createApi } from \"@reduxjs/toolkit/query/react\";\nimport { baseQueryWithReauth } from \"./baseQuery\";\nimport type { OrderDto, PageDto, CreateOrderRequest, ApiError } from \"./types\";\n\n/**\n * الـAPI الواحد للتطبيق: كل endpoint هنا، وكل hook مولّد منه.\n * لاحظ: tags بتمنع «الواجهة مش بتتحدث» — أشهر شكوى في التطبيقات اليدوية.\n */\nexport const shopApi = createApi({\n  reducerPath: \"shopApi\",\n  baseQuery: baseQueryWithReauth,\n  tagTypes: [\"Order\", \"Customer\", \"Cart\"],\n  keepUnusedDataFor: 60,        // ثوانٍ يُحتفظ بالكاش بعد آخر مستخدم\n  refetchOnFocus: false,        // فعّلها لو البيانات بتتغير كتير وبتحتاج تحديث عند الرجوع للتاب\n  refetchOnReconnect: true,     // عند عودة الشبكة أعد الجلب (8.1.4 offline)\n  endpoints: (builder) => ({\n    // ── قراءة ──────────────────────────────────────────────────────\n    getOrders: builder.query<PageDto<OrderDto>, { cursor?: string; q?: string }>({\n      query: ({ cursor, q }) => ({\n        url: \"orders\",\n        params: { limit: 20, ...(cursor ? { cursor } : {}), ...(q ? { q } : {}) },\n      }),\n      providesTags: (result) =>\n        result\n          ? [\n              ...result.items.map(({ id }) => ({ type: \"Order\" as const, id })),\n              { type: \"Order\" as const, id: \"LIST\" },\n            ]\n          : [{ type: \"Order\" as const, id: \"LIST\" }],\n      // دمج الصفحات لـ«تحميل المزيد» (cursor)\n      serializeQueryArgs: ({ endpointName, queryArgs }) =>\n        `${endpointName}(${queryArgs.q ?? \"\"})`,   // الكاش لكل نص بحث، وليس لكل cursor\n      merge: (current, incoming) => {\n        current.items.push(...incoming.items);\n        current.nextCursor = incoming.nextCursor;\n      },\n      forceRefetch: ({ currentArg, previousArg }) => currentArg?.cursor !== previousArg?.cursor,\n    }),\n\n    getOrder: builder.query<OrderDto, string>({\n      query: (id) => `orders/${encodeURIComponent(id)}`,\n      providesTags: (_r, _e, id) => [{ type: \"Order\", id }],\n    }),\n\n    // ── كتابة ──────────────────────────────────────────────────────\n    createOrder: builder.mutation<OrderDto, CreateOrderRequest>({\n      query: (body) => ({\n        url: \"orders\",\n        method: \"POST\",\n        body,\n        headers: {\n          // مفتاح idempotency: UUID جديد لكل عملية إرسال واحدة (5.2.5)\n          \"Idempotency-Key\": crypto.randomUUID(),\n        },\n      }),\n      invalidatesTags: [{ type: \"Order\", id: \"LIST\" }],   // ← القائمة هتتجلب تلقائيًا\n    }),\n\n    cancelOrder: builder.mutation<OrderDto, { id: string; reason: string }>({\n      query: ({ id, reason }) => ({\n        url: `orders/${encodeURIComponent(id)}/cancel`,\n        method: \"POST\",\n        body: { reason },\n        headers: { \"Idempotency-Key\": crypto.randomUUID() },\n      }),\n      // ✅ تحديث متفائل: نظهر الإلغاء فورًا ونتراجع لو فشل الخادم\n      async onQueryStarted({ id }, { dispatch, queryFulfilled }) {\n        const patch = dispatch(\n          shopApi.util.updateQueryData(\"getOrder\", id, (draft) => {\n            draft.status = \"cancelled\";\n          }),\n        );\n        try {\n          await queryFulfilled;\n        } catch {\n          patch.undo();          // rollback (8.1.4 ⑤)\n        }\n      },\n      invalidatesTags: (_r, _e, { id }) => [{ type: \"Order\", id }, { type: \"Order\", id: \"LIST\" }],\n    }),\n\n    // ── مصادقة (نمط BFF) ───────────────────────────────────────────\n    getMe: builder.query<{ isAuthenticated: boolean; name?: string; roles: string[] }, void>({\n      query: () => \"bff/user\",\n    }),\n  }),\n});\n\n/**\n * ربط النتيجة بـApiError موحّد للـUI.\n * (RTK بيرجع { error } بـApiError بفضل baseQuery المخصص.)\n */\nexport type QueryError = ApiError;\n\nexport const {\n  useGetOrdersQuery,\n  useGetOrderQuery,\n  useCreateOrderMutation,\n  useCancelOrderMutation,\n  useGetMeQuery,\n} = shopApi;\n"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "src/features/orders/OrdersPage.tsx — استخدام الـhooks + الحالات + التحميل التدريجي",
+      "filename": "src/features/orders/OrdersPage.tsx",
+      "code": "import { useState } from \"react\";\nimport { useGetOrdersQuery, useCancelOrderMutation } from \"../../api/shopApi\";\nimport type { ApiError } from \"../../api/types\";\nimport { useDebounced } from \"../../hooks/useDebounced\";\n\nexport function OrdersPage() {\n  const [query, setQuery] = useState(\"\");\n  const [cursor, setCursor] = useState<string | undefined>();\n  const debouncedQuery = useDebounced(query, 300);\n\n  // نفس الـhook بيدير: كاش + إعادة جلب عند الرجوع + إلغاء عند تغيير المفاتيح\n  const { data, error, isLoading, isFetching, refetch } = useGetOrdersQuery({\n    q: debouncedQuery,\n    cursor,\n  });\n\n  const [cancelOrder, { isLoading: isCancelling, error: cancelError }] = useCancelOrderMutation();\n\n  const apiError = (error ?? cancelError) as ApiError | undefined;\n\n  return (\n    <section className=\"grid gap-4\" aria-busy={isLoading || isFetching}>\n      <header className=\"flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between\">\n        <h1 className=\"text-xl font-semibold\">الطلبات</h1>\n        <button type=\"button\" className=\"rounded-md border px-3 py-1.5 text-sm\"\n                onClick={() => void refetch()} disabled={isFetching}>\n          {isFetching ? \"جارٍ التحديث…\" : \"تحديث\"}\n        </button>\n      </header>\n\n      <label className=\"grid gap-1\">\n        <span className=\"text-sm font-medium\">بحث</span>\n        <input type=\"search\" value={query} onChange={(e) => { setQuery(e.target.value); setCursor(undefined); }}\n               placeholder=\"رقم الطلب أو اسم العميل\"\n               className=\"rounded-md border px-3 py-2 text-sm\" />\n      </label>\n\n      <p className=\"sr-only\" role=\"status\" aria-live=\"polite\">\n        {isLoading ? \"جارٍ تحميل الطلبات\" : data ? `${data.items.length} طلبًا معروضًا` : \"\"}\n      </p>\n\n      {/* ① أول تحميل: skeleton */}\n      {isLoading ? (\n        <ul className=\"grid gap-2\" aria-hidden=\"true\">\n          {[0, 1, 2, 3].map((i) => (\n            <li key={i} className=\"card h-16 animate-pulse bg-gray-100\" />\n          ))}\n        </ul>\n      ) : null}\n\n      {/* ② خطأ */}\n      {apiError ? (\n        <div className=\"card grid gap-2 border-danger/30 bg-danger/5 py-6 text-center\" role=\"alert\">\n          <p className=\"font-medium text-danger\">{apiError.title}</p>\n          {apiError.detail ? <p className=\"text-sm text-ink-muted\">{apiError.detail}</p> : null}\n          <button type=\"button\" className=\"btn-primary mx-auto\" onClick={() => void refetch()}>\n            إعادة المحاولة\n          </button>\n          {apiError.correlationId ? (\n            <p className=\"text-xs text-ink-muted\">مرجع: <code dir=\"ltr\">{apiError.correlationId}</code></p>\n          ) : null}\n        </div>\n      ) : null}\n\n      {/* ③ فراغ */}\n      {!isLoading && !apiError && data && data.items.length === 0 ? (\n        <div className=\"card grid justify-items-center gap-2 py-10 text-center\">\n          <p className=\"font-medium\">{debouncedQuery ? \"لا نتائج مطابقة\" : \"لا طلبات بعد\"}</p>\n          {debouncedQuery ? (\n            <button type=\"button\" className=\"btn-primary mt-2\" onClick={() => setQuery(\"\")}>\n              مسح البحث\n            </button>\n          ) : null}\n        </div>\n      ) : null}\n\n      {/* ④ نجاح (مع إبقاء المحتوى أثناء إعادة الجلب) */}\n      {data && data.items.length > 0 ? (\n        <ul className={\"grid gap-2 \" + (isFetching ? \"opacity-70\" : \"\")}>\n          {data.items.map((order) => (\n            <li key={order.id} className=\"card flex items-center justify-between gap-3\">\n              <div className=\"min-w-0\">\n                <p className=\"truncate font-medium\" dir=\"ltr\">{order.id}</p>\n                <p className=\"text-sm text-ink-muted\">{order.status}</p>\n              </div>\n              <p className=\"tabular-nums text-sm\" dir=\"ltr\">{order.total} {order.currency}</p>\n              <button\n                type=\"button\"\n                className=\"rounded-md border px-3 py-1.5 text-sm\"\n                disabled={isCancelling || order.status === \"cancelled\"}\n                onClick={() => void cancelOrder({ id: order.id, reason: \"customer-request\" })}\n              >\n                إلغاء\n              </button>\n            </li>\n          ))}\n        </ul>\n      ) : null}\n\n      {/* ⑤ تحميل المزيد (cursor) */}\n      {data?.nextCursor ? (\n        <button type=\"button\" className=\"rounded-md border px-3 py-2 text-sm\"\n                disabled={isFetching}\n                onClick={() => setCursor(data.nextCursor ?? undefined)}>\n          {isFetching ? \"جارٍ التحميل…\" : \"تحميل المزيد\"}\n        </button>\n      ) : null}\n    </section>\n  );\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ المصادقة: BFF أو OIDC في الـSPA — والفرق العملي"
+    },
+    {
+      "type": "table",
+      "caption": "الخياران — ماذا يعني كل واحد في كود React",
+      "head": [
+        "الجانب",
+        "**BFF (موصى به)**",
+        "**OIDC في الـSPA (PKCE)**"
+      ],
+      "rows": [
+        [
+          "ما يحمله المتصفح",
+          "**كوكي `HttpOnly` فقط** — صفر توكنات في JS",
+          "access token قصير **في الذاكرة** + refresh في كوكي أو تجديد صامت"
+        ],
+        [
+          "مين بيعمل التبادل",
+          "الخادم (confidential client) — بسر محفوظ",
+          "المتصفح (public client) — بلا سر + PKCE"
+        ],
+        [
+          "الأثر عند XSS",
+          "يسرق جلسة كوكي (محدودة/قابلة للإبطال) — **لا يستطيع قراءة التوكنات**",
+          "يقدر يستخدم الـaccess token طول صلاحيته (وقد يصل للـrefresh لو مخزّن خطأ)"
+        ],
+        [
+          "CSRF",
+          "مطلوب دفاع (SameSite + ترويسة `X-Csrf`)",
+          "غير معرّض (لا كوكيز مصادقة)"
+        ],
+        [
+          "CORS",
+          "لا (نفس الأصل)",
+          "مطلوب إعداد على الـAPI + origins"
+        ],
+        [
+          "تجديد",
+          "`POST /auth/refresh` (كوكي) — نسمّيه في `baseQuery`",
+          "`oidc-client-ts`/`msal-browser` silent renew + تدوير"
+        ],
+        [
+          "الخروج",
+          "RP-initiated logout من الخادم",
+          "end session endpoint + مسح الحالة"
+        ],
+        [
+          "متى تختاره",
+          "**أي منتج جاد وتملك الخادم**",
+          "SPA بلا خادم خلفي · أو API مشترك بين عدة عملاء"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "auth/oidc.ts — OIDC في الـSPA بـPKCE (لما مفيش BFF) + التحذيرات",
+      "filename": "src/auth/oidc.ts",
+      "code": "import { UserManager, WebStorageStateStore, type User } from \"oidc-client-ts\";\n\n/**\n * ⚠️ هذا النمط للضرورة فقط (SPA بلا خادم) — الموصى به هو BFF (8.1.2).\n * القواعد الأمنية:\n *   1) Authorization Code + PKCE فقط (لا implicit — RFC 9700).\n *   2) access token **في الذاكرة** لا localStorage (8.1.2 ①).\n *   3) refresh token: إما في كوكي HttpOnly من الخادم أو تجديد صامت + تدوير.\n *   4) state/nonce مفعّلان + تحقق من ID token بمكتبة مصانة.\n *   5) أقل scopes ممكنة + audience مقيد.\n */\n\nconst config = {\n  authority: import.meta.env.VITE_OIDC_AUTHORITY as string,\n  client_id: import.meta.env.VITE_OIDC_CLIENT_ID as string,\n  redirect_uri: `${window.location.origin}/auth/callback`,\n  post_logout_redirect_uri: window.location.origin,\n  response_type: \"code\",\n  scope: \"openid profile shop.api\",\n  // PKCE: المكتبة بتولّد code_verifier/challenge تلقائيًا مع response_type=code\n  // والحالة بتُخزَّن في sessionStorage (آمن للحالة، مش للتوكنات)\n  userStore: new WebStorageStateStore({ store: window.sessionStorage }),\n  automaticSilentRenew: true,\n  // access token: مدة قصيرة من المزود (5–15 دقيقة)\n};\n\nexport const userManager = new UserManager(config);\n\n/** التوكن في الذاكرة فقط — يُفقد عند إعادة التحميل (وهذا مقصود). */\nlet inMemoryAccessToken: string | null = null;\n\nexport async function initAuth(): Promise<User | null> {\n  // معالجة الـcallback: المكتبة بتقرأ code من الـURL وتتبادله بـPKCE\n  const user = await userManager.signinRedirectCallback().catch(() => null);\n  if (user) {\n    inMemoryAccessToken = user.access_token;\n    // تنظيف الـURL بعد المعالجة\n    window.history.replaceState({}, document.title, \"/\");\n    return user;\n  }\n\n  const existing = await userManager.getUser();\n  if (existing && !existing.expired) {\n    inMemoryAccessToken = existing.access_token;\n    return existing;\n  }\n\n  return null;\n}\n\n/** تجديد صامت: المكتبة بتستخدم refresh token/iframe حسب إعداد المزود. */\nuserManager.events.addSilentRenewError((err) => {\n  console.warn(\"فشل التجديد الصامت — سيُطلب تسجيل الدخول\", err);\n  inMemoryAccessToken = null;\n});\n\nuserManager.events.addUserLoaded((user) => {\n  inMemoryAccessToken = user.access_token;\n});\n\nexport function getAccessToken(): string | null {\n  return inMemoryAccessToken;\n}\n\nexport async function login(): Promise<void> {\n  await userManager.signinRedirect();     // مع PKCE + state + nonce\n}\n\nexport async function logout(): Promise<void> {\n  inMemoryAccessToken = null;\n  await userManager.signoutRedirect();\n}\n\n/** يُستخدم في interceptor: يجيب توكنًا صالحًا أو يعيد null. */\nexport async function getValidToken(): Promise<string | null> {\n  const user = await userManager.getUser();\n  if (!user || user.expired) return null;\n  inMemoryAccessToken = user.access_token;\n  return inMemoryAccessToken;\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "auth/ProtectedRoute.tsx — حماية مسار (تجربة مستخدم، لا حماية بيانات)",
+      "filename": "src/auth/ProtectedRoute.tsx",
+      "code": "import type { ReactNode } from \"react\";\nimport { Navigate, useLocation } from \"react-router\";\nimport { useGetMeQuery } from \"../api/shopApi\";\n\n/**\n * حماية مسار: تجربة مستخدم.\n * ⚠️ ليست حماية بيانات: في SPA كل الكود والحزم متاحة — والـAPI هو من يفرض الصلاحيات (7.2.3).\n */\nexport function ProtectedRoute({\n  children,\n  requiredRole,\n}: {\n  children: ReactNode;\n  requiredRole?: string;\n}) {\n  const location = useLocation();\n  const { data, isLoading } = useGetMeQuery();\n\n  if (isLoading) {\n    return (\n      <div className=\"grid gap-2 p-6\" aria-busy=\"true\">\n        <p className=\"sr-only\" role=\"status\">جارٍ التحقق من الجلسة</p>\n        <div className=\"h-6 w-40 animate-pulse rounded bg-gray-200\" />\n      </div>\n    );\n  }\n\n  if (!data?.isAuthenticated) {\n    // نبعت المسار الحالي للرجوع إليه بعد الدخول (وتحقق الخادم من أنه نسبي!)\n    const back = encodeURIComponent(location.pathname + location.search);\n    return <Navigate to={`/bff/login?returnUrl=${back}`} replace />;\n  }\n\n  if (requiredRole && !data.roles.includes(requiredRole)) {\n    return (\n      <div className=\"card grid gap-2 py-10 text-center\" role=\"alert\">\n        <p className=\"font-medium\">ليس لديك صلاحية لهذه الصفحة</p>\n        <p className=\"text-sm text-ink-muted\">تواصل مع مسؤول النظام لمنحك الدور المطلوب.</p>\n      </div>\n    );\n  }\n\n  return <>{children}</>;\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "خمسة أخطاء مصادقة في تطبيقات React (كلها شائعة)",
+      "md": "**① توكن في `localStorage`** — OWASP صريحة: لا. (8.1.2)\n**② حماية صفحة كأنها حماية بيانات** — المستخدم يقدر يستدعي الـAPI أو يعدّل الحالة في المتصفح؛ التفويض في الخادم.\n**③ `client_secret` في حزمة الـSPA** — أي سر في المتصفح مكشوف (وهو الحال أيضًا في أي `VITE_*`).\n**④ `open redirect` في `returnUrl`** — لازم تحقق (مسارات نسبية فقط) وإلا المهاجم يستخدم موقعك للتحويل لموقع خبيث؛ الكود في 8.1.2 بيعمل ده على الخادم.\n**⑤ الاعتماد على `exp` من غير تجديد** — التوكن بتخلص فجأة وكل الطلبات 401؛ لازم single-flight refresh + تسجيل خروج نظيف."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ الاختبار والقياس: إزاي تختبر طبقة بيانات"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "title": "src/features/orders/OrdersPage.test.tsx — MSW + طبقة البيانات الحقيقية",
+      "filename": "src/features/orders/OrdersPage.test.tsx",
+      "code": "import { render, screen, waitFor } from \"@testing-library/react\";\nimport userEvent from \"@testing-library/user-event\";\nimport { Provider } from \"react-redux\";\nimport { setupServer } from \"msw/node\";\nimport { http, HttpResponse } from \"msw\";\nimport { describe, expect, it, beforeAll, afterAll, beforeEach } from \"vitest\";\nimport { makeStore } from \"../../app/store\";\nimport { OrdersPage } from \"./OrdersPage\";\n\n// MSW: نحاكي الشبكة على مستوى HTTP — فنختبر الكود الحقيقي (baseQuery + reauth + tags)\nconst server = setupServer(\n  http.get(\"/api/orders\", ({ request }) => {\n    const url = new URL(request.url);\n    if (url.searchParams.get(\"q\") === \"boom\") {\n      return HttpResponse.json(\n        { title: \"خطأ في الخادم\", status: 500, traceId: \"abc-123\" },\n        { status: 500, headers: { \"Content-Type\": \"application/problem+json\" } },\n      );\n    }\n    return HttpResponse.json({\n      items: [{ id: \"ORD-1\", status: \"paid\", total: \"199.99\", currency: \"EGP\", placedAt: \"2026-10-22T10:00:00Z\" }],\n      nextCursor: null,\n    });\n  }),\n);\n\nbeforeAll(() => server.listen({ onUnhandledRequest: \"error\" }));\nafterAll(() => server.close());\nbeforeEach(() => server.resetHandlers());\n\nfunction renderWithStore() {\n  return render(\n    <Provider store={makeStore()}>\n      <OrdersPage />\n    </Provider>,\n  );\n}\n\ndescribe(\"OrdersPage\", () => {\n  it(\"يعرض skeleton ثم الطلبات\", async () => {\n    renderWithStore();\n    expect(document.querySelector(\"[aria-hidden=true]\")).toBeTruthy();  // skeleton\n    expect(await screen.findByText(\"ORD-1\")).toBeInTheDocument();\n  });\n\n  it(\"يعرض خطأ 500 مع correlationId\", async () => {\n    renderWithStore();\n    await userEvent.type(screen.getByRole(\"searchbox\"), \"boom\");\n    // debounce 300ms\n    await waitFor(() => expect(screen.getByRole(\"alert\")).toBeInTheDocument(), { timeout: 2000 });\n    expect(screen.getByText(/abc-123/)).toBeInTheDocument();\n  });\n\n  it(\"يستدعي الـAPI مرة واحدة بعد debounce\", async () => {\n    let calls = 0;\n    server.events.on(\"request:start\", ({ request }) => {\n      if (new URL(request.url).pathname === \"/api/orders\") calls++;\n    });\n    renderWithStore();\n    await userEvent.type(screen.getByRole(\"searchbox\"), \"abc\");\n    await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2)); // أول جلب + بعد debounce\n    expect(calls).toBeLessThanOrEqual(3);\n  });\n});\n"
+    },
+    {
+      "type": "table",
+      "caption": "ستة قرارات إعداد في طبقة البيانات — وأثر كل قرار",
+      "head": [
+        "الإعداد",
+        "القيمة المقترحة",
+        "الأثر",
+        "متى تغيّرها"
+      ],
+      "rows": [
+        [
+          "`staleTime`",
+          "10–30 ثانية للقوائم الإدارية",
+          "أقل = بيانات أحدث وأكثر طلبات",
+          "بيانات حرجة (رصيد/مخزون): 0–5 ثوانٍ"
+        ],
+        [
+          "`gcTime` (TanStack) / `keepUnusedDataFor` (RTK)",
+          "60–300 ثانية",
+          "مدة بقاء الكاش بعد آخر استخدام",
+          "قوائم كبيرة: قصّرها لتوفير الذاكرة"
+        ],
+        [
+          "`refetchOnReconnect`",
+          "`true`",
+          "تحديث بعد انقطاع الشبكة",
+          "نادرًا ما تُعطّلها"
+        ],
+        [
+          "`refetchOnFocus`",
+          "`false` (افتراضي RTK) / قابل للضبط",
+          "تحديث عند الرجوع للتاب",
+          "لوحات تشغيل: `true`"
+        ],
+        [
+          "`refetchInterval`",
+          "بلا (أو 30–60 ثانية لحالة طلب)",
+          "بيانات شبه حية بلا تعقيد WebSocket",
+          "لا تستخدمه للحظات الحرجة — استخدم SSE/WebSocket (2.2.11)"
+        ],
+        [
+          "`polling` / retry",
+          "RTK: بلا retry افتراضيًا للـmutations",
+          "إعادة محاولة تلقائية للقراءات فقط (8.1.2)",
+          "لا تعيد محاولة POST بلا idempotency"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ من OpenAPI إلى types: العقد الحي"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "توليد العميل من OpenAPI على كل تغيير (مع RTK codegen)",
+      "filename": "scripts/gen-api.sh",
+      "code": "#!/usr/bin/env bash\n# يولّد أنواع/عميل من OpenAPI 3.1 (ASP.NET Core 10 — 2.1.1).\nset -euo pipefail\n\nAPI_URL=\"${API_URL:-http://localhost:8080}\"\nOUT=\"${OUT:-src/api/generated}\"\n\necho \"== 1) نزّل مستند OpenAPI ==\"\ncurl -fsS \"$API_URL/openapi/v1.json\" -o /tmp/openapi.json\njq -r '.openapi' /tmp/openapi.json | sed 's/^/version: /'\n\necho \"== 2) طريقتان — اختر واحدة ==\"\n\n# (أ) أنواع فقط — مع TanStack Query (أو fetch يدوي)\nnpx openapi-typescript /tmp/openapi.json -o \"$OUT/schema.d.ts\"\n\n# (ب) عميل + hooks كاملة — مع RTK Query\n#   ملف الإعداد: openapi.config.ts\ncat > openapi.config.ts <<'EOF'\nimport type { ConfigFile } from \"@rtk-query/codegen-openapi\";\n\nexport default {\n  schemaFile: \"/tmp/openapi.json\",\n  apiFile: \"../src/api/emptyApi.ts\",\n  apiImport: \"emptyApi\",\n  outputFile: \"../src/api/generated/shopApi.ts\",\n  exportName: \"shopApi\",\n  hooks: true,\n  filterEndpoints: (name) => !name.toLowerCase().includes(\"internal\"),\n} satisfies ConfigFile;\nEOF\n# npx @rtk-query/codegen-openapi openapi.config.ts\n\necho \"== 3) افحص الفرق (يفشل الـCI لو العقد تغيّر والعملاء لم يُحدَّثوا) ==\"\ngit diff --exit-code -- \"$OUT\" \\\n  || { echo \"✗ العقد تغيّر: شغّل gen-api.sh والتزم الناتج.\"; exit 1; }\n\necho \"تم ✅\"\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "قواعد العقد بين الواجهة والـAPI",
+      "md": "**① مستند OpenAPI هو المرجع** — لو الـAPI تغيّر وما اتولّدتش الأنواع، الـCI يفشل (زي contract tests في 5.3.2 بس للأنواع).\n**② لا تعدّل الملفات المولّدة** — أي تعديل بيضيع في التوليد التالي. لو محتاج تعديل، عدّل الـAPI أو أضف wrapper.\n**③ الأنواع المولّدة لا تعني التحقق** — البيانات الحرجة لسه محتاجة تحقق وقت التشغيل (8.1.1 ③).\n**④ استبعد endpoints داخلية** (`filterEndpoints`) — العميل العام ما يحتاجش كل شيء، وده بيقلل الحزمة.\n**⑤ الأخطاء موحّدة**: كل endpoints بترجع ProblemDetails (2.2.3) — و`baseQuery` بتحولها لشكل واحد."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أختار بين TanStack Query وRTK Query بمعايير (الفلسفة · التوليد · tags · السياق) لا بالذوق.",
+        "أكتب `baseQuery` مخصص يحوّل كل فشل إلى `ApiError` موحّد (شبكة/مهلة/HTTP/ProblemDetails).",
+        "أنفّذ تجديد جلسة **single-flight** عند 401 داخل قاعدة الطبقة، مع منع إعادة المحاولة لطلبات المصادقة.",
+        "أصمّم tags (`providesTags`/`invalidatesTags`) بحيث تتحدث القوائم والتفاصيل تلقائيًا بعد كل طفرة.",
+        "أضيف تحديثًا متفائلًا مع `patch.undo()` عند الفشل.",
+        "أربط الحالات الأربع (تحميل/خطأ/فراغ/نجاح) بمخرجات الـhook وأحافظ على المحتوى أثناء `isFetching`.",
+        "أفرّق بين BFF (كوكي HttpOnly) وOIDC في الـSPA (PKCE + توكن في الذاكرة) وأعرف مخاطر كل واحد.",
+        "أستخدم `oidc-client-ts`/`msal-browser` مع `<UserManager>` وقواعد: PKCE · بلا localStorage للتوكن · تدوير refresh.",
+        "أكتب `ProtectedRoute` كتجربة مستخدم وأعرف أن الحماية الفعلية في الـAPI.",
+        "أختبر طبقة البيانات بـMSW (شبكة محاكاة) وأتحقق من debounce/الأخطاء/correlationId.",
+        "أولّد الأنواع/العميل من OpenAPI وأفشل الـCI إن لم تتزامن."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "8 أسئلة على طبقة البيانات والمصادقة.",
+      "questions": [
+        {
+          "q": "ما وظيفة `baseQuery` المخصص في RTK Query؟",
+          "options": [
+            "تحديد شكل الـstore",
+            "تنفيذ الطلب لكل endpoints: ترويسات موحدة + تحويل كل فشل لـApiError + إمكانية تجديد الجلسة وإعادة المحاولة",
+            "توليد hooks",
+            "إدارة tags"
+          ],
+          "answer": 1,
+          "explain": "هو الطبقة اللي كل endpoint بتمر عليها — فأفضل مكان لـ: كوكي credentials · ترويسة CSRF · تحويل ProblemDetails · single-flight refresh على 401 · ومنع حلقات إعادة المحاولة. وده اللي بيخلي كل الفشل بشكل واحد في الـUI."
+        },
+        {
+          "q": "لماذا `providesTags` و`invalidatesTags` مهمة؟",
+          "options": [
+            "مهام إضافية للـreducers",
+            "بتربط endpoints القراءة بالكتابة فتتجلب القوائم/التفاصيل تلقائيًا بعد أي طفرة — تمنع «الواجهة مش بتتحدث»",
+            "لتقليل حجم الحزمة",
+            "بديل للكاش"
+          ],
+          "answer": 1,
+          "explain": "بدون tags، لازم تنادي refetch يدويًا في كل مكان وأي نسيان = بيانات قديمة. tags بتبني شبكة علاقات بين البيانات، فأي mutation بتعلن تأثرها وتعيد الجلب تلقائيًا (ونفس الفكرة في TanStack بـ`invalidateQueries`)."
+        },
+        {
+          "q": "المستخدم بيستخدم نمط BFF — ما الذي يُخزَّن في المتصفح؟",
+          "options": [
+            "access token في localStorage",
+            "كوكي جلسة HttpOnly فقط",
+            "refresh token في sessionStorage",
+            "التوكنات في IndexedDB"
+          ],
+          "answer": 1,
+          "explain": "BFF بيرجّع كوكي HttpOnly فقط، والتوكنات في الخادم. أي سكربت (XSS) ما يقدرش يقرأ الكوكي — فأثره محدود، والـCSRF بيتعالج بـSameSite + ترويسة مخصصة."
+        },
+        {
+          "q": "SPA بلا خادم خلفي: أين يوضع access token؟",
+          "options": [
+            "localStorage",
+            "sessionStorage",
+            "في الذاكرة (متغير/closure) مع تجديد صامت/تدوير refresh",
+            "في كوكي غير HttpOnly"
+          ],
+          "answer": 2,
+          "explain": "التوصية: access token في الذاكرة فقط، وrefresh token في كوكي HttpOnly من الخادم أو بالتدوير مع التجديد الصامت. localStorage مرفوض (8.1.2)، وسنقبل أن التحديث الكامل للصفحة يفقد الـaccess (ويُستعاد بالتجديد)."
+        },
+        {
+          "q": "ما دور `ProtectedRoute` في React؟",
+          "options": [
+            "حماية بيانات المستخدم",
+            "تجربة مستخدم (تحويل/رسالة) — والتفويض الحقيقي على الـAPI",
+            "تشفير الطلبات",
+            "إدارة التوكنات"
+          ],
+          "answer": 1,
+          "explain": "المستخدم يقدر يعدّل الحالة في المتصفح أو يستدعي الـAPI مباشرة. الحماية في الخادم: policies + فحص ملكية (2.2.1/7.2.3) + اختبارات (7.2.4). الواجهة بتخفي فقط."
+        },
+        {
+          "q": "أفضل إعداد لبيانات قائمة إدارية بتتغير بشكل متقطع؟",
+          "options": [
+            "`staleTime: 0` و`refetchInterval: 1s`",
+            "`staleTime` 10–30ث · و`refetchOnReconnect: true` · وتحديث يدوي/بعد الطفرات",
+            "بلا كاش",
+            "كاش أبدي"
+          ],
+          "answer": 1,
+          "explain": "البيانات الإدارية المتقطعة التغير لا تحتاج polling كل ثانية (حمل بلا فائدة)، لكن تحتاج كاشًا قصيرًا + إعادة جلب بعد الطفرات وعند عودة الشبكة. للحظات الحرجة استخدم SSE/WebSocket (2.2.11)."
+        },
+        {
+          "q": "أضفت `Idempotency-Key: crypto.randomUUID()` في mutation إنشاء. ما الفائدة؟",
+          "options": [
+            "تسريع الطلب",
+            "إعادة المحاولة الآمنة: لو الطلب اتنفذ فعلًا ولم يرجع الرد، الخادم ما ينشئش سجلًا مكررًا (5.2.5)",
+            "تشفير الجسم",
+            "منع CSRF"
+          ],
+          "answer": 1,
+          "explain": "الـkey بيثبت هوية العملية — فالخادم بيحفظ النتيجة ويُرجعها لو نفس الـkey تكرر. من غيرها، إعادة المحاولة (شبكة/انقطاع/مستخدم بيضغط تاني) بتعمل طلبين. لاحظ: لازم يتولد **لكل عملية** لا لكل طلب/رسمة."
+        },
+        {
+          "q": "MSW في اختبارات طبقة البيانات — ليه أفضل من mock للدوال؟",
+          "options": [
+            "أسرع دائمًا",
+            "لأنه يحاكي الشبكة فعليًا فتختبر baseQuery والأخطاء والـtags والـreauth الحقيقيين، لا دوالًا موهومة",
+            "لأنه إلزامي مع RTK",
+            "لأنه يقلل حجم الحزمة"
+          ],
+          "answer": 1,
+          "explain": "لو موّكت `fetch` أو دالة الجلب فقط، أنت بتختبر الوهم — ومش هتكشف إن `baseQuery` بيعيد المحاولة غلط أو إن الخطأ مش متحول. MSW بيقاطع على مستوى HTTP فيمر الكود الحقيقي بكل طبقاته."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "طبقة بيانات كاملة + مصادقة صحيحة.",
+      "items": [
+        {
+          "id": "s8-m2-l4-t1",
+          "title": "مهمة 1: طبقة بيانات واحدة تعمل مع الـAPI بتاعك",
+          "md": "نفّذ `baseQuery` + `createApi` (RTK) أو `queryClient` + hooks (TanStack) لمشروعك: تحويل أخطاء موحّد · single-flight refresh · tags/إبطال · تحديث متفائل واحد · ودمج صفحات للـcursor. اربطها بصفحة الطلبات واستبدل الـfetch اليدوي كله.",
+          "criteria": [
+            "`baseQuery` واحد يحوّل: شبكة/مهلة → `ApiError{status:0}` · HTTP → ProblemDetails (`title`/`detail`/`traceId`/`errors`) · ويستخدم `X-Csrf` + `credentials: include`.",
+            "تجديد جلسة **single-flight** عند 401 (3 طلبات متوازية → تجديد واحد) + **منع** إعادة المحاولة على `/auth/*`.",
+            "**≥ 4 endpoints**: قائمة (cursor) · تفاصيل · إنشاء (بـ`Idempotency-Key`) · إلغاء (بمتفائل + `undo`).",
+            "tags أو مفاتيح إبطال: بعد الإنشاء/الإلغاء، القائمة والتفاصيل بتتحدث **تلقائيًا** (بدليل: لقطة/سجل قبل وبعد).",
+            "الصفحة تستخدم `isLoading` (أول مرة) و`isFetching` (إعادة جلب مع إبقاء المحتوى) وتغطي الحالات الأربع + `correlationId` في الخطأ.",
+            "**صفر `fetch`** خارج `baseQuery`/طبقة الـAPI (فحص grep).",
+            "**≥ 5 اختبارات MSW**: نجاح · 403 · 500 مع traceId · 429 + `Retry-After` · إلغاء طلب عند تغيير البحث.",
+            "قرار مكتوب: TanStack أم RTK، وليه (بناءً على جدول الدرس + حالة فريقك)."
+          ],
+          "hint": "لو اخترت TanStack: `queryKey` لازم يشمل كل المدخلات (`['orders', {q, cursor}]`) + `queryFn` ياخد `signal` من الـcontext ويمرره لـfetch (إلغاء تلقائي). وللـsingle-flight استخدم promise مشترك (زي 8.1.2). ولـ`merge` في RTK: انتبه إن `serializeQueryArgs` لازم يستثني الـcursor وإلا كل صفحة بتاخد كاش منفصل. ولو عايز تشوف الطلبات: RTK DevTools أو `react-query-devtools`.",
+          "solution": "النتائج النموذجية: أكبر تحسن هو اختفاء `useEffect` الجلب اليدوي المكرر في كل صفحة (والتكرار بين الصفحات بينزل من ~60 سطرًا لكل صفحة إلى ~5). ثاني أكبر مكسب: tags بتمنع «الواجهة القديمة بعد الحفظ» بدون أي refetch يدوي. أصعب جزء: الـsingle-flight — أول محاولة بتدي 3 تجديدات متوازية ومستخدم مسجّل خروج عشوائيًا (لأن التدوير بيبطل التوكنات) وقاعدة 8.1.2 بتحلها. وفي الاختبارات: MSW بيخليك تكتشف إن `baseQuery` ما كانش بيحوّل `TIMEOUT_ERROR` — فالصفحة كانت بتعرض «غير معروف». النتيجة: طبقة واحدة، ~200 سطر، تغطي كل التطبيق، و5 اختبارات تعدي.",
+          "resources": [
+            "https://redux-toolkit.js.org/rtk-query/overview",
+            "https://redux-toolkit.js.org/rtk-query/usage/automated-refetching",
+            "https://tanstack.com/query/latest/docs/framework/react/overview",
+            "https://mswjs.io/docs/",
+            "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis/openapi"
+          ]
+        },
+        {
+          "id": "s8-m2-l4-t2",
+          "title": "مهمة 2: مصادقة كاملة (BFF أو SPA) + حماية + اختبارات",
+          "md": "نفّذ المصادقة: إما **BFF** (8.1.2) واستهلاكه من React (كوكي فقط + `/bff/user` + `/bff/login` + logout) أو **OIDC في الـSPA** (PKCE + توكن في الذاكرة + تجديد صامت) لو مفيش خادم تملكه. وأضف `ProtectedRoute` + اختبارات.",
+          "criteria": [
+            "**قرار مكتوب**: النمط المختار · لماذا · ما المخاطرة المقبولة · وكيف يُدار التجديد/الخروج.",
+            "في BFF: `credentials: include` فقط · لا توكنات في JS · `/bff/user` يرجع `isAuthenticated/name/roles` فقط · تسجيل خروج RP-initiated.",
+            "في SPA: `oidc-client-ts`/`msal-browser` + `response_type=code` + PKCE + state/nonce · access token **في الذاكرة** (لا `localStorage`) · تجديد صامت/تدوير · مسح شامل عند الخروج.",
+            "`ProtectedRoute` (+ حماية دور) مع حالة تحميل وتجربة واضحة + `returnUrl` **يُتحقق منه على الخادم** (مسارات نسبية).",
+            "**منع** أي سر في الحزمة: فحص وجود `client_secret` أو `api_key` داخل `src/` يرجع فاضي + مراجعة متغيرات `VITE_*` (كلها مكشوفة).",
+            "اختبارات MSW: مستخدم غير مصادَق → تحويل للدخول · مصادَق بلا دور → رسالة صلاحية · مصادَق بالدور → المحتوى · 401 أثناء الجلسة → تجديد ثم نجاح · فشل التجديد → تحويل.",
+            "تحقق يدوي مُوثّق: تسجيل دخول · تحديث صفحة (انتهاء access في SPA/استمرار جلسة في BFF) · انتهاء الجلسة بعد خمول · خروج.",
+            "قائمة تدقيق من 8.1.2 (تخزين التوكن/الالتفاف على redirect/تسجيل التوكنات) — كل بند: مطبّق أم لا ولماذا."
+          ],
+          "hint": "للتجربة السريعة في SPA: مزود محلي (Keycloak/Zitadel) بـ`docker compose` (2.2.8) أو Entra dev tenant. لو استخدمت BFF، اختبار «تحديث الصفحة» هو أهم اختبار: في BFF الجلسة مستمرة (كوكي)، وفي SPA الـaccess في الذاكرة بيضيع — فمحتاج `signinSilent` أو تجديد عند الإقلاع (ودي أهم فرق تجربة). واختبر حالة انتهاء الجلسة أثناء استخدام التطبيق (بدون refresh): 401 → تجديد → إعادة الطلب.",
+          "solution": "النتائج النموذجية: BFF أبسط تجربة (لا إدارة توكنات في الواجهة، ولا CORS، وتحديث الصفحة أوتوماتيك) وأقل مخاطرة عند XSS — والثمن: تحتاج خادمًا يملك الجلسة (وأنت بالفعل تملكه في مشروع .NET). نمط SPA (PKCE) مرن أكثر لكنه يحمّل الواجهة مسؤولية التجديد ويمنحك CORS وإدارة حالة مصادقة أكثر. والأخطاء اللي بتظهر غالبًا: `returnUrl` مفتوح بلا تحقق (خطر open redirect)، ونسيان `X-Csrf` على POST فيبدأ كل شيء بـ403، و`localStorage` لتوكن «مؤقتًا» — اللي بيرجع في المراجعة. النتيجة المطلوبة: **كل حالة مصادقة عندها اختبار**، ومفيش ولا سر في `src/`، وسيناريو الخروج يمسح كل شيء.",
+          "resources": [
+            "https://github.com/authts/oidc-client-ts",
+            "https://learn.microsoft.com/entra/identity-platform/v2-protocols-oidc",
+            "https://datatracker.ietf.org/doc/html/rfc9700",
+            "https://oauth.net/2/browser-based-apps/",
+            "https://mswjs.io/docs/",
+            "https://learn.microsoft.com/aspnet/core/security/authentication/"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "RTK Query: نظرة عامة",
+          "url": "https://redux-toolkit.js.org/rtk-query/overview"
+        },
+        {
+          "label": "RTK Query: الجلب التلقائي بـtags",
+          "url": "https://redux-toolkit.js.org/rtk-query/usage/automated-refetching"
+        },
+        {
+          "label": "RTK Query: codegen من OpenAPI",
+          "url": "https://redux-toolkit.js.org/rtk-query/usage/code-generation"
+        },
+        {
+          "label": "TanStack Query v5",
+          "url": "https://tanstack.com/query/latest/docs/framework/react/overview"
+        },
+        {
+          "label": "oidc-client-ts",
+          "url": "https://github.com/authts/oidc-client-ts"
+        },
+        {
+          "label": "MSW: محاكاة الشبكة في الاختبارات",
+          "url": "https://mswjs.io/docs/"
+        },
+        {
+          "label": "RFC 9700: أفضل ممارسات OAuth",
+          "url": "https://datatracker.ietf.org/doc/html/rfc9700"
+        },
+        {
+          "label": "ASP.NET Core: OpenAPI",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis/openapi"
+        }
+      ]
+    }
+  ]
+}

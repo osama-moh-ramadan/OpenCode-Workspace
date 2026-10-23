@@ -1,0 +1,408 @@
+{
+  "id": "s9-m2-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "الدرس ده بيغطي **الهياكل اللي تُسأل فعليًا** في مقابلات .NET: مكدس، طابور، قائمة مرتبطة، شجرة ثنائية (بحث + اجتياز). وفي كل هيكل: التنفيذ اليدوي (مطلوب في المقابلة) + النسخة الإنتاجية من .NET (اللي تستخدمها في الشغل).\n\n**الفرق بين الاتنين هو الفرق بين Junior وSenior**: تعرف تنفّذ يدويًا لتشرح المبدأ، وتستخدم `Stack<T>`/`PriorityQueue` في الإنتاج لأنها مختبرة وأسرع."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات",
+      "items": [
+        {
+          "term": "Stack (LIFO)",
+          "def": "آخر داخل أول خارج: `Push`/`Pop`/`Peek` بـO(1). الاستخدامات: undo · تراجع DFS · تقييم تعبيرات · call stack."
+        },
+        {
+          "term": "Queue (FIFO)",
+          "def": "أول داخل أول خارج: `Enqueue`/`Dequeue` بـO(1). الاستخدامات: BFS · معالجة مهام · مخازن مؤقتة."
+        },
+        {
+          "term": "Deque",
+          "def": "طابور ثنائي الطرفين — إضافة/حذف من الطرفين O(1). .NET ليس فيه `Deque<T>` جاهز؛ يُبنى بـ`LinkedList` أو مصفوفة دائرية."
+        },
+        {
+          "term": "Linked List",
+          "def": "عقد تشير لبعضها: إدراج/حذف O(1) عند معرفة العقدة، لكن الوصول O(n) وذاكرة أعلى (مؤشرات)."
+        },
+        {
+          "term": "BST (شجرة بحث ثنائية)",
+          "def": "كل يسار أصغر وكل يمين أكبر: بحث/إدراج/حذف O(h) حيث h ارتفاع الشجرة (O(log n) متوازنة، O(n) منحرفة)."
+        },
+        {
+          "term": "Traversal",
+          "def": "اجتياز الشجرة: **In-order** (يسار، جذر، يمين → مرتبة في BST) · Pre-order (جذر أولًا → تسلسل) · Post-order (جذر أخيرًا → حذف/تقييم) · Level-order (BFS بطابور)."
+        },
+        {
+          "term": "Height vs Depth",
+          "def": "الارتفاع = أطول مسار من الجذر لورقة · العمق = المسافة من الجذر لعقدة معينة."
+        },
+        {
+          "term": "Balanced tree",
+          "def": "شجرة تحفظ الارتفاع O(log n) (AVL/Red-Black). `SortedDictionary` في .NET = شجرة أحمر-أسود."
+        },
+        {
+          "term": "Heap / PriorityQueue",
+          "def": "شجرة ثنائية كاملة بقاعدة ترتيب جزئي: `Peek` O(1) و`Enqueue`/`Dequeue` O(log n). مثالية لـ«أهم/أرخص عنصر الآن»."
+        },
+        {
+          "term": "Monotonic stack",
+          "def": "مكدس يحفظ ترتيبًا رتيبًا — يحل مسائل «العنصر الأكبر التالي» و«أكبر مستطيل» بـO(n)."
+        },
+        {
+          "term": "Ring buffer",
+          "def": "مصفوفة دائرية ثابتة السعة للطوابير عالية المعدل — بلا تخصيص لكل عنصر."
+        },
+        {
+          "term": "Null ref في الشجرة",
+          "def": "أشهر مصدر `NullReferenceException`: عدم فحص `node.Left/Right` قبل التكرار — والاجتياز العودي يجب أن يبدأ بشرط الخروج."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① المكدس والطابور: التنفيذ + الاستخدام الصحيح"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Structures/StackAndQueue.cs — تنفيذ يدوي بمصفوفة (سريع، بلا LinkedList)",
+      "filename": "Algorithms/StackAndQueue.cs",
+      "code": "using System.Runtime.CompilerServices;\n\n/// <summary>مكدس على مصفوفة نامية — نفس فكرة Stack<T> الداخلي.</summary>\npublic sealed class IntStack\n{\n    private int[] _items = new int[16];\n    public int Count { get; private set; }\n    public bool IsEmpty => Count == 0;\n\n    public void Push(int value)\n    {\n        if (Count == _items.Length) Array.Resize(ref _items, _items.Length * 2);\n        _items[Count++] = value;\n    }\n\n    public int Pop()\n    {\n        if (Count == 0) throw new InvalidOperationException(\"المكدس فارغ\");\n        var v = _items[--Count];\n        _items[Count] = 0;            // يمنع احتجاز مراجع (مهم للأنواع المرجعية)\n        return v;\n    }\n\n    public int Peek() => Count > 0 ? _items[Count - 1]\n        : throw new InvalidOperationException(\"المكدس فارغ\");\n}\n\n/// <summary>طابور على مصفوفة دائرية — Dequeue بـO(1) بلا إزاحة.</summary>\npublic sealed class IntQueue\n{\n    private int[] _items = new int[16];\n    private int _head;          // موضع أول عنصر\n    private int _count;\n\n    public int Count => _count;\n    public bool IsEmpty => _count == 0;\n\n    public void Enqueue(int value)\n    {\n        if (_count == _items.Length) Grow();\n        _items[(_head + _count) % _items.Length] = value;\n        _count++;\n    }\n\n    public int Dequeue()\n    {\n        if (_count == 0) throw new InvalidOperationException(\"الطابور فارغ\");\n        var v = _items[_head];\n        _items[_head] = 0;\n        _head = (_head + 1) % _items.Length;\n        _count--;\n        return v;\n    }\n\n    private void Grow()\n    {\n        var next = new int[_items.Length * 2];\n        for (var i = 0; i < _count; i++) next[i] = _items[(_head + i) % _items.Length];\n        _items = next;\n        _head = 0;\n    }\n}\n\n/// <summary>أشهر سؤال مكدس: أقواس متوازنة — O(n).</summary>\npublic static class BracketValidator\n{\n    public static bool IsValid(ReadOnlySpan<char> s)\n    {\n        Span<char> stack = stackalloc char[Math.Min(s.Length, 256)];\n        var top = 0;\n\n        foreach (var c in s)\n        {\n            switch (c)\n            {\n                case '(' or '[' or '{':\n                    if (top == stack.Length) return false;   // عمق أكبر من الحد\n                    stack[top++] = c;\n                    break;\n                case ')' when top > 0 && stack[top - 1] == '(':\n                case ']' when top > 0 && stack[top - 1] == '[':\n                case '}' when top > 0 && stack[top - 1] == '{':\n                    top--;\n                    break;\n                case ')' or ']' or '}':\n                    return false;                             // إغلاق بلا فتح مطابق\n            }\n        }\n        return top == 0;\n    }\n}"
+    },
+    {
+      "type": "table",
+      "caption": "متطلبات تصميم صحيحة",
+      "head": [
+        "السؤال",
+        "الجواب",
+        "السبب"
+      ],
+      "rows": [
+        [
+          "`Stack<T>` أم `List<T>` كبديل؟",
+          "`Stack<T>`",
+          "واجهة واضحة تمنع العبث بالوسط + أداء مماثل"
+        ],
+        [
+          "`Queue<T>` على `List<T>` + `RemoveAt(0)`؟",
+          "❌ أبدًا",
+          "`RemoveAt(0)` = O(n) إزاحة لكل عنصر"
+        ],
+        [
+          "`LinkedList<T>` لـqueue؟",
+          "لا للحالات العادية",
+          "تخصيص عقدة لكل عنصر؛ `Queue<T>` أسرع وأقل ذاكرة"
+        ],
+        [
+          "`ConcurrentQueue<T>` متى؟",
+          "عند تعدد كتابة/قراءة",
+          "آمن بلا أقفال يدوية؛ وإلا فالسرعة أقل"
+        ],
+        [
+          "هل `Queue<T>` بالخيط الآمن؟",
+          "لا",
+          "يحتاج قفلًا أو `ConcurrentQueue`/`Channel<T>`"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "في الإنتاج: `Channel<T>` لا `Queue<T>`",
+      "md": "لو عايز طابور بين منتج ومستهلك داخل العملية، فـ`System.Threading.Channels.Channel<T>` هو الخيار الصحيح: حدود سعة (backpressure) · انتظار غير متزامن (`ReadAllAsync`) · إغلاق نظيف · أداء عالٍ.\n`ConcurrentQueue` مناسبة لتبادل بسيط بلا انتظار؛ `Queue` العادية ليست آمنة للخيوط."
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Structures/ChannelExample.cs — backpressure حقيقي",
+      "filename": "Algorithms/ChannelExample.cs",
+      "code": "using System.Threading.Channels;\n\npublic sealed class BoundedPipeline\n{\n    private readonly Channel<WorkItem> _channel = Channel.CreateBounded<WorkItem>(\n        new BoundedChannelOptions(capacity: 1_000)\n        {\n            FullMode = BoundedChannelFullMode.Wait,   // المنتج ينتظر بدل فقدان بيانات\n            SingleReader = true,\n            SingleWriter = false,\n        });\n\n    public ValueTask ProduceAsync(WorkItem item, CancellationToken ct) =>\n        _channel.Writer.WriteAsync(item, ct);\n\n    public async Task ConsumeAllAsync(Func<WorkItem, CancellationToken, Task> handle, CancellationToken ct)\n    {\n        await foreach (var item in _channel.Reader.ReadAllAsync(ct))\n            await handle(item, ct);\n    }\n\n    public void Complete() => _channel.Writer.TryComplete();\n}\n\npublic sealed record WorkItem(string Id, string Payload);\n\n/*\n لماذا `BoundedChannelFullMode.Wait`؟\n   لو المنتج أسرع من المستهلك، الطابور غير المحدود ينمو حتى يستهلك الذاكرة (OOM).\n   الانتظار يعطي backpressure حقيقيًا — وهو الأصح للأنظمة التي تعرف سقف قدرتها.\n*/"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② القائمة المرتبطة: متى تستحق فعلًا؟"
+    },
+    {
+      "type": "table",
+      "caption": "المقارنة (n = 100,000)",
+      "head": [
+        "العملية",
+        "`List<T>`",
+        "`LinkedList<T>`",
+        "الحكم"
+      ],
+      "rows": [
+        [
+          "إضافة للنهاية",
+          "O(1) amortized",
+          "O(1)",
+          "تعادل"
+        ],
+        [
+          "إدراج/حذف في الوسط",
+          "O(n) (إزاحة)",
+          "O(1) لو العقدة معروفة",
+          "LinkedList أفضل **فقط** مع مرجع للعقدة"
+        ],
+        [
+          "الوصول بالفهرس",
+          "O(1)",
+          "O(n)",
+          "List أفضل بكثير"
+        ],
+        [
+          "ذاكرة لكل عنصر",
+          "~4–8 بايت",
+          "~32+ بايت (Node + مؤشرات)",
+          "List أفضل 4×"
+        ],
+        [
+          "توافق مع GC",
+          "ممتاز (مصفوفة متصلة)",
+          "سيئ (عقد مبعثرة)",
+          "List أفضل للأداء العام"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Structures/LruCache.cs — الحالة الوحيدة اللي LinkedList تستحق فيها",
+      "filename": "Algorithms/LruCache.cs",
+      "code": "/// <summary>\n/// LRU Cache = Dictionary + LinkedList — O(1) لكل عملية.\n/// هنا LinkedList ضرورية: نحتاج حذف عقدة **بمرجع** بلا بحث.\n/// </summary>\npublic sealed class LruCache<TKey, TValue> where TKey : notnull\n{\n    private readonly int _capacity;\n    private readonly Dictionary<TKey, LinkedListNode<Entry>> _map;\n    private readonly LinkedList<Entry> _order = new();   // الأحدث في الرأس\n\n    public LruCache(int capacity)\n    {\n        if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));\n        _capacity = capacity;\n        _map = new Dictionary<TKey, LinkedListNode<Entry>>(capacity);\n    }\n\n    public TValue? Get(TKey key)\n    {\n        if (!_map.TryGetValue(key, out var node)) return default;\n\n        // انقله للرأس لأنه صار «مستخدمًا حديثًا»\n        _order.Remove(node);\n        _order.AddFirst(node);\n        return node.Value.Value;\n    }\n\n    public void Set(TKey key, TValue value)\n    {\n        if (_map.TryGetValue(key, out var node))\n        {\n            node.Value = node.Value with { Value = value };\n            _order.Remove(node);\n            _order.AddFirst(node);\n            return;\n        }\n\n        if (_map.Count == _capacity)\n        {\n            var lru = _order.Last!;          // الأقدم\n            _order.RemoveLast();\n            _map.Remove(lru.Value.Key);\n        }\n\n        var added = _order.AddFirst(new Entry(key, value));\n        _map[key] = added;\n    }\n\n    private readonly record struct Entry(TKey Key, TValue Value);\n}"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "متى تستخدم `LinkedList` في الإنتاج",
+      "md": "**①** محتاج مرجع عقدة صريح (LRU · قوائم تشغيل) · **②** إدخال/حذف متكرر في الوسط **وأنت تملك العقدة** · **③** دمج قوائم.\nغير ذلك: `List<T>` أفضل في كل شيء تقريبًا (تجمّع الذاكرة وأداء الـcache).\n**قاعدة:** لو مش عارف ليه تستخدم LinkedList، فأنت مش محتاجها."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ الشجرة الثنائية: البحث والاجتياز"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Trees/BinaryTree.cs — إدراج + 4 اجتيازات + عمليات كلاسيكية",
+      "filename": "Algorithms/BinaryTree.cs",
+      "code": "public sealed class TreeNode(int value)\n{\n    public int Value { get; init; } = value;\n    public TreeNode? Left { get; set; }\n    public TreeNode? Right { get; set; }\n}\n\npublic sealed class BinarySearchTree\n{\n    public TreeNode? Root { get; private set; }\n\n    // ── إدراج متكرر: O(h) ──────────────────────────────────────────\n    public void Insert(int value) => Root = Insert(Root, value);\n\n    private static TreeNode Insert(TreeNode? node, int value)\n    {\n        if (node is null) return new TreeNode(value);\n        if (value < node.Value) node.Left = Insert(node.Left, value);\n        else if (value > node.Value) node.Right = Insert(node.Right, value);\n        return node;                       // القيمة موجودة ⇒ لا تكرار\n    }\n\n    public bool Contains(int value)\n    {\n        var node = Root;\n        while (node is not null)                 // بلا عودية: أقل ثابتًا وآمن\n        {\n            if (value == node.Value) return true;\n            node = value < node.Value ? node.Left : node.Right;\n        }\n        return false;\n    }\n\n    // ── الاجتيازات ────────────────────────────────────────────────\n    public List<int> InOrder()   { var r = new List<int>(); InOrder(Root, r); return r; }\n    public List<int> PreOrder()  { var r = new List<int>(); PreOrder(Root, r); return r; }\n    public List<int> PostOrder() { var r = new List<int>(); PostOrder(Root, r); return r; }\n\n    private static void InOrder(TreeNode? n, List<int> acc)\n    {\n        if (n is null) return;               // ✅ شرط الخروج أولًا\n        InOrder(n.Left, acc);\n        acc.Add(n.Value);\n        InOrder(n.Right, acc);\n    }\n\n    private static void PreOrder(TreeNode? n, List<int> acc)\n    {\n        if (n is null) return;\n        acc.Add(n.Value);\n        PreOrder(n.Left, acc);\n        PreOrder(n.Right, acc);\n    }\n\n    private static void PostOrder(TreeNode? n, List<int> acc)\n    {\n        if (n is null) return;\n        PostOrder(n.Left, acc);\n        PostOrder(n.Right, acc);\n        acc.Add(n.Value);\n    }\n\n    /// <summary>Level-order (BFS) بطابور — تُستخدم لطباعة الشجرة بالطبقات.</summary>\n    public IReadOnlyList<IReadOnlyList<int>> LevelOrder()\n    {\n        var result = new List<IReadOnlyList<int>>();\n        if (Root is null) return result;\n\n        var queue = new Queue<TreeNode>();\n        queue.Enqueue(Root);\n\n        while (queue.Count > 0)\n        {\n            var level = new List<int>();\n            for (var i = queue.Count; i > 0; i--)     // عدد طبقة كامل\n            {\n                var n = queue.Dequeue();\n                level.Add(n.Value);\n                if (n.Left is not null) queue.Enqueue(n.Left);\n                if (n.Right is not null) queue.Enqueue(n.Right);\n            }\n            result.Add(level);\n        }\n        return result;\n    }\n\n    /// <summary>الارتفاع: أقصى عمق — O(n).</summary>\n    public int Height() => Height(Root);\n    private static int Height(TreeNode? n) =>\n        n is null ? 0 : 1 + Math.Max(Height(n.Left), Height(n.Right));\n\n    /// <summary>هل الشجرة متوازنة؟ (|فرق الارتفاع| ≤ 1 في كل عقدة) — O(n).</summary>\n    public bool IsBalanced() => Check(Root) != -1;\n\n    private static int Check(TreeNode? n)\n    {\n        if (n is null) return 0;\n        var l = Check(n.Left);\n        if (l == -1) return -1;\n        var r = Check(n.Right);\n        if (r == -1) return -1;\n        if (Math.Abs(l - r) > 1) return -1;\n        return 1 + Math.Max(l, r);\n    }\n\n    /// <summary>أقل قيمة (أقصى يسار) وأكبر قيمة (أقصى يمين) — O(h).</summary>\n    public int? Min()\n    {\n        if (Root is null) return null;\n        var n = Root;\n        while (n.Left is not null) n = n.Left;\n        return n.Value;\n    }\n\n    /// <summary>الحذف — أصعب عملية في BST (3 حالات).</summary>\n    public void Remove(int value) => Root = Remove(Root, value);\n\n    private static TreeNode? Remove(TreeNode? node, int value)\n    {\n        if (node is null) return null;\n        if (value < node.Value) { node.Left = Remove(node.Left, value); return node; }\n        if (value > node.Value) { node.Right = Remove(node.Right, value); return node; }\n\n        // ① بلا أطفال أو طفل واحد\n        if (node.Left is null) return node.Right;\n        if (node.Right is null) return node.Left;\n\n        // ② طفلان: استبدل بأصغر قيمة في اليمين ثم احذفها\n        var successor = node.Right;\n        while (successor.Left is not null) successor = successor.Left;\n        return new TreeNode(successor.Value)\n        {\n            Left = node.Left,\n            Right = Remove(node.Right, successor.Value),\n        };\n    }\n}"
+    },
+    {
+      "type": "table",
+      "caption": "اجتياز أم آخر — أي واحد لأي غرض",
+      "head": [
+        "الغرض",
+        "الاجتياز",
+        "السبب"
+      ],
+      "rows": [
+        [
+          "ترتيب تصاعدي في BST",
+          "In-order",
+          "يسار → جذر → يمين يعطي ترتيبًا"
+        ],
+        [
+          "نسخ/تسلسل الشجرة",
+          "Pre-order",
+          "الجذر أولًا يُنشئ الشجرة عند إعادة البناء"
+        ],
+        [
+          "حذف/تقييم تعبير",
+          "Post-order",
+          "الأبناء قبل الأب"
+        ],
+        [
+          "الطبقات/أقصر عدد حواف",
+          "Level-order (BFS)",
+          "طابور يضمن الزيارة بالطبقات"
+        ],
+        [
+          "أقصى عمق/مسار",
+          "DFS (أي ترتيب)",
+          "بسيط بالعودية أو مكدس"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "مصائد الشجرة في المقابلة",
+      "md": "**① نسيان `null` check** → `NullReferenceException` فوري.\n**② عودية على شجرة منحرفة (10⁵ عقدة)** → `StackOverflowException` **لا يُلتقط**. الحل: نسخة تكرارية بمكدس صريح.\n**③ الخلط بين الارتفاع والعمق** — عرّفهما قبل الكود.\n**④ `BST` غير متوازنة = أسوأ من القائمة** (O(n) بحث) — اذكر ذلك قبل أن يسألوا.\n**⑤ في .NET الإنتاج: `SortedDictionary` (أحمر-أسود) أو `SortedSet`** — لا تكتب BST بنفسك إلا للتعلم/المقابلة."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "تنفّذ `Stack`/`Queue` على مصفوفة وتشرح لماذا `RemoveAt(0)` ممنوع.",
+        "تكتب `Queue` دائرية (ring buffer) وتشرح `%` في الحساب.",
+        "تعرف أن `Queue<T>` ليست آمنة للخيوط وتختار `Channel<T>`/`ConcurrentQueue`.",
+        "تفهم `BoundedChannelFullMode.Wait` كـbackpressure.",
+        "تستخدم `LinkedList` فقط مع مرجع عقدة (LRU) وتشرح ثمنها.",
+        "تنفّذ BST بإدراج/بحث/حذف (3 حالات) وتشرح التعقيد بدلالة الارتفاع.",
+        "تكتب 4 اجتيازات وتعرف استخدام كل واحد.",
+        "تفرّق بين الارتفاع والعمق وتكتب فحص التوازن O(n).",
+        "تستخدم `SortedDictionary`/`PriorityQueue` في الإنتاج بدل كتابة شجرة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "7 أسئلة.",
+      "questions": [
+        {
+          "q": "لماذا `List<T>.RemoveAt(0)` ممنوع كتنفيذ طابور؟",
+          "options": [
+            "لا يعمل",
+            "لأنه O(n): يزيح كل العناصر — الطابور يصبح O(n²) لإفراغه",
+            "يستهلك ذاكرة",
+            "يفقد الترتيب"
+          ],
+          "answer": 1,
+          "explain": "الإزاحة المباشرة لكل عنصر تجعل n عملية Dequeue = O(n²). `Queue<T>` بمصفوفة دائرية تجعلها O(1). هذه من أشهر أخطاء الأداء في كود إنتاجي حقيقي."
+        },
+        {
+          "q": "ما أفضل بنية لـ«أعطني أرخص 10 طلبات» مع إضافة مستمرة؟",
+          "options": [
+            "`List` + `Sort` كل مرة",
+            "`PriorityQueue` (heap) بحجم 10",
+            "`Dictionary`",
+            "`LinkedList`"
+          ],
+          "answer": 1,
+          "explain": "`PriorityQueue` (min-heap) بحجم 10: كل إضافة O(log 10) = O(1)، واستخراج الأرخص O(log n). الفرز المتكرر O(n log n) لكل عملية — أسوأ بمرات."
+        },
+        {
+          "q": "اجتياز يعطي القيم مرتّبة في BST هو:",
+          "options": [
+            "Pre-order",
+            "In-order",
+            "Post-order",
+            "Level-order"
+          ],
+          "answer": 1,
+          "explain": "In-order (يسار، جذر، يمين) يزور القيم بترتيب تصاعدي في BST صحيحة. لهذا يُستخدم للتحقق من صحة الشجرة أو تحويلها لقائمة مرتّبة."
+        },
+        {
+          "q": "ما تعقيد البحث في BST منحرفة (كل إدخال أكبر من السابق)؟",
+          "options": [
+            "O(1)",
+            "O(log n)",
+            "O(n)",
+            "O(n log n)"
+          ],
+          "answer": 2,
+          "explain": "الشجرة تتحول لقائمة مرتبطة فعليًا، والبحث يصبح خطيًا. لذلك تُستخدم الأشجار المتوازنة (أحمر-أسود في `SortedDictionary`) في الإنتاج."
+        },
+        {
+          "q": "`LinkedList` مقابل `List` لإدراج 10,000 عنصر في المنتصف مع معرفة الموضع:",
+          "options": [
+            "LinkedList أسرع دائمًا",
+            "List أسرع عمليًا (تجمّع ذاكرة + إزاحة memmove سريعة) رغم O(n)",
+            "متساويان",
+            "لا يمكن المقارنة"
+          ],
+          "answer": 1,
+          "explain": "الإزاحة في `List` عملية `memmove` متصلة سريعة جدًا، بينما `LinkedList` تحتاج تخصيص عقد ومطاردة مؤشرات مبعثرة في الذاكرة. العملي يغلب النظري إلا مع مرجع عقدة."
+        },
+        {
+          "q": "ماذا يحدث لو استخدمت `Channel.CreateUnbounded` مع منتج أسرع من المستهلك؟",
+          "options": [
+            "backpressure تلقائي",
+            "نمو غير محدود للذاكرة حتى OOM — لا يوجد backpressure",
+            "خطأ ترجمة",
+            "يتجاهل العناصر"
+          ],
+          "answer": 1,
+          "explain": "غير المحدود لا يرجع ضغطًا للمنتج. في الأنظمة التي تعرف سقفها، استخدم `CreateBounded` مع `FullMode.Wait` (أو `DropOldest` لو الفقدان مقبول)."
+        },
+        {
+          "q": "التنفيذ العوديّ لاجتياز شجرة عميقة جدًا (10⁶ عقدة) يعرّضك لـ:",
+          "options": [
+            "بطء فقط",
+            "`StackOverflowException` — لا يمكن التقاطه، العملية تنهار",
+            "تسريب ذاكرة",
+            "خطأ ترجمة"
+          ],
+          "answer": 1,
+          "explain": "كل استدعاء عودي يأخذ إطارًا على مكدس الخيط (~1MB). الشجرة العميقة تتجاوزه فينهار التطبيق فورًا بلا `catch`. الحل: نسخة تكرارية بمكدس صريح على الـheap."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "تنفيذ + تشخيص.",
+      "items": [
+        {
+          "id": "s9-m2-l2-t1",
+          "title": "مهمة 1: نفّذ LRU Cache + مقارنة",
+          "md": "نفّذ LRU بـ`Dictionary` + `LinkedList` (O(1))، ثم نسخة بـ`List` (O(n))، وقِس الفرق على 100 ألف عملية.",
+          "criteria": [
+            "النسخة O(1): `Get` و`Set` بلا أي بحث خطي.",
+            "النسخة O(n): تعمل وتُنتج نفس النتائج على نفس التسلسل (اختبار تكافؤ).",
+            "جدول قياس زمني لـ3 أحجام ذاكرة (100 · 10k · 100k) ونسبة الفرق.",
+            "اختبارات: طرد الأقدم · تحديث قيمة موجودة يحركها للرأس · سعة 1 · سعة غير صالحة ترمي استثناء.",
+            "شرح مكتوب: لماذا `LinkedList` ضرورية هنا وليست في طابور عادي."
+          ],
+          "hint": "أهم تفصيل: عند `Set` لمفتاح موجود، لازم **تحريك العقدة للرأس** وإلا أصبح الترتيب خاطئًا. ولاختبار الطرد، املأ السعة +1 وتحقّق أن أقدم مفتاح اختفى. في القياس، أضف تسخينًا ثم قِس فقط زمن العمليات.",
+          "solution": "النتيجة: فرق 20–100× لصالح O(1) عند 100k عملية. الأهم أن الاختبارات المتكافئة تكشف عادة خطأ الترتيب عند تحديث قيمة موجودة — وهو أكثر خطأ شائع في تنفيذ LRU.",
+          "resources": [
+            "https://learn.microsoft.com/dotnet/api/system.collections.generic.linkedlist-1",
+            "https://learn.microsoft.com/dotnet/api/system.collections.generic.dictionary-2"
+          ]
+        },
+        {
+          "id": "s9-m2-l2-t2",
+          "title": "مهمة 2: شجرة + اجتيازات باختبارات",
+          "md": "نفّذ BST كاملة (إدراج · بحث · حذف · 4 اجتيازات · ارتفاع · توازن) واكتب 8 اختبارات.",
+          "criteria": [
+            "حذف يعالج الحالات الثلاث (ورقة · طفل واحد · طفلان) — باختبار لكل حالة.",
+            "`InOrder` على إدخال [5,3,8,1,4,7,9] ينتج [1,3,4,5,7,8,9].",
+            "`LevelOrder` ينتج طبقات صحيحة (اختبار على نفس الشجرة).",
+            "`Height` و`IsBalanced` يعملان على شجرة منحرفة ومتوازنة.",
+            "نسخة تكرارية للبحث (بلا عودية) — وموثّق لماذا.",
+            "اختبار أداء: 10 آلاف عقدة عشوائية مقابل 10 آلاف مرتبة تصاعديًا (الفرق في الارتفاع)."
+          ],
+          "hint": "عند الحذف بعقدتين، ابحث عن **أصغر قيمة في الشجرة اليمنى** (in-order successor) واستبدل، ثم احذفها عوديًا. لو استخدمت أكبر قيمة يسار (predecessor) فكذلك صحيح — لكن اختر واحدة والتزم بها في الاختبارات.",
+          "solution": "النتيجة: 8 اختبارات خضراء + قياس يوضح أن الإدخال المرتّب يعطي ارتفاع 10,000 (شجرة منحرفة) مقابل ~30 للعشوائي — وهذا دليل عملي على لماذا `SortedDictionary` لازمة.",
+          "resources": [
+            "https://learn.microsoft.com/dotnet/api/system.collections.generic.sorteddictionary-2",
+            "https://learn.microsoft.com/dotnet/api/system.collections.generic.priorityqueue-2"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Stack<T>",
+          "url": "https://learn.microsoft.com/dotnet/api/system.collections.generic.stack-1"
+        },
+        {
+          "label": "Queue<T>",
+          "url": "https://learn.microsoft.com/dotnet/api/system.collections.generic.queue-1"
+        },
+        {
+          "label": "PriorityQueue<TElement,TPriority>",
+          "url": "https://learn.microsoft.com/dotnet/api/system.collections.generic.priorityqueue-2"
+        },
+        {
+          "label": "System.Threading.Channels",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/channels"
+        },
+        {
+          "label": "SortedDictionary",
+          "url": "https://learn.microsoft.com/dotnet/api/system.collections.generic.sorteddictionary-2"
+        }
+      ]
+    }
+  ]
+}

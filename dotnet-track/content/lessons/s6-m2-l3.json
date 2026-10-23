@@ -1,0 +1,452 @@
+{
+  "id": "s6-m2-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "في الدرس السابق (6.1.5) تعلّمت إزاي تفصل الإعدادات عن الأسرار في Kubernetes. على Azure فيه إجابة أقوى بكثير: **مفيش سر في تطبيقك خالص**. التطبيق بياخد **هوية** (Managed Identity)، والهوية بتاخد **صلاحية** (RBAC) على Key Vault أو قاعدة البيانات أو Storage — والباقي توكنات قصيرة العمر بتتجدد لوحدها. الدرس ده بيعلّمك السلسلة الكاملة: إنشاء vault بصلاحيات صحيحة · قراءة السر في .NET بطريقة آمنة · **الطريقة المختلفة لكل منصة** (App Service references / Container Apps secrets / AKS CSI driver) · تدوير السر من غير توقف · وحماية مفاتيح Data Protection اللي بتكسر الجلسات في التطبيقات متعددة النسخ."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "Managed Identity",
+          "def": "هوية تُدار تلقائيًا في Microsoft Entra ID لخدمة Azure. **System-assigned**: مرتبطة بمورد واحد وبتتموت معه. **User-assigned**: مورد مستقل يُربط بعدة خدمات (أفضل للأسرار المشتركة أو لإعادة الإنشاء)."
+        },
+        {
+          "term": "RBAC",
+          "def": "الصلاحيات الحديثة الموصى بها: أدوار مثل **Key Vault Secrets User** (قراءة القيم) أو **AcrPull** على نطاق مورد. بديلها القديم «access policies» — الجديد أدق وأسهل تدقيقًا."
+        },
+        {
+          "term": "Key Vault",
+          "def": "خدمة لتخزين **secrets** (قيم) · **keys** (مفاتيح تشفير) · **certificates** (شهادات TLS). كل قراءة بتُسجَّل في سجل تدقيق."
+        },
+        {
+          "term": "Soft-delete وPurge protection",
+          "def": "حذف قابل للتراجع (افتراضي) + حماية من المسح النهائي لفترة. بدونهما، حذف غلط = فقدان نهائي للسر وشهادات TLS."
+        },
+        {
+          "term": "Key Vault reference",
+          "def": "في App Service/Functions: قيمة إعداد بتكتب كـ`@Microsoft.KeyVault(SecretUri=…)` فتُجلب وقت التشغيل **وتُحدَّث تلقائيًا عند التدوير** من غير إعادة نشر."
+        },
+        {
+          "term": "Secrets Store CSI Driver",
+          "def": "في AKS: بيوصّل أسرار Key Vault للـPod كملفات (أو يزامنها كـKubernetes Secret) باستخدام Workload Identity."
+        },
+        {
+          "term": "Workload Identity",
+          "def": "ربط ServiceAccount في Kubernetes بـManaged Identity عبر **federated credential** — يعني Pod بياخد هوية Azure من غير سر. (نظام Pod Identity القديم **مهجور**.)"
+        },
+        {
+          "term": "`DefaultAzureCredential`",
+          "def": "سلسلة اعتماد بتجرّب بالترتيب: Environment → Workload Identity → Managed Identity → SharedTokenCache → Visual Studio/Code → Azure CLI → Azure PowerShell → Azure Developer CLI. مريحة محليًا، لكن في الإنتاج الأفضل اعتماد **حتمي**."
+        },
+        {
+          "term": "`ManagedIdentityCredential`",
+          "def": "الاعتماد المحدد: يستخدم هوية الخدمة فقط. توصية Microsoft للإنتاج (سلوك متوقع، بلا تسلسل طويل عند الفشل)."
+        },
+        {
+          "term": "تدوير السر (Rotation)",
+          "def": "تغيير قيمة السر بدون توقف: اكتب الجديد → وزّعه → تحقق → احذف القديم. في Key Vault ممكن تلقائيًا لبعض الخدمات."
+        },
+        {
+          "term": "App Configuration",
+          "def": "خدمة للإعدادات غير السرية (feature flags، قيم لكل بيئة) مع **مراجع لـKey Vault** للقيم السرية — فصل أنظف من vault مليء بمفاتيح إعداد."
+        },
+        {
+          "term": "Data Protection keys",
+          "def": "مفاتيح ASP.NET Core لتشفير الكوكيز/tokens الحماية. لو كل نسخة ولّدت مفاتيحها محليًا، **النسخة الثانية مش هتفك تشفير كوكي الأولى** — لازم تخزين مشترك."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① القاعدة الذهبية: الهوية بدل السر — وطريقة إيصال السر تختلف حسب المنصة"
+    },
+    {
+      "type": "callout",
+      "kind": "goal",
+      "title": "الهدف",
+      "md": "لا connection strings فيها كلمات سر في Git · لا أسرار في `appsettings.json` · لا `--admin-enabled true` على ACR · لا client secret في متغيرات البيئة. بدل ده: **Managed Identity + RBAC بأقل امتياز**، والأسرار القليلة المتبقية (مفاتيح مزودين خارجيين) في **Key Vault** مع تدقيق لكل قراءة."
+    },
+    {
+      "type": "table",
+      "caption": "إزاي توصل السر/الهوية للتطبيق حسب المنصة (من 6.2.1)",
+      "head": [
+        "المنصة",
+        "الهوية",
+        "الطريقة الموصى بها للأسرار",
+        "Key Vault references؟",
+        "تحديث عند التدوير"
+      ],
+      "rows": [
+        [
+          "App Service / Functions",
+          "system- أو user-assigned على الـwebapp",
+          "**مراجع Key Vault في app settings** (`@Microsoft.KeyVault(SecretUri=…)`) أو `AddAzureKeyVault` في الكود",
+          "✓ مدعومة أصلًا (وتُحدَّث تلقائيًا)",
+          "تلقائي للمراجع؛ للكود محتاج `ReloadInterval` أو إعادة تشغيل"
+        ],
+        [
+          "Container Apps",
+          "system- أو user-assigned على الـcontainer app",
+          "`az containerapp secret set` + `secretRef` في env، **أو** قراءة من Key Vault في الكود بالهوية",
+          "✗ (لا توجد مراجع KV كما في App Service)",
+          "إعادة ضبط السر + rollout، أو قراءة بالكود مع reload"
+        ],
+        [
+          "AKS",
+          "**Workload Identity** (ServiceAccount + federated credential)",
+          "**Secrets Store CSI Driver** مع `SecretProviderClass` (ملفات أو مزامنة كـK8s Secret)",
+          "△ عبر CSI (تُركّب كملفات)",
+          "إعادة مزامنة دورية بالـdriver (فعّل `enableSecretRotation`)"
+        ],
+        [
+          "محليًا (dev)",
+          "لا هوية — `az login` أو Visual Studio",
+          "**dotnet user-secrets** (1.1.x) أو vault تطوير منفصل",
+          "—",
+          "يدوي"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② الإنشاء والصلاحيات بـAzure CLI"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "azure/40-keyvault.sh",
+      "filename": "azure/40-keyvault.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\n\nLOC=westeurope; RG=rg-shop-dev; VAULT=kv-shop-dev      # اسم الـvault عالمي: حروف وأرقام وشرطات\nSUB=$(az account show --query id --output tsv)\n\n# ═══ 1) إنشاء vault: RBAC مفعّل + حماية من المسح + تدقيق ═══\naz keyvault create --name \"$VAULT\" --resource-group \"$RG\" --location \"$LOC\" \\\n  --enable-rbac-authorization true \\\n  --retention-days 90 \\\n  --enable-purge-protection true\n# ماذا تفعل الأعلام أعلاه:\n#   --enable-rbac-authorization true  → الصلاحيات بـRBAC (مش access policies القديمة)\n#   --retention-days 90               → soft-delete: 90 يومًا للتراجع عن الحذف\n#   --enable-purge-protection true    → يمنع المسح النهائي حتى للمالك\n# ⚠ قاعدة bash: لا تضع تعليقًا في نفس سطر \"\\\" (الشرطة الخلفية) — يكسر الأمر.\n\n# ═══ 2) صلاحيات للبشر: أقل امتياز ═══\naz role assignment create --role \"Key Vault Secrets Officer\" \\\n  --assignee-object-id \"$(az ad signed-in-user show --query id -o tsv)\" \\\n  --assignee-principal-type User --scope \"/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.KeyVault/vaults/$VAULT\"\n# Secrets Officer = يقرأ/يكتب/يدوّر الأسرار، ولا يمسح الـvault ولا يغيّر الصلاحيات.\n\n# ═══ 3) كتابة سر (القيمة من stdin أو متغير — لا من سطر الأوامر المكشوف في history) ═══\nread -rs DB_PASSWORD && printf '%s' \"$DB_PASSWORD\" | \\\n  az keyvault secret set --vault-name \"$VAULT\" --name \"orders-db-password\" --file /dev/stdin\naz keyvault secret set --vault-name \"$VAULT\" --name \"orders-conn\" \\\n  --value \"Server=sql-shop.database.windows.net;Database=shop;Authentication=Active Directory Default\"\n# أسماء الأسرار: استخدم `--` لتمثيل التداخل، فتُقرأ في .NET كمفاتيح متداخلة:\n#   Orders__Retry__MaxAttempts  →  configuration[\"Orders:Retry:MaxAttempts\"]\naz keyvault secret set --vault-name \"$VAULT\" --name \"Orders--MaxTotalWithoutApproval\" --value \"5000\"\n\n# ═══ 4) هوية التطبيق + صلاحية القراءة فقط ═══\n# App Service:\naz webapp identity assign --name shop-orders --resource-group \"$RG\"\nPRINCIPAL=$(az webapp identity show --name shop-orders --resource-group \"$RG\" --query principalId -o tsv)\nVAULT_ID=$(az keyvault show --name \"$VAULT\" --resource-group \"$RG\" --query id -o tsv)\naz role assignment create --role \"Key Vault Secrets User\" \\\n  --assignee-object-id \"$PRINCIPAL\" --assignee-principal-type ServicePrincipal --scope \"$VAULT_ID\"\n\n# Container Apps:\naz containerapp identity assign --name orders --resource-group \"$RG\" --system-assigned\naz role assignment create --role \"Key Vault Secrets User\" \\\n  --assignee-object-id \"$(az containerapp identity show --name orders --resource-group \"$RG\" --query principalId -o tsv)\" \\\n  --assignee-principal-type ServicePrincipal --scope \"$VAULT_ID\"\n\n# ═══ 5) مرجع Key Vault في إعدادات App Service (الطريقة الأبسط والأدق) ═══\naz webapp config appsettings set --name shop-orders --resource-group \"$RG\" --settings \\\n  'ConnectionStrings__Default=@Microsoft.KeyVault(SecretUri=https://kv-shop-dev.vault.azure.net/secrets/orders-conn/)'\n# التحقق إن المرجع اتحلّ فعلًا (مش رسالة خطأ مخفية):\naz webapp config appsettings list --name shop-orders --resource-group \"$RG\" \\\n  --query \"[?contains(name,'KeyVaultReferenceStatus')]\" --output table\n\n# ═══ 6) تدقيق: من قرأ ماذا ومتى ═══\naz monitor diagnostic-settings create --name kv-audit \\\n  --resource \"$VAULT_ID\" --workspace \"$(az monitor log-analytics workspace show -g $RG -n la-shop-dev --query id -o tsv)\" \\\n  --logs '[{\"category\":\"AuditEvent\",\"enabled\":true}]'\n# استعلام مفيد في Log Analytics:\n#   AzureDiagnostics | where ResourceProvider == \"MICROSOFT.KEYVAULT\"\n#     | project TimeGenerated, OperationName, identity_claim_appid_s, clientInfo_s\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": "k8s/secretproviderclass.yaml — AKS: أسرار Key Vault كملفات في الـPod",
+      "filename": "k8s/secretproviderclass.yaml",
+      "code": "# المتطلبات:\n#   az aks create ... --enable-addons azure-keyvault-secrets-provider   (أو على cluster قائم)\n#   az aks update ... --enable-oidc-issuer --enable-workload-identity\n#\n# ① ServiceAccount في الـnamespace مرتبط بالهوية عبر annotation\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: orders-sa\n  namespace: shop\n  annotations:\n    azure.workload.identity/client-id: \"<USER_ASSIGNED_CLIENT_ID>\"\n---\n# ② الهوية المُدارة تحتاج federated credential موجّه للـServiceAccount\n#    (الأمر في الملف التالي — لا تُخزّن أي سر هنا)\n# ③ SecretProviderClass: أي أسرار تُجلب وبأي هوية\napiVersion: secrets-store.csi.x-k8s.io/v1\nkind: SecretProviderClass\nmetadata:\n  name: orders-kv\n  namespace: shop\nspec:\n  provider: azure\n  parameters:\n    usePodIdentity: \"false\"          # Pod Identity مهجور — لا تستخدمه\n    useVMManagedIdentity: \"false\"    # false = نستخدم Workload Identity بالـclientID\n    clientID: \"<USER_ASSIGNED_CLIENT_ID>\"\n    keyvaultName: \"kv-shop-dev\"\n    tenantId: \"<TENANT_ID>\"\n    objects: |\n      array:\n        - |\n          objectName: orders-conn\n          objectType: secret\n        - |\n          objectName: Orders--MaxTotalWithoutApproval\n          objectType: secret\n        - |\n          objectName: shop-tls\n          objectType: cert           # شهادات TLS أيضًا\n  # ④ اختياري: مزامنة القيم كـKubernetes Secret عادي (لـenv vars)\n  secretObjects:\n    - secretName: orders-kv-synced\n      type: Opaque\n      data:\n        - objectName: orders-conn\n          key: ConnectionStrings__Default\n        - objectName: Orders--MaxTotalWithoutApproval\n          key: Orders__MaxTotalWithoutApproval\n---\n# ⑤ الـDeployment: تسمية Workload Identity + الـvolume\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: orders\n  namespace: shop\nspec:\n  replicas: 2\n  selector:\n    matchLabels: { app: orders }\n  template:\n    metadata:\n      labels:\n        app: orders\n        azure.workload.identity/use: \"true\"   # بدونها لا يُحقن التوكن → فشل مصادقة\n    spec:\n      serviceAccountName: orders-sa\n      containers:\n        - name: orders\n          image: acrshopdev.azurecr.io/shop/orders@sha256:<DIGEST>\n          ports: [{ name: http, containerPort: 8080 }]\n          envFrom:\n            - secretRef: { name: orders-kv-synced }   # الطريقة الأبسط: env\n          volumeMounts:\n            - name: kv\n              mountPath: /mnt/secrets-store\n              readOnly: true\n      volumes:\n        - name: kv\n          csi:\n            driver: secrets-store.csi.k8s.io\n            readOnly: true\n            volumeAttributes:\n              secretProviderClass: orders-kv\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "azure/41-workload-identity.sh + فحص وتدوير",
+      "filename": "azure/41-workload-identity.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\nRG=rg-shop-dev; VAULT=kv-shop-dev; ID_NAME=mi-shop-aks\n\n# ═══ 1) هوية user-assigned + صلاحية قراءة على الـvault ═══\naz identity create --name \"$ID_NAME\" --resource-group \"$RG\"\nCLIENT_ID=$(az identity show -n \"$ID_NAME\" -g \"$RG\" --query clientId -o tsv)\nPRINCIPAL_ID=$(az identity show -n \"$ID_NAME\" -g \"$RG\" --query principalId -o tsv)\naz role assignment create --role \"Key Vault Secrets User\" --assignee-object-id \"$PRINCIPAL_ID\" \\\n  --assignee-principal-type ServicePrincipal \\\n  --scope \"$(az keyvault show -n \"$VAULT\" -g \"$RG\" --query id -o tsv)\"\n\n# ═══ 2) اربط الهوية بـServiceAccount في الـcluster (federated credential) ═══\nAKS_OIDC_ISSUER=$(az aks show -n aks-shop -g \"$RG\" --query oidcIssuerProfile.issuerUrl -o tsv)\naz identity federated-credential create --name orders-fic \\\n  --identity-name \"$ID_NAME\" --resource-group \"$RG\" \\\n  --issuer \"$AKS_OIDC_ISSUER\" \\\n  --subject \"system:serviceaccount:shop:orders-sa\" \\\n  --audiences api://AzureADTokenExchange\n# انتبه: هناك حد لعدد الـfederated credentials لكل هوية — راجع توثيق AKS Identity Binding\n# (الخيار الموصى به حديثًا لأنه يتجاوز حد Workload Identity).\n\n# ═══ 3) فحص سريع: هل السر وصل للـPod فعلًا؟ ═══\nkubectl -n shop get secretproviderclass orders-kv -o yaml | tail -n 20\nkubectl -n shop describe pod -l app=orders | grep -A5 -i \"csi\\|secrets-store\" || true\nkubectl -n shop exec deploy/orders -- sh -c 'printenv | grep -c ConnectionStrings || true'\nkubectl -n shop logs -l app=orders --tail=50 | grep -i \"credential\\|401\\|403\" || echo \"لا أخطاء مصادقة\"\n\n# ═══ 4) تدوير سر بدون توقف (النمط الآمن) ═══\n#   أ) أضف القيمة الجديدة (الإصدار الجديد في Key Vault — القديم لسه موجود)\nprintf '%s' \"$NEW_DB_PASSWORD\" | az keyvault secret set --vault-name \"$VAULT\" \\\n  --name \"orders-db-password\" --file /dev/stdin\n#   ب) حدّث قاعدة البيانات/المزود ليقبل القيمتين لفترة (أو دوّر في نافذة صيانة)\n#   ج) أعد تشغيل التطبيق/الـrollout ليقرأ الإصدار الجديد\nkubectl -n shop rollout restart deploy/orders && kubectl -n shop rollout status deploy/orders\n#   د) تحقق ثم ألغِ القيمة القديمة (احذف الإصدار القديم — لا تحذف السر كله)\naz keyvault secret show-versions --vault-name \"$VAULT\" --name \"orders-db-password\" --output table\n\n# ═══ 5) استرجاع بعد حذف غلط (soft-delete) ═══\naz keyvault secret recover --vault-name \"$VAULT\" --name \"orders-db-password\"\naz keyvault recover --name \"$VAULT\"          # استرجاع vault محذوف خلال فترة الاحتفاظ\n\n# ═══ 6) مراجعة: من يملك وصولًا؟ (تدقيق دوري) ═══\naz role assignment list --scope \"$(az keyvault show -n \"$VAULT\" -g \"$RG\" --query id -o tsv)\" \\\n  --output table\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ الكود: قراءة الأسرار والاعتماد الحتمي في .NET"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "src/Orders.Api/Infrastructure/AzureSecrets.cs",
+      "filename": "src/Orders.Api/Infrastructure/AzureSecrets.cs",
+      "code": "using Azure.Core;\nusing Azure.Extensions.AspNetCore.Configuration.Secrets;\nusing Azure.Identity;\nusing Azure.Security.KeyVault.Secrets;\nusing Microsoft.Extensions.Azure;\n\nnamespace Shop.Orders.Infrastructure;\n\npublic static class AzureSecrets\n{\n    /// <summary>\n    /// يبني اعتمادًا حتميًا: Managed Identity في Azure، وسلسلة تطوير محددة محليًا.\n    /// لا تستخدم DefaultAzureCredential في الإنتاج — تسلسلها الطويل يجعل الفشل\n    /// بطيئًا وغامضًا، وقد يلتقط اعتمادًا غير مقصود من البيئة.\n    /// </summary>\n    public static TokenCredential BuildCredential(IConfiguration cfg, IHostEnvironment env)\n    {\n        if (env.IsProduction() || env.IsStaging())\n        {\n            var clientId = cfg[\"Azure:UserAssignedClientId\"];   // اختياري (user-assigned)\n            return string.IsNullOrWhiteSpace(clientId)\n                ? new ManagedIdentityCredential()                                    // system-assigned\n                : new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(clientId));\n        }\n\n        // تطوير محلي: سلسلة قصيرة وصريحة (az login أو Visual Studio) — بلا env credentials\n        return new ChainedTokenCredential(\n            new AzureCliCredential(),\n            new AzurePowerShellCredential(),\n            new VisualStudioCredential());\n    }\n\n    /// <summary>يضيف Key Vault كمصدر إعداد، مع فلترة أسماء وإعادة تحميل اختيارية.</summary>\n    public static WebApplicationBuilder AddVault(this WebApplicationBuilder builder, TokenCredential credential)\n    {\n        var vaultName = builder.Configuration[\"Azure:KeyVaultName\"]\n            ?? throw new InvalidOperationException(\"Azure:KeyVaultName مطلوب\");\n\n        builder.Configuration.AddAzureKeyVault(\n            new Uri($\"https://{vaultName}.vault.azure.net/\"),\n            credential,\n            new AzureKeyVaultConfigurationOptions\n            {\n                // ① اقرأ فقط أسرار تطبيقك من vault مشترك — أمان + إقلاع أسرع:\n                Manager = new PrefixSecretManager(\"Orders\"),\n                // ② null (الافتراضي) = بلا إعادة تحميل. ضع مدة لو محتاج تدويرًا حيًا:\n                ReloadInterval = TimeSpan.FromMinutes(15),\n            });\n        return builder;\n    }\n\n    /// <summary>عملاء Azure SDK بعميل واحد وهوية واحدة (Singleton — شارك كاش التوكن).</summary>\n    public static IServiceCollection AddAzureServiceClients(\n        this IServiceCollection services, IConfiguration cfg, TokenCredential credential)\n    {\n        services.AddAzureClients(cb =>\n        {\n            cb.UseCredential(credential);                 // كل العملاء يستخدمون نفس الاعتماد\n            cb.AddSecretClient(new Uri($\"https://{cfg[\"Azure:KeyVaultName\"]}.vault.azure.net\"));\n            cb.AddBlobServiceClient(new Uri($\"https://{cfg[\"Azure:StorageAccountUrl\"]}\"));\n            // ConfigureClientDefaults: مهلة + إعادة محاولة موحّدة (نفس روح 5.2.3)\n            cb.ConfigureDefaults(o =>\n            {\n                o.Retry.MaxRetries = 3;\n                o.Retry.Mode = Azure.Core.RetryMode.Exponential;\n                o.Diagnostics.IsLoggingContentEnabled = false;   // ⚠ لا تسجّل محتوى الأسرار\n            });\n        });\n        return services;\n    }\n\n    /// <summary>يقرأ سرًا عند الحاجة (تدوير/قيم ديناميكية) بدل تخزينه في الذاكرة.</summary>\n    public static async Task<string> GetSecretAsync(SecretClient client, string name, CancellationToken ct)\n    {\n        KeyVaultSecret secret = await client.GetSecretAsync(name, cancellationToken: ct);\n        return secret.Value;\n    }\n}\n\n/// <summary>\n/// يحمّل الأسرار ذات البادئة فقط. الأسماء في الـvault: Orders--ConnectionString\n/// تُقرأ كمفتاح Orders:ConnectionString (الشرطة المزدوجة = علامة التداخل).\n/// </summary>\ninternal sealed class PrefixSecretManager(string prefix) : KeyVaultSecretManager\n{\n    public override bool Load(SecretProperties properties) =>\n        properties.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);\n\n    public override string GetKey(KeyVaultSecret secret) =>\n        secret.Name[(prefix.Length + 2)..].Replace(\"--\", ConfigurationPath.KeyDelimiter);\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Program.cs — الترتيب مهم",
+      "filename": "src/Orders.Api/Program.cs",
+      "code": "using Shop.Orders.Infrastructure;\n\nvar builder = WebApplication.CreateBuilder(args);\n\n// ① الاعتماد أولًا (مبنيًا من البيئة — لا من سر)\nvar credential = AzureSecrets.BuildCredential(builder.Configuration, builder.Environment);\n\n// ② ثم Key Vault كمصدر إعداد (قبل تسجيل أي خدمة تقرأ إعدادًا سريًا)\nbuilder.AddVault(credential);\n\n// ③ خيارات مُتحقَّق منها عند الإقلاع (6.1.5) — لو السر ناقص، فشل سريع وواضح\nbuilder.Services.Configure<OrderOptions>(builder.Configuration.GetSection(\"Orders\"))\n       .ValidateDataAnnotations()\n       .ValidateOnStart();\n\n// ④ عملاء Azure بهوية واحدة\nbuilder.Services.AddAzureServiceClients(builder.Configuration, credential);\n\n// ⑤ قواعد البيانات بهوية Entra ID (مفيش password في connection string)\nbuilder.Services.AddDbContext<ShopDbContext>(o =>\n    o.UseSqlServer(builder.Configuration.GetConnectionString(\"Default\")));\n// ConnectionStrings:Default =\n//   Server=sql-shop.database.windows.net;Database=shop;Authentication=Active Directory Default\n// ← يحتاج Microsoft.Data.SqlClient + Azure.Identity، وهوية التطبيق لها دور على قاعدة البيانات.\n\n// ⑥ مفاتيح Data Protection: ضروري عند تعدد النسخ (App Service/ACA/AKS)\nbuilder.Services.AddDataProtection()\n       .SetApplicationName(\"shop-orders\")                 // ثابت بين النسخ والإصدارات\n       .PersistKeysToAzureBlobStorage(\n            new Uri($\"{builder.Configuration[\"Azure:StorageAccountUrl\"]}/dataprotection/keys.xml\"),\n            credential)\n       .ProtectKeysWithAzureKeyVault(\n            new Uri($\"https://{builder.Configuration[\"Azure:KeyVaultName\"]}.vault.azure.net/keys/dp-protect\"),\n            credential);\n\nvar app = builder.Build();\napp.MapDefaultEndpoints();     // /health و/alive من ServiceDefaults (5.3.1)\napp.Run();\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ أخطاء بتحوّل الأمان لعطل أو لثغرة"
+    },
+    {
+      "type": "table",
+      "caption": "9 أخطاء شائعة في Key Vault/Managed Identity",
+      "head": [
+        "الخطأ",
+        "النتيجة",
+        "الصحيح"
+      ],
+      "rows": [
+        [
+          "`--enable-rbac-authorization` مطفأ واستخدام access policies",
+          "صلاحيات قديمة غير مدققة مركزيًا ومخالفة لتوصية Microsoft",
+          "فعّل RBAC من الإنشاء واستخدم أدوار `Key Vault Secrets User/Officer`"
+        ],
+        [
+          "دور `Key Vault Secrets User` غير مُسند للهوية",
+          "**403 Forbidden** عند الإقلاع — والتطبيق يفشل في القراءة",
+          "`az role assignment create … --assignee-object-id <principalId>` ثم انتظر دقائق لانتشار الصلاحية"
+        ],
+        [
+          "`DefaultAzureCredential` في الإنتاج",
+          "تسلسل اعتماد طويل: فشل بطيء غامض، وقد يلتقط اعتمادًا من متغيرات البيئة",
+          "`ManagedIdentityCredential` صريحة (حتمية) — وسلسلة تطوير منفصلة محليًا"
+        ],
+        [
+          "إنشاء `TokenCredential`/`SecretClient` لكل طلب",
+          "استنزاف التوكنات و429 من Entra ID وارتفاع زمن الاستجابة",
+          "سجّلها **Singleton** (أو عبر `AddAzureClients`) وشارك كاش التوكن"
+        ],
+        [
+          "قراءة كل أسرار vault مشترك",
+          "إقلاع بطيء + تسريب أسرار تطبيقات أخرى في الذاكرة",
+          "`KeyVaultSecretManager` بفلترة بادئة + vault لكل تطبيق/بيئة"
+        ],
+        [
+          "`ReloadInterval = null` مع توقع تدوير حي",
+          "السر الجديد ما يوصلش إلا بعد إعادة نشر/إعادة تشغيل",
+          "ضع `ReloadInterval` واستخدم `IOptionsMonitor`، أو Key Vault references في App Service (تُحدَّث تلقائيًا)"
+        ],
+        [
+          "مفاتيح Data Protection محلية في تعدد النسخ",
+          "كوكي/tokens من نسخة لا تُفك في أخرى: خروج عشوائي للمستخدمين و401s",
+          "`PersistKeysToAzureBlobStorage` + `ProtectKeysWithAzureKeyVault` + `SetApplicationName` ثابت"
+        ],
+        [
+          "vault بلا purge protection",
+          "حذف غلط (أو سكربت سيئ) = فقدان نهائي للسر وشهادات TLS",
+          "`--enable-purge-protection true` + `--retention-days 90` + صلاحيات محدودة"
+        ],
+        [
+          "سر مكتوب في سطر أمر أو في سجلات CI",
+          "يظهر في history/logs ويُسرَّب",
+          "مرّره من stdin/ملف أو من secret مخزن في الـCI، واطبع اسمه فقط لا قيمته"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "افصل «إعدادات» عن «أسرار»",
+      "md": "**Key Vault** للقيم السرية (كلمات سر، مفاتيح مزودين، شهادات). **App Configuration** للإعدادات العادية (قيم لكل بيئة + feature flags) مع **مراجع Key Vault** داخلها للقيم السرية. النتيجة: تطبيقك يقرأ من مصدرين واضحين، والـvault يفضل صغيرًا ومدققًا، والتدوير يبقى واضحًا. وللمشروع الشخصي: vault واحد لكل بيئة (dev/stg/prod) كافٍ تمامًا — لا تبالغ في التقسيم."
+    },
+    {
+      "type": "steps",
+      "title": "⑤ خطة من 7 خطوات لتأمين مشروع موجود (نفّذها بالترتيب)",
+      "items": [
+        {
+          "title": "1) جرد الأسرار",
+          "md": "ابحث في المستودع عن كل ما يشبه سرًا: `grep -rniE \"password|secret|connectionstring|api[_-]?key\" src/ --include=*.cs --include=*.json --include=*.yml`. اكتب قائمة: الاسم · أين يُستخدم · هل يمكن استبداله بهوية؟",
+          "code": "grep -rniE \"password|secret|connectionstring|api[_-]?key\" src/ --include=*.cs --include=*.json --include=*.yml | grep -v node_modules"
+        },
+        {
+          "title": "2) احذف ما يمكن حذفه بالهوية",
+          "md": "قواعد بيانات Azure SQL/PostgreSQL · Storage · Service Bus · Event Hubs · Key Vault نفسها: كلها تدعم **Entra ID auth** مع Managed Identity. كل سر تحذفه نهائيًا = خطر أقل للأبد.",
+          "code": "az sql server ad-admin create --resource-group rg-shop-dev --server-name sql-shop --display-name orders-mi --object-id $PRINCIPAL_ID"
+        },
+        {
+          "title": "3) أنشئ vault لكل بيئة بـRBAC وpurge protection",
+          "md": "`kv-shop-dev` · `kv-shop-prod`. ولا تخلط بيئات في vault واحد: الصلاحيات والتدقيق والتدوير كلها تبقى ملخبطة.",
+          "code": "az keyvault create --name kv-shop-prod --resource-group rg-shop-prod --location westeurope --enable-rbac-authorization true --enable-purge-protection true --retention-days 90"
+        },
+        {
+          "title": "4) انقل الباقي للـvault وغيّر الكود",
+          "md": "استخدم `PrefixSecretManager` + `ManagedIdentityCredential` في الإنتاج و`ChainedTokenCredential` محليًا. اختبر محليًا بـ`az login` و`dotnet user-secrets` للقيم غير السرية.",
+          "code": "dotnet user-secrets set \"Azure:KeyVaultName\" \"kv-shop-dev\"   # اسم غير سري — آمِن في user-secrets"
+        },
+        {
+          "title": "5) امنح الصلاحيات بأقل امتياز وتحقق",
+          "md": "دور `Key Vault Secrets User` على نطاق الـvault فقط. بعد الإسناد انتظر دقائق (انتشار الصلاحيات) ثم تحقق من التطبيق بطلب `/health`.",
+          "code": "az role assignment list --scope $VAULT_ID --output table"
+        },
+        {
+          "title": "6) نظّف التاريخ والذاكرة",
+          "md": "لو سر قديم اتسرب في commit سابق: **اعتبره مكشوفًا**. دوّره فورًا، واحذفه من التاريخ (`git filter-repo`) لو المستودع عام، وافحص سجلات CI. الحذف من الملف الحالي وحده لا يكفي.",
+          "code": "git log -p --all -S \"$OLD_SECRET\" -- . | head -n 20   # هل السر موجود في التاريخ؟"
+        },
+        {
+          "title": "7) فعّل التدقيق والتدوير الدوري",
+          "md": "diagnostic settings لـ`AuditEvent` نحو Log Analytics + استعلام شهري «من قرأ ماذا» + خطة تدوير (90 يومًا للأسرار الخارجية، وتلقائي حيث تدعمه الخدمة).",
+          "code": "AzureDiagnostics | where ResourceProvider == \"MICROSOFT.KEYVAULT\" and OperationName == \"SecretGet\" | summarize reads=count() by identity_claim_appid_s, bin(TimeGenerated, 1d)"
+        }
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أعرف الفرق بين system-assigned وuser-assigned Managed Identity وإمتى أختار كل واحدة.",
+        "أقدر أنشئ vault بـRBAC وpurge protection وأسند `Key Vault Secrets User` لهوية تطبيق.",
+        "أعرف إن طريقة إيصال السر تختلف: **references** في App Service · **secrets/secretRef أو قراءة بالكود** في Container Apps · **CSI + Workload Identity** في AKS.",
+        "بني `TokenCredential` حتميًا (Managed Identity في الإنتاج، سلسلة تطوير قصيرة محليًا) وسجّلته Singleton.",
+        "أقدر أفلتر أسرار vault مشترك بـ`KeyVaultSecretManager` وأقرأ `Orders--X` كـ`Orders:X`.",
+        "أعرف مشكلة مفاتيح Data Protection في تعدد النسخ وحلها (Blob + Key Vault + اسم تطبيق ثابت).",
+        "أقدر أدوّر سرًا بدون توقف (إصدار جديد → توزيع → تحقق → إلغاء القديم) وأسترجع بعد حذف غلط."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على الهوية والأسرار.",
+      "questions": [
+        {
+          "q": "تطبيقك على Container Apps وبيحتاج قراءة سر من Key Vault. إيه الصح؟",
+          "options": [
+            "Key Vault reference في env vars",
+            "إسناد Managed Identity للتطبيق + دور `Key Vault Secrets User` ثم القراءة بـAzure SDK في الكود (أو `containerapp secret set` + `secretRef`)",
+            "وضع السر في الـimage",
+            "`--admin-enabled true` على ACR"
+          ],
+          "answer": 1,
+          "explain": "مراجع `@Microsoft.KeyVault(...)` ميزة App Service/Functions، مش Container Apps. في ACA: هوية مُدارة + قراءة بالكود، أو أسرار ACA مع `secretRef`."
+        },
+        {
+          "q": "ليه `DefaultAzureCredential` مش مثالية في الإنتاج؟",
+          "options": [
+            "لأنها بطيئة جدًا",
+            "لأنها تجربة تسلسل اعتماد طويل: فشل غامض/بطيء، وقد تلتقط اعتمادًا غير مقصود من متغيرات البيئة؛ الأفضل `ManagedIdentityCredential` الحتمية",
+            "لأنها لا تدعم Managed Identity",
+            "لأنها تحتاج client secret"
+          ],
+          "answer": 1,
+          "explain": "توصية Microsoft: استخدم اعتمادًا حتميًا في الإنتاج. `DefaultAzureCredential` مريحة محليًا لأنها تجرّب CLI/IDE وغيرها، وده نفسه سبب الخطورة في الإنتاج."
+        },
+        {
+          "q": "نشرت نسختين من التطبيق على AKS، والمستخدمين بيخرجوا عشوائيًا وبييجي لهم 401. السبب الأرجح؟",
+          "options": [
+            "الـHPA",
+            "مفاتيح Data Protection مخزنة محليًا في كل Pod → كل نسخة بتشفّر بمفاتيح مختلفة",
+            "الـIngress",
+            "مشكلة DNS"
+          ],
+          "answer": 1,
+          "explain": "الحل: `PersistKeysToAzureBlobStorage` (تخزين مشترك) + `ProtectKeysWithAzureKeyVault` (حماية المفاتيح) + `SetApplicationName` ثابت. نفس المنطق ينطبق على ACA/App Service متعدد النسخ."
+        },
+        {
+          "q": "في AKS، إيه اللي بيربط Pod بهوية Azure من غير سر مخزّن؟",
+          "options": [
+            "Kubernetes Secret فيه client secret",
+            "ServiceAccount + تسمية `azure.workload.identity/use: \"true\"` + federated credential على هوية user-assigned (Workload Identity)",
+            "Pod Identity (المهجور)",
+            "`useVMManagedIdentity: true`"
+          ],
+          "answer": 1,
+          "explain": "Workload Identity هو المسار الموصى به:الـfederated credential بيربط الهوية بالـServiceAccount، والتسمية بتخلي webhook يحقن التوكن. Pod Identity مهجور، و`useVMManagedIdentity` بيستخدم هوية الـnode (صلاحية أوسع من المطلوب)."
+        },
+        {
+          "q": "عندك vault مشترك بين 4 تطبيقات. إيه الخطأ الأخطر؟",
+          "options": [
+            "استخدام `KeyVaultSecretManager` بفلترة بادئة",
+            "إسناد دور القراءة لكل التطبيقات على نطاق الـvault **بدون فلترة** فتقرأ أسرار بعضها",
+            "إنشاء vault لكل بيئة",
+            "تفعيل purge protection"
+          ],
+          "answer": 1,
+          "explain": "أقل امتياز معناه: كل تطبيق يقرأ أسراره فقط. الفلترة بالبادئة (`Orders--…`) بتقلل السطح وبتسرع الإقلاع. الأفضل: vault لكل تطبيق/بيئة."
+        },
+        {
+          "q": "دوّرت سر قاعدة البيانات في Key Vault لكن التطبيق لسه بيستخدم القديم. ليه؟",
+          "options": [
+            "Key Vault بيخزّن نسخة مؤقتة",
+            "لأن `AzureKeyVaultConfigurationOptions.ReloadInterval` الافتراضي `null` (بلا إعادة تحميل) — ومحتاج إعادة تشغيل/نشر، أو استخدم مراجع App Service اللي بتُحدَّث تلقائيًا",
+            "لأن الـRBAC بطيء",
+            "لأن السر الجديد في إصدار مختلف"
+          ],
+          "answer": 1,
+          "explain": "بدون `ReloadInterval` القيمة تُقرأ مرة واحدة عند الإقلاع. الحلول: ضع مدة إعادة تحميل + `IOptionsMonitor`، أو `rollout restart`، أو (في App Service) مراجع Key Vault اللي بتُحدَّث عند التدوير."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "من «سر في ملف» إلى «هوية + vault + تدوير موثّق».",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: إزالة كل الأسرار من تطبيقك واستبدالها بهوية",
+          "md": "**السياق:** `Orders.Api` فيه connection string بكلمة سر في `appsettings.json`، ومفتاح مزوّد بريد في متغير بيئة، وACR بـ`admin-enabled true`.\n\n**المطلوب:**\n1. اكتب **جردًا** في `docs/secrets-inventory.md`: كل سر · مكانه · تصنيفه (سري/غير سري) · القرار (استبدال بهوية / نقل للvault / إبقاؤه في App Configuration).\n2. أنشئ vault بـRBAC + purge protection + `retention-days 90`، وانقل إليه ما لا يمكن استبداله بهوية.\n3. فعّل Managed Identity للتطبيق وأسند **`Key Vault Secrets User`** على نطاق الـvault فقط.\n4. عدّل الكود: `BuildCredential` حتمي (Managed Identity في الإنتاج / سلسلة تطوير قصيرة محليًا) + `AddAzureKeyVault` مع `PrefixSecretManager(Orders)` ببادئة التطبيق + `ReloadInterval`.\n5. استبدل مصادقة قاعدة البيانات بـEntra ID (`Authentication=Active Directory Default`) واحذف كلمة السر نهائيًا، وأوقف `admin-enabled` على ACR واستخدم دور `AcrPull`.\n6. **أدلة**: لقطة/مخرجات تثبت (أ) `appsettings.json` بلا أي سر (ب) `az role assignment list` على نطاق الـvault (ج) طلب `/health` ناجح بعد التغيير (د) `grep` على المستودع لا يجد سرًا قديمًا.\n7. اكتب `docs/secret-rotation.md`: خطوات التدوير بدون توقف + من المسؤول + كيف تتحقق.",
+          "criteria": [
+            "جرد كامل ومصنّف، وكل بند فيه قرار (مش قائمة بلا نهاية).",
+            "vault بـRBAC + purge protection مفعّلين فعليًا (موثق بالأمر).",
+            "الدور المُسند هو `Key Vault Secrets User` **على نطاق الـvault** (مش Contributor/Owner على المجموعة).",
+            "الكود يستخدم `ManagedIdentityCredential` في الإنتاج وسلسلة تطوير قصيرة محليًا — و`TokenCredential` مسجّل كـSingleton.",
+            "فلترة بالبادئة (`PrefixSecretManager` ببادئة `Orders`) مع تحويل `--` إلى مفاتيح متداخلة، ومُختبَر بقراءة قيمة فعلية.",
+            "قاعدة البيانات بـEntra ID auth وبلا كلمة سر، وACR بلا admin password (دور `AcrPull`).",
+            "الأدلة الأربعة موجودة، و`grep` النهائي نظيف.",
+            "`docs/secret-rotation.md` بخطوات قابلة للتنفيذ (إصدار جديد → توزيع → تحقق → إلغاء القديم) وبخطة للسر المسرَّب في تاريخ Git."
+          ],
+          "hint": "ابدأ بالأصعب: قاعدة البيانات. `az sql server ad-admin create` بيضيف مدير Entra ID للخادم، وبعدها أنشئ user في القاعدة للهوية (`CREATE USER [orders-mi] FROM EXTERNAL PROVIDER`) ومنحه الدور المطلوب (`ALTER ROLE db_datareader/db_datawriter ADD MEMBER …`). لو دي قاعدة PostgreSQL، فعّل مصادقة Entra من إعدادات الخادم واستخدم حزمة المصادقة المناسبة لإصدار Npgsql — تحقق من التوثيق لأن الأسماء بتتغير.",
+          "solution": "الترتيب العملي: (1) جرد (2) إنشاء vault وتفعيل purge protection (3) إسناد هوية للتطبيق + دور قراءة (4) إنشاء admin Entra ID على خادم SQL + user في القاعدة + أدوار (5) تغيير connection string إلى `Authentication=Active Directory Default` وحذف كلمة السر (6) تعديل `Program.cs` بالاعتماد الحتمي و`PrefixSecretManager` (7) نشر لبيئة staging والتحقق من `/health` و`/orders` (8) إلغاء `admin-enabled` على ACR وإسناد `AcrPull` (9) تدوير مفتاح البريد المخزّن وحذفه من تاريخ Git لو لزم (10) كتابة runbook التدوير. أهم نتيجة: **عدد الأسرار في التطبيق ينقص** — كل سر مستبدل بهوية هو خطر مُزال للأبد، مش خطر مُدار.",
+          "resources": [
+            "https://learn.microsoft.com/en-us/aspnet/core/security/key-vault-configuration",
+            "https://learn.microsoft.com/en-us/dotnet/azure/sdk/authentication/best-practices",
+            "https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-guide",
+            "https://learn.microsoft.com/en-us/azure/key-vault/general/best-practices",
+            "https://learn.microsoft.com/en-us/azure/azure-sql/database/authentication-aad-configure",
+            "https://learn.microsoft.com/en-us/azure/container-registry/tutorial-kubernetes-managed-identity"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: أسرار AKS عبر CSI + Workload Identity (أو بديل محلي)",
+          "md": "**السياق:** لو عندك cluster (AKS أو kind محلي) عايز توصّل أسرار Key Vault للـPods من غير Kubernetes Secrets مكتوبة يدويًا.\n\n**المطلوب:**\n1. على AKS: فعّل `azure-keyvault-secrets-provider` و`--enable-workload-identity`، أنشئ هوية user-assigned + `federated-credential` مربوط بـ`system:serviceaccount:shop:orders-sa`.\n2. اكتب `SecretProviderClass` يجلب سرين وشهادة، مع `secretObjects` للمزامنة كـKubernetes Secret، و`Deployment` فيه التسمية `azure.workload.identity/use: \"true\"` وتركيب الـvolume.\n3. **أدلة فشل ونجاح متعمدة**: احذف التسمية → وثّق رسالة الخطأ؛ أرجعها → وثّق إن السر وصل (`printenv`/ملف في `/mnt/secrets-store`).\n4. فعّل تدوير الأسرار (rotation) في الـdriver ووثّق كيف تتحقق إن القيمة اتحدثت في الـPod بدون إعادة نشر.\n5. لو مفيش AKS متاح: طبّق نفس المنطق محليًا بـExternal Secrets Operator أو بـSOPS+age (6.1.5) واكتب مقارنة من 6 أسطر: **الأمان · التدوير · التعقيد · الاعتماد على Azure · قابلية النقل · التدقيق**.\n6. أضف فحصًا في CI (`scripts/check-no-plaintext-secrets.sh`) يفشل لو ظهر `stringData:` بقيمة حقيقية أو `password=` في ملفات k8s.",
+          "criteria": [
+            "الـmanifests كاملة وتُطبَّق بنجاح (أو بديل محلي مكافئ مع مقارنة).",
+            "الهوية مرتبطة بـfederated credential بالموضوع الصحيح `system:serviceaccount:<ns>:<sa>`.",
+            "تجربة فشل متعمدة موثقة (حذف التسمية) + تجربة نجاح (السر وصل).",
+            "التدوير مفعّل ومُختبَر: القيمة الجديدة ظهرت في الـPod **بدون إعادة نشر** (أو وثّقت الحد الزمني للمزامنة).",
+            "مقارنة (لو استخدمت بديلًا محليًا) بمحاور محددة وبتوصية صريحة.",
+            "فحص CI بيمنع الأسرار المكتوبة نصًا في manifests وبيفشل البناء.",
+            "ملاحظة صريحة عن حد الـfederated credentials لكل هوية وعن خيار AKS Identity Binding الأحدث."
+          ],
+          "hint": "أشهر فشل: `azure.workload.identity/use: \"true\"` ناقصة، أو الـ`subject` في الـfederated credential فيه namespace/sa غلط، أو الدور مُسند لـclientId بدل principalId. للتحقق السريع: `kubectl -n shop describe pod` وابحث عن أخطاء تركيب الـCSI volume، و`kubectl -n shop logs` للـdriver pod في namespace `kube-system`.",
+          "solution": "الترتيب: (1) `az aks update --enable-oidc-issuer --enable-workload-identity` (2) `az identity create` + `az role assignment create --role \"Key Vault Secrets User\"` بـ**principalId** (3) `az identity federated-credential create --subject system:serviceaccount:shop:orders-sa` (4) ServiceAccount بالـannotation `azure.workload.identity/client-id` (5) `SecretProviderClass` + `secretObjects` (6) Deployment بالتسمية + `serviceAccountName` + الـvolume (7) فحص: `kubectl exec … -- cat /mnt/secrets-store/orders-conn` و`printenv ConnectionStrings__Default`. تجربة الفشل: حذف التسمية بيمنع حقن التوكن → خطأ مصادقة في logs الـdriver؛ إرجاعها + إعادة إنشاء الـPod بيحلها. التدوير: فعّل `enableSecretRotation: \"true\"` و`rotationPollInterval` في الـSecretProviderClass، دوّر السر في الـvault، وانتظر فترة الاستطلاع ثم تحقق من القيمة داخل الـPod. سكريبت CI: `grep -RnE 'password:|stringData:' k8s/ && exit 1` مع استثناء الملفات اللي قيمها من مولّد (kustomize secretGenerator).",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-driver",
+            "https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-identity-access",
+            "https://azure.github.io/secrets-store-csi-driver-provider-azure/docs/configurations/identity-access-modes/",
+            "https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation",
+            "https://external-secrets.io/latest/"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Key Vault configuration provider في ASP.NET Core",
+          "url": "https://learn.microsoft.com/en-us/aspnet/core/security/key-vault-configuration"
+        },
+        {
+          "label": "أفضل ممارسات المصادقة بمكتبة Azure.Identity لـ.NET",
+          "url": "https://learn.microsoft.com/en-us/dotnet/azure/sdk/authentication/best-practices"
+        },
+        {
+          "label": "دليل RBAC لـKey Vault",
+          "url": "https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-guide"
+        },
+        {
+          "label": "أفضل ممارسات Key Vault",
+          "url": "https://learn.microsoft.com/en-us/azure/key-vault/general/best-practices"
+        },
+        {
+          "label": "Managed Identity في App Service (مراجع Key Vault)",
+          "url": "https://learn.microsoft.com/en-us/azure/app-service/app-service-key-vault-references"
+        },
+        {
+          "label": "Secrets Store CSI Driver على AKS",
+          "url": "https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-driver"
+        },
+        {
+          "label": "Workload Identity federation",
+          "url": "https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation"
+        },
+        {
+          "label": "حماية مفاتيح Data Protection بـKey Vault",
+          "url": "https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/configuration/overview"
+        },
+        {
+          "label": "Azure App Configuration + مراجع Key Vault",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-app-configuration/use-key-vault-references-dotnet-core"
+        }
+      ]
+    }
+  ]
+}

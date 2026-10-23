@@ -1,0 +1,394 @@
+{
+  "id": "s9-m3-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "Git هو الأداة اللي بتستخدمها كل دقيقة، وأكثرها إساءة استخدامًا: فروع عمرها 3 أسابيع · commits اسمها «fix» · `git push --force` على main · وحل تعارض بـ«خُد نسختي».\n\nالدرس ده **عملي بالكامل**: trunk-based · feature flags · رسائل commits · rebase آمن · إنقاذ الأخطاء (`reflog`) · وحل التعارضات بثقة."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات",
+      "items": [
+        {
+          "term": "Trunk-based development",
+          "def": "فرع رئيسي واحد، فروع قصيرة العمر (< يومين)، دمج متكرر. شرطها: CI قوي + feature flags."
+        },
+        {
+          "term": "Git Flow",
+          "def": "فروع طويلة (develop · release · hotfix · feature). مناسبة للإصدارات النادرة، سيئة للنشر المستمر."
+        },
+        {
+          "term": "Feature flag",
+          "def": "مفتاح تشغيل/إيقاف ميزة في وقت التشغيل — يتيح دمج كود غير مكتمل بأمان."
+        },
+        {
+          "term": "Conventional Commits",
+          "def": "صيغة `type(scope): description` — تتيح توليد changelog وتحديد الإصدار تلقائيًا."
+        },
+        {
+          "term": "Semantic versioning",
+          "def": "`MAJOR.MINOR.PATCH` — تغيير كاسر/ميزة/إصلاح. مع conventional commits تُحدد آليًا."
+        },
+        {
+          "term": "rebase",
+          "def": "إعادة تطبيق commits فوق قاعدة جديدة — تاريخ خطي نظيف (لكن يُعيد كتابة الـhash)."
+        },
+        {
+          "term": "merge commit",
+          "def": "دمج بتاريخ متشعّب محفوظ — تاريخ حقيقي لكنه أكثر فوضى."
+        },
+        {
+          "term": "squash merge",
+          "def": "تجميع كل commits الفرع في commit واحد عند الدمج — تاريخ main نظيف."
+        },
+        {
+          "term": "force-with-lease",
+          "def": "قوة الدفع الآمنة: ترفض الكتابة فوق تغييرات لم ترها (بخلاف `--force`)."
+        },
+        {
+          "term": "reflog",
+          "def": "سجل كل حركة لـHEAD محليًا — شبكة الأمان لاستعادة ما «ضاع» بعد rebase/reset."
+        },
+        {
+          "term": "cherry-pick",
+          "def": "نسخ commit محدد لفرع آخر — للإصلاحات العاجلة من main إلى release."
+        },
+        {
+          "term": "bisect",
+          "def": "بحث ثنائي على commits لإيجاد أول commit أدخل خطأً — O(log n) بدل تفتيش يدوي."
+        },
+        {
+          "term": "Stash / Worktree",
+          "def": "stash = إيداع مؤقت للتغييرات · worktree = مجلد عمل ثانٍ لفرع آخر بلا تبديل."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① أي نموذج فروع؟"
+    },
+    {
+      "type": "table",
+      "caption": "المقارنة الصريحة",
+      "head": [
+        "النموذج",
+        "عمر الفرع",
+        "يناسب",
+        "الثمن"
+      ],
+      "rows": [
+        [
+          "**Trunk-based**",
+          "ساعات–يومان",
+          "نشر مستمر · فريق بـCI قوي",
+          "يحتاج feature flags وثقافة اختبار"
+        ],
+        [
+          "GitHub Flow",
+          "أيام",
+          "معظم فرق الويب/APIs",
+          "فروع طويلة تُصعّب الدمج"
+        ],
+        [
+          "Git Flow",
+          "أسابيع",
+          "إصدارات نادرة (منتجات Desktop/embedded)",
+          "تعارضات متكررة ودمج مؤلم"
+        ],
+        [
+          "Release branches",
+          "—",
+          "منتج يحتاج دعم إصدارات متعددة",
+          "إصلاحات مزدوجة (main + release)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "لماذا الفروع القصيرة؟",
+      "md": "كل يوم يبقى فيه الفرع مفتوحًا تزيد تكلفة الدمج أسّيًا (تعارضات + مراجعة أصعب + سياق ضائع).\n**المعادلة:** فرع عمره يوم = مراجعة 20 دقيقة · فرع عمره أسبوعين = إعادة كتابة.\n**الحل التقني وجوديًا:** لا تعمل على ميزة أكبر من يومين في فرع واحد؛ إما تقسيم أفقي (backend أولًا بلا واجهة) أو **feature flag** (كود مدموج ومُطفأ)."
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Features/OrderExportFlag.cs — دمج بلا إطلاق",
+      "filename": "src/Shop.Api/Features/FeatureFlags.cs",
+      "code": "using Microsoft.FeatureManagement;\n\n/// <summary>\n/// ميزة غير مكتملة؟ ادمجها مُطفأة.\n/// النتيجة: دمج يومي، لا فروع طويلة، ونشر بلا إطلاق ميزة.\n/// </summary>\npublic sealed class OrderExportFeature(IFeatureManager features)\n{\n    public const string Flag = \"order-export\";\n\n    public async Task<IResult> ExportAsync(HttpContext http, IOrdersApi api, CancellationToken ct)\n    {\n        if (!await features.IsEnabledAsync(Flag))\n            return Results.NotFound();          // ميزة مُطفأة = غير موجودة عمليًا\n\n        // إتاحة تدريجية لمن له دور معيّن — بدل الإطلاق للجميع\n        return Results.Ok(await api.GetExportAsync(ct));\n    }\n}\n\n/*\n إعدادات appsettings.json:\n   \"FeatureManagement\": {\n     \"order-export\": false\n   }\n ولوحة تحكم/متغير بيئة لتشغيلها لكل بيئة (FeatureGate في ASP.NET Core).\n*/"
+    },
+    {
+      "type": "table",
+      "caption": "قواعد التشغيل (12 قاعدة سريعة)",
+      "head": [
+        "القاعدة",
+        "السبب"
+      ],
+      "rows": [
+        [
+          "`main` دائمًا قابل للنشر",
+          "أي لحظة = إصدار محتمل"
+        ],
+        [
+          "لا `push --force` على فروع مشتركة",
+          "تدمّر تاريخ الآخرين"
+        ],
+        [
+          "`--force-with-lease` محليًا على فرعك فقط",
+          "ترفض الكتابة فوق تغييرات لم ترها"
+        ],
+        [
+          "PR صغير (< 400 سطر)",
+          "مراجعة أعمق ودمج أسرع"
+        ],
+        [
+          "CI يجب أن يمرّ قبل الدمج",
+          "`main` محمي"
+        ],
+        [
+          "commit واحد = تغيير منطقي واحد",
+          "`bisect` و`revert` دقيقان"
+        ],
+        [
+          "الرسالة تشرح **لماذا** لا ماذا",
+          "الـdiff يقول ماذا"
+        ],
+        [
+          "دمج الفرع وإن لم يكتمل — بـflag",
+          "لا فروع طويلة"
+        ],
+        [
+          "الـhotfix يُدمج عكسيًا إلى main",
+          "وإلا عاد الخطأ"
+        ],
+        [
+          "حذف الفرع بعد الدمج",
+          "فوضى أقل"
+        ],
+        [
+          "توليد CHANGELOG آليًا من commits",
+          "لا عمل يدوي يتجاهل"
+        ],
+        [
+          "لا أسرار في التاريخ — بلا استثناء",
+          "`git filter-repo` مريرة"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② رسائل commits + الإصدار الآلي"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "Conventional Commits — أمثلة صحيحة وخاطئة",
+      "filename": "docs/commits.txt",
+      "code": "\nسيئ:\n  fix\n  updates\n  fixed bug\n  asdf\n  WIP\n\nجيد:\n  feat(orders): add idempotency key to create endpoint\n  fix(auth): reject non-relative returnUrl on /bff/login\n  perf(orders): replace OFFSET with keyset pagination\n  refactor(cart): extract pricing into domain service\n  test(payments): cover 409 conflict on concurrent capture\n  docs(adr): record decision to use HybridCache\n  chore(deps): bump OpenTelemetry to 1.20.1\n\nمع جسم الرسالة عند الحاجة:\n  fix(auth): reject non-relative returnUrl on /bff/login\n\n  Previously an attacker could pass //evil.com and get redirected.\n  Now we accept only paths starting with a single '/'.\n\n  Closes #412\n\nقواعد:\n  • الحدث في الأمر (imperative): add/fix/remove — لا added/fixes\n  • السطر الأول ≤ 72 حرفًا\n  • الجسم يشرح «لماذا» والافتراضات ورقم الـissue\n  • BREAKING CHANGE: في التذييل لو التغيير كاسر\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": ".github/workflows/release.yml — إصدار آلي من commits (semantic-release)",
+      "filename": ".github/workflows/release.yml",
+      "code": "name: release\n\non:\n  push:\n    branches: [main]\n\npermissions:\n  contents: write\n  issues: write\n  pull-requests: write\n\njobs:\n  release:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0          # مهم: semantic-release يحتاج التاريخ كاملًا\n\n      - uses: actions/setup-node@v4\n        with:\n          node-version: \"24\"\n\n      - run: npx --yes semantic-release\n        env:\n          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n\n# feat: → MINOR · fix: → PATCH · BREAKING CHANGE: → MAJOR\n# والنتيجة: tag + CHANGELOG + إصدار GitHub آليًا — بلا خطوة يدوية تُنسى.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ rebase والإنقاذ: أوامر تُنفّذها بثقة"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "workflow/cheatsheet.sh — تسلسل عمل يومي آمن",
+      "filename": "docs/git-cheatsheet.sh",
+      "code": "#!/usr/bin/env bash\n# استبدل <branch> باسم فرعك. النصوص هنا للقراءة والتطبيق اليدوي.\n\n# ── ① ابدأ اليوم: حدّث main ثم أعد تطبيق فرعك ──────────────────\ngit switch main\ngit pull --ff-only\ngit switch feature/orders-pagination\ngit rebase main            # تاريخ خطي فوق آخر main\n\n# ── ② أثناء الـrebase: حل تعارض واحد ─────────────────────────\n#   git status                 ← الملفات المتعارضة\n#   عدّل الملفات، ثم:\ngit add path/to/file\ngit rebase --continue\n# للتراجع عن الـrebase بالكامل:\n#   git rebase --abort\n\n# ── ③ دفع بعد rebase (فرعك فقط) ───────────────────────────────\ngit push --force-with-lease      # آمن: يرفض الكتابة فوق عمل لم تره\n\n# ── ④ دمج/إعادة ترتيب commits قبل المراجعة ─────────────────────\ngit rebase -i main               # pick / reword / squash / fixup / drop\n\n# ── ⑤ ماذا بعد خطأ؟ (reflog) ───────────────────────────────────\ngit reflog                       # كل حركات HEAD آخر 90 يومًا\ngit reset --hard HEAD@{3}        # ارجع للحالة قبل الخطأ\n\n# ── ⑥ إصلاح عاجل من main إلى release ──────────────────────────\ngit switch release/1.4\ngit cherry-pick <sha>            # أو -x لتسجيل المصدر في الرسالة\n\n# ── ⑦ وجدت الـcommit الذي أدخل الخطأ ──────────────────────────\ngit bisect start\ngit bisect bad                   # الحالة الحالية سيئة\ngit bisect good v1.3.0           # إصدار قديم جيد\n# ... git bisect good/bad مع كل اختبار حتى يحدد الـcommit\ngit bisect reset\n\n# ── ⑧ تحقق قبل الدفع ──────────────────────────────────────────\ngit status --short\ngit log --oneline main..HEAD\ngit diff --stat main...HEAD\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "5 كوارث Git وكيف تنجو",
+      "md": "**① `git reset --hard` وفقدت commits** → `git reflog` ثم `git reset --hard HEAD@{n}` (ما دام لم يُنفّذ `gc`).\n**② `push --force` على فرع مشترك** → أبلغ الفريق فورًا، اطلب من كل واحد `git fetch` ثم `git reset --hard origin/branch` (وهم يفقدون تغييراتهم غير المدفوعة — لذلك ممنوع منعًا باتًا).\n**③ دمجت main داخل فرعك بالفوضى** → `git rebase main` يعيد كتابة تاريخك فوقه بشكل خطي.\n**④ سر تم دفعه** → اعتبره **مكشوفًا** ودوّره فورًا؛ ثم `git filter-repo` + إجبار الجميع على إعادة النسخ.\n**⑤ حذفت فرعًا لم يُدمج** → `git reflog` يجد آخر commit، ثم `git switch -c branch-name <sha>`."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "تختار بين trunk-based وGit Flow بحسب تكرار الإصدار لا بالعادة.",
+        "تشرح كيف تقلّل `feature flags` عمر الفروع.",
+        "تكتب رسالة commit بصيغة conventional وتشرح «لماذا» في الجسم.",
+        "تعرف الفرق بين merge/squash/rebase وأثر كل واحد على التاريخ.",
+        "تستخدم `--force-with-lease` لا `--force`.",
+        "تحل تعارضًا بالخطوات الصحيحة وتنهي rebase بـ`--continue`.",
+        "تستخدم `reflog` لاستعادة ما «ضاع».",
+        "تستخدم `cherry-pick` للإصلاح العاجل على release.",
+        "تستخدم `bisect` لإيجاد commit الخطأ.",
+        "تعرف أن أي سر في التاريخ = تدوير فوري + إعادة كتابة التاريخ."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "7 أسئلة على Git حقيقي.",
+      "questions": [
+        {
+          "q": "ما الفرق العملي بين `--force` و`--force-with-lease`؟",
+          "options": [
+            "لا فرق",
+            "`--force-with-lease` يرفض الكتابة لو تغيّر الفرع عن نسختك المحلية — يحمي عمل الآخرين",
+            "الأول أسرع",
+            "الثاني غير مدعوم في GitHub"
+          ],
+          "answer": 1,
+          "explain": "`--force` يكتب فوق أي شيء. `--force-with-lease` يتحقق أولًا أن مرجعك يطابق ما تعرفه — فلو دفع زميل شيئًا بعده، يُرفض الأمر بدل محو عمله."
+        },
+        {
+          "q": "فرعك عمره أسبوعان وتعارضات كثيرة. أول قرار؟",
+          "options": [
+            "حل التعارضات يدويًا سطرًا سطرًا",
+            "تقسيم ما تبقى لدمج ما هو مكتمل، وحل التصارع بأدوات — والبدء من الآن بفروع قصيرة/flags",
+            "حذف الفرع",
+            "إعادة كتابة المشروع"
+          ],
+          "answer": 1,
+          "explain": "التصارع أعراض مشكلة أكبر (فرع طويل). الحل الفوري: دمج الأجزاء الجاهزة وتقسيم الباقي؛ والحل المستدام: trunk-based + feature flags."
+        },
+        {
+          "q": "متى يكون `squash merge` أفضل؟",
+          "options": [
+            "عندما تحتاج تاريخ كل commit",
+            "عندما تكون commits الفرع كثيرة/غامضة وتريد أن يظهر تغيير واحد مرتب في main",
+            "عندما تحتاج bisect",
+            "عند العمل على release"
+          ],
+          "answer": 1,
+          "explain": "`squash` يعطي main سجلًا نظيفًا لكل ميزة. الثمن: تفقد تفاصيل الخطوات و`bisect` يصبح أخشن. الاختيار حسب ثقافة الفريق — لا يوجد صحيح مطلق."
+        },
+        {
+          "q": "دفعت `git reset --hard` وفقدت commits. ماذا تفعل؟",
+          "options": [
+            "لا أمل",
+            "`git reflog` ثم `git reset --hard HEAD@{n}`",
+            "`git clone` من جديد",
+            "`git revert`"
+          ],
+          "answer": 1,
+          "explain": "الـcommits تبقى في reflog (~90 يومًا) لأن الفروع ليست إلا إشارات. ابحث عن آخر commit صحيح من `git reflog` ثم أعِد وضع الفرع عليه."
+        },
+        {
+          "q": "ما أول شيء تفعله عند اكتشاف سر مدفوع في مستودع عام؟",
+          "options": [
+            "تحذفه من main",
+            "**تدويره فورًا** ثم إزالة أثرِه من التاريخ (filter-repo) وإعلام الفريق",
+            "تغيير الـpassword فقط",
+            "إغلاق الـrepository"
+          ],
+          "answer": 1,
+          "explain": "أي سر دُفع يُعتبر مكشوفًا (مفهرس/منسوخ). التدوير أولًا لأن إزالة التاريخ لا تُلغي السرية. ثم إعادة كتابة التاريخ (وهي مؤلمة وتحتاج تنسيقًا)."
+        },
+        {
+          "q": "إصلاح عاجل على release/1.4 موجود في main. الأداة؟",
+          "options": [
+            "`git merge main`",
+            "`git cherry-pick <sha>` ثم دمجه عكسيًا لاحقًا",
+            "`git rebase`",
+            "`git stash`"
+          ],
+          "answer": 1,
+          "explain": "`cherry-pick` يأخذ الإصلاح وحده بلا ميزات main غير الجاهزة. ثم يُدمج release عكسيًا (back-merge) إلى main حتى لا يعود الخطأ."
+        },
+        {
+          "q": "لماذا تحتاج `fetch-depth: 0` في workflow الإصدار الآلي؟",
+          "options": [
+            "لتسريع البناء",
+            "لأن الأداة تحتاج تاريخ commits كاملًا لحساب الإصدار وكتابة الـCHANGELOG",
+            "لتقليل الحجم",
+            "لا داعي"
+          ],
+          "answer": 1,
+          "explain": "الافتراضي checkout `fetch-depth: 1` (commit واحد). تحليل commits السابقة يحتاج التاريخ كاملًا، وإلا تُحسب الإصدارات وchangelog ناقصة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "تمارين على مستودع حقيقي.",
+      "items": [
+        {
+          "id": "s9-m3-l3-t1",
+          "title": "مهمة 1: اكتب 10 commits صحيحة + changelog آلي",
+          "md": "طبّق conventional commits على تغييرات حقيقية، أضف semantic-release (أو changelog script) وأثبت التوليد.",
+          "criteria": [
+            "10 commits بأنواع مختلفة (feat · fix · perf · refactor · test · docs · chore).",
+            "واحد على الأقل بـBREAKING CHANGE يظهر كـMAJOR.",
+            "رسائل تشرح «لماذا» في الجسم لثلاثة commits على الأقل.",
+            "CHANGELOG مولّد آليًا (لقطة/رابط).",
+            "وسم إصدار (tag) ناتج عن التشغيل.",
+            "قاعدة في CI تمنع رسالة غير مطابقة (commitlint أو سكربت)."
+          ],
+          "hint": "لو مشروعك ليس JS، استخدم `npx semantic-release` بشكل مستقل أو أداة مثل `git-cliff` أو سكربت صغير يقرأ `git log --format` ويلف الأنواع في ملف. الأهم هو التحقق الآلي من الصيغة (`commitlint`) حتى لا تتحول إلى توصية.",
+          "solution": "النتيجة: changelog مولّد بلا تدخل يدوي، ورقم إصدار صحيح. القيمة المستدامة ليست في الملف بل في الـCI الذي يمنع الرسائل الغامضة — فتتحسن جودة `git log` تلقائيًا مع الوقت.",
+          "resources": [
+            "https://www.conventionalcommits.org/",
+            "https://semver.org/",
+            "https://semantic-release.gitbook.io/semantic-release/"
+          ]
+        },
+        {
+          "id": "s9-m3-l3-t2",
+          "title": "مهمة 2: drill — rebase وتعارض وإنقاذ",
+          "md": "على مستودع تجريبي: أنشئ فرعين متعارضين، حل التعارض، rebase، ثم افقد commits عن قصد واستعدها بـreflog. وثّق الأوامر والمخرجات.",
+          "criteria": [
+            "فرعان يعدّلان نفس السطور في نفس الملف — وتعارض حقيقي حدث فعلًا.",
+            "حل التعارض يدويًا مع `rebase --continue` (وليس `--abort`).",
+            "`push --force-with-lease` ناجح، ثم محاولة `--force` بعد دفع زميل تُرفض (بلقطة).",
+            "`reset --hard` يضيّع commits ثم استرجاعها بـ`reflog`.",
+            "`cherry-pick` لإصلاح من main إلى فرع release.",
+            "ملف `docs/git-drill.md` يشرح الحالة قبل/بعد كل خطوة."
+          ],
+          "hint": "مستودع تجريبي = `git init` + ملف بسيط. نفّذ الخطوات بترتيب صحيح ثم اكتبها في ملفك — لأن الإجراء المكتوب يُسترجع عند الحاجة أكثر من الذاكرة. واحتفظ ببلقطة `git reflog` قبل التجارب لأنها شبكة الأمان.",
+          "solution": "النتيجة: تتعامل مع التعارض بلا رهبة، وتعرف أن `--force-with-lease` هو الافتراضي الشخصي، وأن `reflog` يحل معظم حالات «ضاع شغلي». هذا الدرس يتحقق بالتكرار: كرّر الـdrill بعد شهر.",
+          "resources": [
+            "https://git-scm.com/docs/git-rebase",
+            "https://git-scm.com/docs/git-reflog",
+            "https://git-scm.com/book/en/v2"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Pro Git (مجاني)",
+          "url": "https://git-scm.com/book/en/v2"
+        },
+        {
+          "label": "git rebase",
+          "url": "https://git-scm.com/docs/git-rebase"
+        },
+        {
+          "label": "git reflog",
+          "url": "https://git-scm.com/docs/git-reflog"
+        },
+        {
+          "label": "Conventional Commits",
+          "url": "https://www.conventionalcommits.org/"
+        },
+        {
+          "label": "semantic-release",
+          "url": "https://semantic-release.gitbook.io/semantic-release/"
+        },
+        {
+          "label": "Feature flags في ASP.NET Core",
+          "url": "https://learn.microsoft.com/azure/azure-app-configuration/feature-management-dotnet-reference"
+        }
+      ]
+    }
+  ]
+}

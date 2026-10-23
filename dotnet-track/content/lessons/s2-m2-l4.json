@@ -1,0 +1,322 @@
+{
+  "id": "s2-m2-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\n«تسجيل دخول بـGoogle» مش feature — ده **تفويض لجهة خارجية بإثبات هوية مستخدمي لك** (OpenID Connect)،\nومعاه أسئلة حقيقية: أنهي flow يصلح لأنهي عميل؟ فين تخزن التوكنات؟ إزاي تجدد؟ وإزاي تلغي الربط بأمان؟\n\nقبل الكود: فرق مهم كثيرًا ما يُخلط —\n**① الـAPI بتاعك بيتحقق من توكنات IdP خارجي** (Entra ID / Auth0 / Keycloak) — ده درس الـJWT السابق.\n**② تطبيقك بيعمل تسجيل دخول خارجي ويدير هوية محلية** — ده درس النهارده.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "IdP / RP",
+          "def": "Identity Provider (Google، Entra ID، Keycloak) وRelying Party (تطبيقك اللي بيثق فيه)."
+        },
+        {
+          "term": "Authorization Code + PKCE",
+          "def": "الـflow الصحيح لكل العملاء اللي فيهم مستخدم (ويب، SPA، موبايل). الكود بيتبدّل بتوكنات على الـbackend، وPKCE بيمنع اعتراضه."
+        },
+        {
+          "term": "Client Credentials",
+          "def": "خدمة إلى خدمة، بلا مستخدم. `client_id` + `client_secret` (أو شهادة) → access token."
+        },
+        {
+          "term": "Device Code",
+          "def": "جهاز بلا متصفح مريح (CLI، TV): المستخدم يكتب كودًا على جهاز تاني."
+        },
+        {
+          "term": "Implicit / Hybrid",
+          "def": "أنماط قديمة. Implicit مرفوض في OAuth 2.1؛ Hybrid باقٍ لحالات نادرة (سيرفر-side + توكن فوري)."
+        },
+        {
+          "term": "id_token مقابل access_token",
+          "def": "`id_token` = إثبات هوية (اقرأه للـclaims). `access_token` = تصريح وصول للـAPI (ابعته، ولا تفسر محتواه)."
+        },
+        {
+          "term": "state / nonce",
+          "def": "قيم عشوائية تمنع CSRF (state) وربط التوكن بالجلسة (nonce). الـmiddleware بيتحقق منهم — لا تعطّلهم."
+        },
+        {
+          "term": "Redirect URI allowlist",
+          "def": "قائمة عناوين العودة المسجلة عند الـIdP. أي تجاوز = ثغرة open redirect / سرقة كود."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① اختيار الـflow حسب نوع العميل"
+    },
+    {
+      "type": "table",
+      "head": [
+        "العميل",
+        "الـflow",
+        "أسرار",
+        "ملاحظات"
+      ],
+      "rows": [
+        [
+          "تطبيق ويب server-side (ASP.NET Core MVC/Razor)",
+          "Authorization Code (+ `offline_access` للتجديد)",
+          "client secret على الخادم",
+          "الجلسة في كوكي HttpOnly — الأسهل والأأمن"
+        ],
+        [
+          "SPA (React/Vue/Angular)",
+          "Authorization Code + PKCE **مع BFF**",
+          "لا secret في المتصفح",
+          "BFF بيخفي التوكنات في كوكي؛ بدونه التوكنات مكشوفة لـJS"
+        ],
+        [
+          "Mobile / MAUI",
+          "Authorization Code + PKCE",
+          "بلا secret (أو client assertion)",
+          "خزّن التوكنات في Keychain/Keystore"
+        ],
+        [
+          "CLI / أداة سطر أوامر",
+          "Device Code",
+          "بلا secret",
+          "تجربة مستخدم جيدة بلا متصفح مدمج"
+        ],
+        [
+          "خدمة → خدمة (background job)",
+          "Client Credentials",
+          "secret/certificate من Key Vault",
+          "مفيش مستخدم؛ الصلاحيات scopes للتطبيق"
+        ],
+        [
+          "IoT/TV",
+          "Device Code",
+          "—",
+          "شاشات محدودة"
+        ],
+        [
+          "أي عميل حديث",
+          "✗ Implicit",
+          "—",
+          "مرفوض في OAuth 2.1 — لا تستخدمه حتى لو SDK قديم يقترحه"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② تطبيق ويب server-side: الكود الكامل"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Web package Microsoft.AspNetCore.Authentication.OpenIdConnect\ndotnet add Shop.Web package Microsoft.AspNetCore.Authentication.Cookies\n# لو الـIdP هو Microsoft Entra ID:\ndotnet add Shop.Api package Microsoft.Identity.Web\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Web/Program.cs",
+      "title": "كوكي محلي + OIDC خارجي (Code + PKCE)",
+      "code": "\nusing Microsoft.AspNetCore.Authentication.Cookies;\nusing Microsoft.AspNetCore.Authentication.OpenIdConnect;\n\nvar builder = WebApplication.CreateBuilder(args);\nvar auth = builder.Configuration.GetSection(\"Oidc\").Get<OidcOptions>()!;\n\nbuilder.Services\n    .AddAuthentication(options =>\n    {\n        options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;\n        options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;\n        options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;\n    })\n    .AddCookie(options =>\n    {\n        options.Cookie.Name = \"shop.session\";\n        options.Cookie.HttpOnly = true;\n        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;\n        options.Cookie.SameSite = SameSiteMode.Lax;          // Lax مطلوب لسير العودة من الـIdP\n        options.SlidingExpiration = true;\n        options.ExpireTimeSpan = TimeSpan.FromHours(8);\n        options.AccessDeniedPath = \"/access-denied\";\n        options.Events.OnRedirectToLogin = ctx =>             // API-ish endpoints: 401 بدل redirect\n        {\n            if (ctx.Request.Path.StartsWithSegments(\"/api\"))\n            {\n                ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;\n                return Task.CompletedTask;\n            }\n            ctx.Response.Redirect(ctx.RedirectUri);\n            return Task.CompletedTask;\n        };\n    })\n    .AddOpenIdConnect(options =>\n    {\n        options.Authority = auth.Authority;                  // مثال: https://accounts.google.com\n        options.ClientId = auth.ClientId;\n        options.ClientSecret = auth.ClientSecret;            // من Key Vault / user-secrets — ليس من الـrepo\n\n        options.ResponseType = OpenIdConnectResponseType.Code;   // ✓ Code فقط\n        options.UsePkce = true;                                   // ✓ إلزامي عمليًا\n        options.RequireHttpsMetadata = true;\n\n        options.Scope.Clear();\n        options.Scope.Add(\"openid\");\n        options.Scope.Add(\"profile\");\n        options.Scope.Add(\"email\");\n        options.Scope.Add(\"offline_access\");                  // ← عشان نطلب refresh_token\n\n        options.SaveTokens = true;                            // نحفظ التوكنات مع الكوكي للتجديد ونداء APIs\n        options.GetClaimsFromUserInfoEndpoint = true;         // claims أغنى من id_token لوحده\n        options.MapInboundClaims = false;                     // أسماء claims زي ما الـIdP بيبعتها\n\n        options.TokenValidationParameters = new TokenValidationParameters\n        {\n            NameClaimType = \"name\",\n            RoleClaimType = \"role\",\n            ValidateIssuer = true,\n            ValidateAudience = true,\n            ValidateLifetime = true,\n            ClockSkew = TimeSpan.FromSeconds(30),\n        };\n\n        options.Events = new OpenIdConnectEvents\n        {\n            OnRedirectToIdentityProvider = ctx =>\n            {\n                // مرّر سياق إضافي بأمان (مثال: صفحة العودة بعد التسجيل)\n                if (ctx.Properties.Items.TryGetValue(\"returnTo\", out var to) && to is not null)\n                    ctx.ProtocolMessage.State = Uri.EscapeDataString(to);\n                return Task.CompletedTask;\n            },\n            OnTokenValidated = ctx =>\n            {\n                // ✓ طبّق تفويضك المحلي على الهوية الخارجية (لا تثق في claims الـIdP مباشرةً للأدوار)\n                var email = ctx.Principal?.FindFirst(\"email\")?.Value;\n                // مثال: اربط بمستخدم محلي أو أنشئ حسابًا وسجّل حدث التدقيق\n                return Task.CompletedTask;\n            },\n            OnRemoteFailure = ctx =>\n            {\n                // المستخدم ألغى أو الـIdP رفض: ارجع لصفحة مفهومة بدل خطأ خام\n                ctx.Response.Redirect(\"/login?error=external\");\n                ctx.HandleResponse();\n                return Task.CompletedTask;\n            },\n            OnAccessDenied = ctx =>\n            {\n                ctx.Response.Redirect(\"/access-denied\");\n                ctx.HandleResponse();\n                return Task.CompletedTask;\n            },\n        };\n    });\n\nbuilder.Services.AddAuthorizationBuilder();\nvar app = builder.Build();\n\napp.UseHttpsRedirection();\napp.UseAuthentication();\napp.UseAuthorization();\n\napp.MapGet(\"/login\", (HttpContext ctx, string? returnUrl) =>\n    Results.Challenge(new AuthenticationProperties\n    {\n        RedirectUri = string.IsNullOrWhiteSpace(returnUrl) ? \"/\" : returnUrl,   // ✓ whitelist للـreturnUrl!\n        Items = { [\"returnTo\"] = returnUrl ?? \"/\" },\n    }));\n\napp.MapGet(\"/logout\", (HttpContext ctx) => Results.SignOut(\n    new AuthenticationProperties { RedirectUri = \"/\" },\n    [CookieAuthenticationDefaults.AuthenticationScheme, OpenIdConnectDefaults.AuthenticationScheme]));\n\napp.Run();\n\npublic sealed record OidcOptions\n{\n    public required string Authority { get; init; }\n    public required string ClientId { get; init; }\n    public required string ClientSecret { get; init; }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "open redirect: `returnUrl` غير مفحوص",
+      "md": "\n`RedirectUri = returnUrl` من العميل = المهاجم يبعت\n`/login?returnUrl=https://evil.example/steal` فيسرق الكود/الجلسة بعد الدخول.\n\n```csharp\nprivate static bool IsLocalReturn(string? url) =>\n    !string.IsNullOrEmpty(url) && Uri.IsWellFormedUriString(url, UriKind.Relative) && url.StartsWith('/');\n\n// الاستخدام\nRedirectUri = IsLocalReturn(returnUrl) ? returnUrl : \"/\"\n```\nالقاعدة: **أي URL من العميل يُعامل كمصدر خطر** — whitelist للمسارات المحلية أو لنطاقات مسجلة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ ربط حساب خارجي بـIdentity المحلي"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Auth/ExternalLoginEndpoints.cs",
+      "title": "Challenge → callback → ربط أو إنشاء",
+      "code": "\npublic static IEndpointRouteBuilder MapExternalLoginApi(this IEndpointRouteBuilder app)\n{\n    var group = app.MapGroup(\"/api/auth/external\").WithTags(\"Auth\");\n\n    // 1) ابدأ: ارجع للـIdP (الـmiddleware هيدير state/PKCE/correlation cookie)\n    group.MapGet(\"/challenge/{provider}\", (string provider, HttpContext http, string? returnUrl) =>\n    {\n        var props = new AuthenticationProperties\n        {\n            RedirectUri = IsLocalReturn(returnUrl) ? returnUrl : \"/auth/callback\",\n        };\n        return Results.Challenge(props, [provider]);           // \"google\" | \"github\" | \"entra\"\n    }).AllowAnonymous();\n\n    // 2) العودة: سجّل الدخول أو اربط الحساب\n    group.MapGet(\"/callback\", async (\n        HttpContext http, SignInManager<ApplicationUser> signIn, UserManager<ApplicationUser> users,\n        TokenRotationService tokens, CancellationToken ct) =>\n    {\n        var info = await signIn.GetExternalLoginInfoAsync();\n        if (info is null) return Results.Redirect(\"/login?error=external\");\n\n        // أ) المستخدم موجود وربطه سابقًا → دخول مباشر\n        var result = await signIn.ExternalLoginSignInAsync(\n            info.LoginProvider, info.ProviderKey, isPersistent: false, bypassTwoFactor: false);\n\n        if (result.IsLockedOut)\n            return Results.Json(new ProblemDetails { Status = 423, Title = \"الحساب مقفل مؤقتًا\" }, statusCode: 423);\n\n        ApplicationUser user;\n        if (result.Succeeded)\n        {\n            user = (await users.FindByLoginAsync(info.LoginProvider, info.ProviderKey))!;\n        }\n        else\n        {\n            // ب) أول مرة: ابحث بإيميل موثّق من الـIdP، وإلا اطلب تأكيدًا\n            var email = info.Principal.FindFirstValue(ClaimTypes.Email)\n                     ?? info.Principal.FindFirstValue(\"email\");\n\n            var emailVerified = info.Principal.HasClaim(\"email_verified\", \"true\")\n                             || info.Principal.HasClaim(\"email_verified\", \"True\");\n\n            if (email is null || !emailVerified)\n                return Results.Redirect(\"/login?error=email_required\");\n\n            user = await users.FindByEmailAsync(email)\n                   ?? new ApplicationUser\n                   {\n                       UserName = email,\n                       Email = email,\n                       EmailConfirmed = true,\n                       FullName = info.Principal.FindFirstValue(\"name\"),\n                       CreatedAt = DateTimeOffset.UtcNow,\n                   };\n\n            if (user.Id == Guid.Empty)\n            {\n                var created = await users.CreateAsync(user);          // بلا كلمة سر محلية\n                if (!created.Succeeded)\n                    return Results.Json(new ProblemDetails { Status = 400, Title = \"تعذّر إنشاء الحساب\" },\n                                        statusCode: 400);\n                await users.AddToRoleAsync(user, Roles.Customer);\n            }\n\n            // ✓ اربط المزوّد بالحساب (لو مش مربوط)\n            var alreadyLinked = await users.FindByLoginAsync(info.LoginProvider, info.ProviderKey);\n            if (alreadyLinked is null)\n                await users.AddLoginAsync(user, info);\n\n            await users.UpdateSecurityStampAsync(user);\n            result = await signIn.ExternalLoginSignInAsync(info.LoginProvider, info.ProviderKey, false);\n            if (!result.Succeeded)\n                return Results.Redirect(\"/login?error=external\");\n        }\n\n        // ج) أصدر توكناتنا الخاصة (العميل بيتعامل مع عقدنا، مش مع توكنات Google)\n        var pair = await tokens.IssueAsync(user,\n            http.Connection.RemoteIpAddress?.ToString() ?? \"?\", http.Request.Headers.UserAgent, ct);\n\n        SetRefreshCookie(http, pair.RefreshToken, pair.RefreshExpiresIn);\n        return Results.Redirect($\"/auth/done#access_token={pair.AccessToken}\");\n        // (للـSPA: الأفضل تسليم الـaccess token عبر استدعاء /refresh بدل وضعه في الرابط)\n    }).AllowAnonymous();\n\n    // 3) إلغاء الربط — بأمان\n    group.MapPost(\"/unlink/{provider}\", async (\n        string provider, UserManager<ApplicationUser> users, ICurrentUser me,\n        TokenRotationService tokens, CancellationToken ct) =>\n    {\n        if (me.UserId is not { } id) return Results.Unauthorized();\n        var user = await users.FindByIdAsync(id.ToString());\n        if (user is null) return Results.NotFound();\n\n        var logins = await users.GetLoginsAsync(user);\n        var hasPassword = await users.HasPasswordAsync(user);\n\n        // ★ لا تترك الحساب بلا أي وسيلة دخول\n        if (logins.Count <= 1 && !hasPassword)\n            return Results.Json(new ProblemDetails\n            {\n                Status = 409,\n                Title = \"لا يمكن إلغاء الربط\",\n                Detail = \"أضف كلمة سر أو مزوّدًا آخر أولًا حتى لا تفقد الوصول لحسابك.\",\n            }, statusCode: 409);\n\n        var login = logins.FirstOrDefault(l => l.LoginProvider == provider);\n        if (login is null) return Results.NotFound();\n\n        await users.RemoveLoginAsync(user, login.LoginProvider, login.ProviderKey);\n        await users.UpdateSecurityStampAsync(user);                    // يبطل الجلسات القديمة\n        await tokens.RevokeAllForUserAsync(id, \"unlinked\", ct);        // يبطل refresh tokens\n\n        return Results.NoContent();\n    }).RequireAuthorization();\n\n    return app;\n}\n\nprivate static bool IsLocalReturn(string? url) =>\n    !string.IsNullOrEmpty(url) && Uri.IsWellFormedUriString(url, UriKind.Relative) && url.StartsWith('/');\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "حاجات بتلسع في External login",
+      "md": "\n- **الإيميل غير موثّق** من الـIdP → لو ربطت تلقائيًا، مهاجم ينشئ حساب Google بإيميل الضحية ويختطف حسابه. اشترط `email_verified`.\n- **`account takeover` بالربط الأعمى**: لو المستخدم مسجّل بإيميل ومزوّد خارجي رجّع نفس الإيميل، اربط **فقط** بعد إثبات ملكية (أو اطلب كلمة السر).\n- **الأدوار من الـIdP**: claims زي `role`/`groups` من Entra ID ممكن تتضخّم. طبّق خرائط محلية صريحة ولا تفوّض مباشرة من claims خارجية.\n- **تضخّم الكوكي**: كل الـclaims في الكوكي → رأس أكبر من 8KB وفشل صامت. خزّن معرّف المستخدم بس، وحمّل الباقي عند الحاجة (أو استخدم `ITicketStore`).\n- **تسجيل التوكنات في اللوجات**: `SaveTokens=true` بيخليها متاحة — لا تسجّل `HttpContext.GetTokenAsync(...)` أبدًا.\n- **`SameSite=None` بلا `Secure`** → المتصفح يرفض الكوكي ويسقط سير العودة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ التجديد ونداء APIs خارجية"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "تجديد يدوي + استدعاء خدمة خارجية بالتوكن",
+      "code": "\n/// <summary>\n/// ASP.NET Core لا يجدد توكنات OIDC تلقائيًا. إما تستخدم مكتبة إدارة توكنات\n/// (Microsoft.Identity.Web أو Duende.AccessTokenManagement) أو تجددها بنفسك كما هنا.\n/// </summary>\npublic sealed class OidcTokenRefresher(IHttpClientFactory http, OidcOptions options, TimeProvider time)\n{\n    public async Task<string?> GetAccessTokenAsync(HttpContext ctx, string resource, CancellationToken ct)\n    {\n        var auth = await ctx.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);\n        if (!auth.Succeeded) return null;\n\n        var expires = auth.Properties.GetTokenValue(\"expires_at\");\n        var accessToken = auth.Properties.GetTokenValue(\"access_token\");\n        var refreshToken = auth.Properties.GetTokenValue(\"refresh_token\");\n\n        // لسه صالح لأكثر من دقيقة → استخدمه مباشرة\n        if (expires is not null && DateTimeOffset.TryParse(expires, out var at)\n            && at > time.GetUtcNow().AddMinutes(1))\n            return accessToken;\n\n        if (refreshToken is null) return null;                 // يحتاج إعادة challenge\n\n        var response = await http.CreateClient(\"oidc\").PostFormAsync($\"{options.Authority}/token\", new()\n        {\n            [\"grant_type\"] = \"refresh_token\",\n            [\"refresh_token\"] = refreshToken,\n            [\"client_id\"] = options.ClientId,\n            [\"client_secret\"] = options.ClientSecret,\n            [\"scope\"] = resource,\n        }, ct);\n\n        if (!response.IsSuccessStatusCode) return null;\n\n        var tokens = await response.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken: ct);\n        if (tokens is null) return null;\n\n        // ✓ احفظ التوكنات الجديدة في الكوكي (وإلا هتجدد في كل طلب)\n        auth.Properties.UpdateTokenValue(\"access_token\", tokens.AccessToken);\n        auth.Properties.UpdateTokenValue(\"refresh_token\", tokens.RefreshToken ?? refreshToken);\n        auth.Properties.UpdateTokenValue(\"expires_at\",\n            time.GetUtcNow().AddSeconds(tokens.ExpiresIn).ToString(\"o\"));\n        await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, auth.Principal!, auth.Properties);\n\n        return tokens.AccessToken;\n    }\n}\n\ninternal sealed record TokenResponse\n{\n    public string AccessToken { get; init; } = \"\";\n    public string? RefreshToken { get; init; }\n    public int ExpiresIn { get; init; }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "السيناريو",
+        "الحل",
+        "ملاحظة"
+      ],
+      "rows": [
+        [
+          "SPA + IdP خارجي",
+          "BFF (ASP.NET Core + YARP/Duende.Bff)",
+          "التوكنات في كوكي HttpOnly والمتصفح ما يشوفهاش"
+        ],
+        [
+          "API بتحقق توكنات Entra ID",
+          "`Microsoft.Identity.Web` → `AddMicrosoftIdentityWebApi`",
+          "يدعم JWKS وتدوير المفاتيح وscopes"
+        ],
+        [
+          "خدمة داخلية تنادي خدمة تانية",
+          "Client Credentials",
+          "بلا مستخدم؛ صلاحيات على مستوى التطبيق"
+        ],
+        [
+          "نيابة عن المستخدم (on-behalf-of)",
+          "OAuth2 On-Behalf-Of flow",
+          "سلسلة خدمات مع الحفاظ على هوية المستخدم"
+        ],
+        [
+          "تجديد تلقائي في تطبيق ويب",
+          "`ITicketStore` + مكتبة إدارة توكنات",
+          "التجديد اليدوي بيتكرر في كل مشروع — استخدم مكتبة"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أختار الـflow الصحيح لكل نوع عميل (Code+PKCE، Client Credentials، Device Code).",
+        "أضبط OIDC بكوكي آمن وأتحكم في الـclaims والـevents.",
+        "أربط/ألغي ربط حسابات خارجية بأمان (email_verified + وسيلة دخول بديلة + إبطال الجلسات).",
+        "أجدد التوكنات وأنادي خدمات خارجية بدون تسريبها في اللوجات أو الروابط."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "SPA بيتصل بـIdP خارجي مباشرة. أنهي نمط موصى به؟",
+          "options": [
+            "Implicit flow عشان أسرع",
+            "BFF: الـbackend يعمل Code+PKCE ويخفي التوكنات في كوكي HttpOnly",
+            "تخزين التوكن في localStorage",
+            "وضع client secret في الـSPA"
+          ],
+          "answer": 1,
+          "explain": "Implicit مرفوض في OAuth 2.1، وأي secret في المتصفح مكشوف. BFF بيخلي التوكنات بعيدة عن JavaScript خالص."
+        },
+        {
+          "q": "الفرق بين `id_token` و`access_token`؟",
+          "options": [
+            "لا فرق",
+            "`id_token` إثبات هوية تقرأه؛ `access_token` تصريح وصول تبعته للـAPI ولا تفسر محتواه",
+            "`access_token` أقصر",
+            "`id_token` للتجديد"
+          ],
+          "answer": 1,
+          "explain": "خلطهم سبب أخطاء شهيرة: استخدام access_token كدليل هوية (جمهوره الـAPI مش تطبيقك) أو إرسال id_token للـAPI."
+        },
+        {
+          "q": "مستخدم سجّل بـGoogle بإيميل `victim@example.com` غير موثّق. لو ربطت تلقائيًا بحساب موجود؟",
+          "options": [
+            "تجربة مستخدم أفضل",
+            "اختطاف حساب (account takeover) — لازم تشترط email_verified أو إثبات ملكية",
+            "مفيش خطر",
+            "يحتاج 2FA فقط"
+          ],
+          "answer": 1,
+          "explain": "الإيميل غير الموثّق عند الـIdP مش دليل ملكية. الربط الأعمى من أشهر ثغرات OAuth العملية."
+        },
+        {
+          "q": "`RefreshToken` اختفى بعد إعادة تشغيل الجلسة. أرجح سبب؟",
+          "options": [
+            "الـIdP ما بيدعمش التجديد",
+            "ما طلبتش scope `offline_access` (أو ما فعّلتش `SaveTokens`)",
+            "PKCE معطل",
+            "الكوكي كبير"
+          ],
+          "answer": 1,
+          "explain": "`offline_access` هو اللي بيخلي الـIdP يصدر refresh token. و`SaveTokens=true` لازم عشان يتخزن مع الكوكي."
+        },
+        {
+          "q": "إلغاء ربط المزوّد الوحيد لحساب بلا كلمة سر — أنهي تصرف؟",
+          "options": [
+            "نفّذ الإلغاء",
+            "ارفض بـ409 واطلب إضافة وسيلة دخول بديلة أولًا",
+            "احذف الحساب",
+            "أنشئ كلمة سر عشوائية"
+          ],
+          "answer": 1,
+          "explain": "منع فقدان الوصول أهم من المرونة. (وكمان: أبطل الجلسات والـrefresh tokens بعد أي تغيير في وسائل الدخول.)"
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "تسجيل دخول خارجي كامل",
+          "md": "أضف مزوّدًا واحدًا (Google أو Keycloak محلي أو Entra ID تجريبي) لمشروعك: challenge → callback → ربط بحساب Identity → إصدار توكناتك الخاصة. وطبّق كل شروط الأمان من الدرس.",
+          "criteria": [
+            "`email_verified` مطلوب قبل أي ربط تلقائي بحساب موجود",
+            "`returnUrl`/`RedirectUri` بفحص `IsLocalReturn` (اختبار يرفض `https://evil.example`)",
+            "كوكي الجلسة HttpOnly + Secure + SameSite=Lax",
+            "logout يبطل الكوكي المحلي ويسجّل الخروج من الـIdP",
+            "لا توجد توكنات في اللوجات أو في الروابط (راجع سجل الطلبات)"
+          ],
+          "hint": "للتجربة بلا حساب سحابي: شغّل Keycloak بـTestcontainers (من درس المرحلة 1) وأضفه كمزوّد OIDC — بيئة كاملة تحت سيطرتك."
+        },
+        {
+          "id": "t2",
+          "title": "إلغاء ربط + إبطال الجلسات",
+          "md": "نفّذ `/unlink/{provider}` مع رفض 409 لو هيفقد المستخدم كل وسائل الدخول، وإبطال refresh tokens وSecurity Stamp. اكتب اختبارين: نجاح الإلغاء مع وجود كلمة سر، ورفض 409 بدونها.",
+          "criteria": [
+            "حالة 409 مختبرة",
+            "بعد الإلغاء الناجح: التوكنات القديمة مرفوضة",
+            "الحساب لسه ممكن يدخل بكلمة السر أو مزوّد آخر"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "OpenID Connect on ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authentication/signin-with-oidc"
+        },
+        {
+          "label": "External login providers setup",
+          "url": "https://learn.microsoft.com/aspnet/core/security/authentication/social/"
+        },
+        {
+          "label": "Microsoft.Identity.Web",
+          "url": "https://learn.microsoft.com/entra/identity-platform/microsoft-identity-web"
+        },
+        {
+          "label": "OpenID Connect Core 1.0",
+          "url": "https://openid.net/specs/openid-connect-core-1_0.html"
+        },
+        {
+          "label": "OAuth 2.1 draft",
+          "url": "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1"
+        },
+        {
+          "label": "OWASP ASVS",
+          "url": "https://owasp.org/www-project-application-security-verification-standard/"
+        }
+      ]
+    }
+  ]
+}

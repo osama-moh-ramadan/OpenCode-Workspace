@@ -1,0 +1,506 @@
+{
+  "id": "s5-m3-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nدلوقتي عندك خدمات، وسيط رسائل، وresilience. السؤال اللي بيفرّق بين junior وsenior مش\n«تعرف أنماط إيه؟» — بل **«لأي مشكلة استخدمت أي نمط، وإيه اللي رفضته وليه؟»**.\n\nالدرس ده جولة مركزة في أهم الأنماط من **Azure Architecture Center** (المرجع الأشهر للأنماط السحابية)\nبتنفيذها في .NET: **Cache-aside**، **Circuit Breaker**، **Bulkhead**، **Throttling**، و**Queue-Based Load Leveling**،\nمع جدول اختيار، وأخطاء شائعة لكل نمط، وقالب **ADR** يخلي قرارك موثقًا (درس 4.1.4).\n\nالقاعدة الحاكمة: **النمط تكلفة** (كود + تعقيد + فشل جديد محتمل). طبّقه لما المشكلة موجودة فعلًا ومقاسة،\nمش لأن مقال قال إن كل الأنظمة الكبيرة بتستخدمه.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Cache-Aside",
+          "def": "التطبيق بيقرأ من الكاش؛ لو مش موجود يجيب من المصدر ويملأ الكاش. الكتابة بتبطل الكاش (مش بتحدّثه)."
+        },
+        {
+          "term": "Cache Stampede",
+          "def": "لحظة انتهاء صلاحية مفتاح ساخن: 500 طلب يروحوا للمصدر في نفس اللحظة. الحل: قفل/`GetOrCreate` ذرّي (HybridCache بيعملها)."
+        },
+        {
+          "term": "Bulkhead",
+          "def": "عزل الموارد (اتصالات/خيوط/طلبات) في أقسام، عشان فشل جزء ما يستهلكش موارد الكل ويغرق النظام."
+        },
+        {
+          "term": "Throttling / Rate Limiting",
+          "def": "تحديد معدل الطلبات المسموح (لكل عميل/مستأجر/مسار) ورفض الزائد بـ429 + `Retry-After`."
+        },
+        {
+          "term": "Queue-Based Load Leveling",
+          "def": "طابور بين المنتج والمستهلك يمتص الذروة: الإنتاج يتقبل فورًا، والمعالجة بمعدل ثابت — بدل الانهيار تحت الحمل."
+        },
+        {
+          "term": "Circuit Breaker",
+          "def": "يقطع النداءات لتابع فاشل لفترة، مع اختبار دوري (half-open) للتعافي — بيمنع استنزاف المهلات والموارد (درس 5.2.4)."
+        },
+        {
+          "term": "Backpressure",
+          "def": "إشارة للمنتج إنه يبطّئ (رفض/انتظار/429/طابور ممتلئ) — بلاها النظام بياخد شغل أكتر من قدرته."
+        },
+        {
+          "term": "Fail-Open / Fail-Closed",
+          "def": "سلوك المكوّن عند فشله: الكاش fail-open (كمل من المصدر)، والمصادقة/الـrate limiter غالبًا fail-closed (ارفض)."
+        },
+        {
+          "term": "Claim Check",
+          "def": "الرسالة الكبيرة تتخزن في blob والحدث بيشيل **مرجع** لها — يحافظ على حجم الرسائل وسرعة الوسيط."
+        },
+        {
+          "term": "ADR",
+          "def": "Architecture Decision Record: وثيقة قصيرة تسجل القرار والسياق والبدائل والنتائج (درس 4.1.4)."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) جدول الاختيار: المشكلة ← النمط ← التنفيذ في .NET"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المشكلة المقاسة",
+        "النمط",
+        "التنفيذ في .NET",
+        "الفخ الأشهر",
+        "الدرس"
+      ],
+      "rows": [
+        [
+          "قراءة متكررة غالية (DB/خارجي) وبيانات تتحمل تأخير",
+          "**Cache-Aside**",
+          "`IHybridCache` (L1+L2+stampede) أو Output Cache",
+          "الكاش يبقى مصدر حقيقة والإبطال ينسى",
+          "2.1.6"
+        ],
+        [
+          "تابع بيفشل/بيبطّئ وبيستهلك مهلات وموارد",
+          "**Circuit Breaker**",
+          "`CircuitBreakerStrategy` لكل تابع",
+          "breaker واحد لكل التبعيات → تابع واحد يعطّل الكل",
+          "5.2.4"
+        ],
+        [
+          "تابع بطيء ممكن ياكل كل اتصالات/خيوط الخدمة",
+          "**Bulkhead**",
+          "`ConcurrencyLimiterStrategy` / `SemaphoreSlim` لكل تابع أو مستأجر",
+          "بلا timeout على الانتظار → طوابير لانهائية",
+          "تحت ↓"
+        ],
+        [
+          "عميل/مستأجر بيبعت طلبات أكتر من المتفق",
+          "**Throttling**",
+          "`AddRateLimiter` (sliding window/token bucket مقسّم)",
+          "429 بلا `Retry-After` → العملاء بيدوّروا على الفور",
+          "2.1.5"
+        ],
+        [
+          "ذروة حمل مؤقتة بتوقع المعالجة",
+          "**Queue-Based Load Leveling**",
+          "وسيط رسائل (MassTransit) أو `Channel` محدود + `BackgroundService`",
+          "طابور بلا حد أقصى → استهلاك ذاكرة بلا نهاية",
+          "5.2.1"
+        ],
+        [
+          "عملية أعمال عبر خدمات بلا معاملات موزعة",
+          "**Compensating Transaction (Saga)**",
+          "MassTransit state machine + تعويض",
+          "تعويض بلا idempotency ولا timeout",
+          "5.2.3"
+        ],
+        [
+          "حدث لازم ما يضيعش رغم فشل الوسيط",
+          "**Outbox**",
+          "EF Outbox / outbox يدوي + dispatcher",
+          "نشر خارج المعاملة (ضائع عند الفشل)",
+          "4.2.3"
+        ],
+        [
+          "استقبال حدث مكرر",
+          "**Idempotent Receiver**",
+          "قيد فريد / تحديث شرطي / مفاتيح idempotency",
+          "جدول مفاتيح بلا نافذة صحيحة",
+          "5.2.5"
+        ],
+        [
+          "رسائل كبيرة بتبطّئ الوسيط",
+          "**Claim Check**",
+          "Blob storage + مرجع في الحدث",
+          "مرجع بلا TTL/صلاحيات → رسالة ميتة",
+          "—"
+        ],
+        [
+          "محاولة ثانية بعد فشل عابر",
+          "**Retry (backoff + jitter)**",
+          "`RetryStrategy` مع `DelayGenerator`",
+          "retry بلا jitter → موجات متزامنة (thundering herd)",
+          "5.2.4"
+        ],
+        [
+          "معرفة هل التابع سليم قبل ما تقرر readiness",
+          "**Health Endpoint Monitoring**",
+          "`AddHealthChecks` + فحوصات تابعة",
+          "`/health` بيتحقق من كل حاجة → liveness فاشل يعيد تشغيل سليم",
+          "2.3.4"
+        ],
+        [
+          "قراءة من نسخة طبقية لتقليل الحمل",
+          "**CQRS / Materialized View**",
+          "قراءة من projector/قاعدة قراءة (درس 4.2.2)",
+          "view من غير آلية تحديث/تأخير مُعلن",
+          "4.2.2"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) Cache-Aside: التنفيذ الكامل (مع الإبطال والحماية)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Catalog/Read/ProductCatalogReader.cs",
+      "title": "HybridCache + وسوم إبطال + fail-open + مقاييس",
+      "code": "\n// packages: Microsoft.Extensions.Caching.Hybrid (.NET 9+)\n// requires: using Microsoft.Extensions.Caching.Hybrid;\n\n/// <summary>\n/// ★ Cache-Aside: اقرأ من الكاش → لو مفقود اجلب من المصدر واملأ الكاش.\n/// `IHybridCache` بيديك: L1 (ذاكرة) + L2 (Redis) + **حماية من stampede** + إبطال بوسوم.\n/// (شرح الطبقات والمقارنة في درس 2.1.6 — هنا التركيز على النمط في سياق خدمات متعددة.)\n/// </summary>\npublic sealed class ProductCatalogReader(\n    IHybridCache cache,\n    CatalogDbContext db,\n    CatalogMetrics metrics,\n    ILogger<ProductCatalogReader> log)\n{\n    private static readonly HybridCacheEntryOptions Options = new()\n    {\n        Expiration = TimeSpan.FromMinutes(5) + TimeSpan.FromSeconds(Random.Shared.Next(0, 60)),  // ★ jitter ضد انتهاء جماعي\n        LocalCacheExpiration = TimeSpan.FromSeconds(30),                                          // L1 قصير (تعدد النسخ)\n    };\n\n    public async Task<ProductView?> GetAsync(Guid productId, CancellationToken ct)\n    {\n        var key = $\"catalog:product:{productId}\";\n\n        try\n        {\n            // ✓ ذرّي: لو 500 طلب وصلوا في نفس اللحظة، واحد فقط بيروح للـDB (stampede protection)\n            return await cache.GetOrCreateAsync(\n                key,\n                async token => await LoadFromDbAsync(productId, token),\n                Options,\n                tags: [$\"product:{productId}\", \"catalog:products\"],   // ★ وسوم للإبطال الدقيق\n                cancellationToken: ct);\n        }\n        catch (Exception ex) when (ex is not OperationCanceledException)\n        {\n            // ✓ fail-open: الكاش واقع → اكمل من المصدر (بلا تعطيل الخدمة)\n            metrics.CacheFailures.Add(1);\n            log.LogWarning(ex, \"cache unavailable for {Key} — falling back to database\", key);\n            return await LoadFromDbAsync(productId, ct);\n        }\n    }\n\n    /// <summary>★ الكتابة تُبطل الكاش — لا تحاول تحديثه (سباق + تعقيد بلا فائدة).</summary>\n    public async Task InvalidateAsync(Guid productId, CancellationToken ct)\n    {\n        try\n        {\n            await cache.RemoveByTagAsync($\"product:{productId}\", ct);\n            metrics.CacheInvalidations.Add(1, new(\"reason\", \"write\"));\n        }\n        catch (Exception ex)\n        {\n            // ⚠ فشل الإبطال = بيانات قديمة تُخدم. سجل + قِس + أنذر (ولا تبتلع الخطأ بصمت)\n            metrics.CacheInvalidationFailures.Add(1);\n            log.LogError(ex, \"failed to invalidate cache for product {ProductId} — serving stale until TTL\", productId);\n        }\n    }\n\n    private async Task<ProductView?> LoadFromDbAsync(Guid productId, CancellationToken ct)\n    {\n        metrics.CacheLoads.Add(1);\n        var product = await db.Products\n            .Where(p => p.Id == productId)\n            .Select(p => new ProductView(p.Id, p.Name, p.PriceMinor, p.Currency, p.Stock))\n            .FirstOrDefaultAsync(ct);\n\n        if (product is null)\n        {\n            // ★ حماية من cache penetration: خزّن «غير موجود» بـTTL قصير (وإلا كل طلب لمعرّف غلط يضرب DB)\n            log.LogDebug(\"product {ProductId} not found — caching negative result briefly\", productId);\n        }\n\n        return product;\n    }\n}\n\npublic sealed record ProductView(Guid Id, string Name, long PriceMinor, string Currency, int Stock);\n\npublic sealed class CatalogMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Catalog\", \"1.0.0\");\n    public Counter<long> CacheLoads              = Meter.CreateCounter<long>(\"catalog.cache.loads\");\n    public Counter<long> CacheInvalidations      = Meter.CreateCounter<long>(\"catalog.cache.invalidations\");\n    public Counter<long> CacheInvalidationFailures = Meter.CreateCounter<long>(\"catalog.cache.invalidation_failures\");\n    public Counter<long> CacheFailures           = Meter.CreateCounter<long>(\"catalog.cache.failures\");\n}\n\n// ── التسجيل ──\n// builder.Services.AddHybridCache(o =>\n// {\n//     o.DefaultEntryOptions = new HybridCacheEntryOptions\n//     {\n//         Expiration = TimeSpan.FromMinutes(5),\n//         LocalCacheExpiration = TimeSpan.FromSeconds(30),\n//     };\n//     o.MaximumPayloadBytes = 1024 * 1024;          // ✓ حد أقصى لحجم العنصر (حماية ذاكرة)\n// });\n// ✓ الطبقة الثانية (L2): سجّل IDistributedCache عبر تكامل Aspire، وHybridCache بيستخدمه تلقائيًا\n// builder.AddRedisDistributedCache(\"cache\");        // حزمة Aspire.StackExchange.Redis (درس 5.3.1)\n// builder.Services.AddHybridCache(o => { /* DefaultEntryOptions/MaximumPayloadBytes */ });\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "Cache-aside مقابل البدائل — اختار بوعي",
+      "md": "\n| النمط | الكتابة | القراءة | إمتى |\n|---|---|---|---|\n| **Cache-Aside** | التطبيق يكتب للمصدر **ويُبطل** الكاش | من الكاش، ولو مفقود من المصدر | ★ الافتراضي: بيانات تُحسب غالية وتتحمل ثواني تأخير |\n| **Write-Through** | التطبيق يكتب للكاش **والمصدر** معًا | من الكاش (دائمًا موجود) | قراءة كثيفة جدًا وتأخير كتابة مقبول |\n| **Write-Behind** | للكاش فقط، والتخزين لاحقًا | من الكاش | أداء كتابة أقصى — **خطر فقدان بيانات** |\n| **Refresh-Ahead** | — | الكاش بيتحدّث قبل الانتهاء | مفاتيح ساخنة جدًا (يقلل stampede) |\n\n**3 قواعد لا تتفاوض عليها في cache-aside:**\n1. **الإبطال عند الكتابة، مش التحديث** — التحديث المتزامن من نسختين = بيانات قديمة بشكل دائم.\n2. **TTL + jitter دائمًا** — بلا jitter كل المفاتيح بتنتهي في نفس اللحظة (ذروة على DB).\n3. **الكاش ليس مصدر حقيقة** — لو الكاش ضاع، النظام لازم يفضل شغال (أبطأ). اختبر ده (أوقف Redis).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Bulkhead: عزل الموارد حتى لا يغرق الكل"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Orders/Infrastructure/Bulkheads.cs",
+      "title": "عزل لكل تابع + لكل مستأجر (بـtimeout ورفض صريح)",
+      "code": "\n// packages: Microsoft.Extensions.Resilience\n// requires: using Microsoft.Extensions.DependencyInjection; using Microsoft.Extensions.Resilience;\n//           using Polly.Concurrency; using System.Threading.RateLimiting;   // ← QueueProcessingOrder\n\n/// <summary>\n/// ★ Bulkhead = حد أقصى للتزامن + طابور محدود + **رفض صريح** عند الامتلاء.\n/// الهدف: تابع بطيء (مدفوعات) ما يستهلكش كل اتصالات/خيوط الخدمة فيعطّل حتى القراءات السريعة.\n/// </summary>\npublic static class BulkheadRegistration\n{\n    public static IServiceCollection AddOrderBulkheads(this IServiceCollection services)\n    {\n        // ① لكل **تابع خارجي** pipeline خاص (مش pipeline واحد مشترك)\n        services.AddResiliencePipeline(\"ExternalPayment\", builder => builder\n            .AddConcurrencyLimiter(new ConcurrencyLimiterOptions\n            {\n                PermitLimit = 12,          // ★ أقصى 12 نداء متزامن للبوابة\n                QueueProcessingOrder = QueueProcessingOrder.OldestFirst,\n                QueueLimit = 24,           // ✓ طابور محدود: الزيادة تُرفض فورًا (backpressure)\n            })\n            .AddTimeout(TimeSpan.FromSeconds(20)));   // ← من ميزانية المهلة (درس 5.2.4)\n\n        services.AddResiliencePipeline(\"ExternalShipping\", builder => builder\n            .AddConcurrencyLimiter(new ConcurrencyLimiterOptions { PermitLimit = 6, QueueLimit = 12 })\n            .AddTimeout(TimeSpan.FromSeconds(15)));\n\n        services.AddResiliencePipeline(\"InternalRead\", builder => builder\n            .AddConcurrencyLimiter(new ConcurrencyLimiterOptions { PermitLimit = 64, QueueLimit = 128 })\n            .AddTimeout(TimeSpan.FromSeconds(3)));\n\n        // ② عزل **لكل مستأجر**: مستأجر واحد مسيء ما يحرقش حصة الباقين\n        services.AddSingleton<TenantBulkheadRegistry>();\n\n        return services;\n    }\n}\n\n/// <summary>bulkhead لكل مستأجر، مع timeout على الانتظار ورفض صريح (429).</summary>\npublic sealed class TenantBulkheadRegistry(TenantBulkheadOptions options)\n{\n    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _gates = new();\n\n    public async Task<T> ExecuteAsync<T>(string tenantId, Func<CancellationToken, Task<T>> action, CancellationToken ct)\n    {\n        var gate = _gates.GetOrAdd(tenantId, _ => new SemaphoreSlim(options.MaxConcurrencyPerTenant,\n                                                                     options.MaxConcurrencyPerTenant));\n\n        // ✓ الانتظار **محدود بزمن** — بلا timeout الطابور بيكبر لانهائيًا\n        if (!await gate.WaitAsync(options.AcquireTimeout, ct))\n        {\n            BulkheadMetrics.Rejections.Add(1, new(\"tenant\", tenantId, \"reason\", \"saturated\"));\n            throw new TenantRateLimitedException(tenantId, options.AcquireTimeout);   // ← يتحوّل لـ429\n        }\n\n        try\n        {\n            BulkheadMetrics.InFlight.Add(1, new(\"tenant\", tenantId));\n            return await action(ct);\n        }\n        finally\n        {\n            BulkheadMetrics.InFlight.Add(-1, new(\"tenant\", tenantId));\n            gate.Release();\n        }\n    }\n}\n\npublic sealed class TenantBulkheadOptions\n{\n    public int MaxConcurrencyPerTenant { get; init; } = 8;\n    public TimeSpan AcquireTimeout { get; init; } = TimeSpan.FromSeconds(2);   // ★ قصير: ارفض بسرعة\n}\n\npublic sealed class TenantRateLimitedException(string tenantId, TimeSpan waited)\n    : Exception($\"المستأجر {tenantId} تجاوز حد التزامن بعد انتظار {waited.TotalSeconds}s\");\n\npublic static class BulkheadMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Bulkhead\", \"1.0.0\");\n    public Counter<long> Rejections = Meter.CreateCounter<long>(\"bulkhead.rejections\");\n    public ObservableGauge<int> InFlight = Meter.CreateObservableGauge(\"bulkhead.inflight\", () => 0);   // ✓ اربطه بقيمة حقيقية\n}\n\n// ── الاستخدام في endpoint ──\n// app.MapPost(\"/api/orders\", async (PlaceOrderRequest req, TenantBulkheadRegistry bulkheads,\n//                                   OrderService orders, HttpContext http) =>\n// {\n//     var tenantId = http.User.FindFirst(\"tenant_id\")?.Value ?? \"anonymous\";\n//     try\n//     {\n//         return await bulkheads.ExecuteAsync(tenantId, ct => orders.PlaceAsync(req, ct), http.RequestAborted);\n//     }\n//     catch (TenantRateLimitedException)\n//     {\n//         // ✓ ارفض بسرعة وبوضوح (بلا طوابير لانهائية)\n//         return Results.Problem(statusCode: StatusCodes.Status429TooManyRequests,\n//             title: \"TooManyRequests\", detail: \"تجاوزت حد التزامن لمستأجرك — أعد المحاولة بعد قليل\",\n//             extensions: new Dictionary<string, object?> { [\"retryAfterSeconds\"] = 2 });\n//     }\n// });\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "بُعد العزل",
+        "مثال",
+        "الحد النموذجي",
+        "عند الامتلاء"
+      ],
+      "rows": [
+        [
+          "لكل **تابع خارجي**",
+          "بوابة الدفع، الشحن، SMS",
+          "6–20 متزامن + طابور ≤ 2×",
+          "رفض/503 مع fallback لو متاح"
+        ],
+        [
+          "لكل **مستأجر/عميل**",
+          "طلبات مستأجر واحد",
+          "4–16 متزامن",
+          "429 + `Retry-After`"
+        ],
+        [
+          "لكل **مسار/عملية**",
+          "التقارير الثقيلة مقابل القراءات",
+          "pool منفصل (اتصالات/خيوط)",
+          "طابور محدود أو رفض"
+        ],
+        [
+          "لكل **قاعدة بيانات**",
+          "اتصالات Npgsql لكل خدمة",
+          "`Max Pool Size` (درس 3.4.2)",
+          "timeout على الفتح → 503"
+        ],
+        [
+          "لكل **مستهلك رسائل**",
+          "مستهلك الأحداث مقابل مستهلك التقارير",
+          "`PrefetchCount`/`ConcurrentMessageLimit`",
+          "الرسائل تنتظر في الطابور (مقبول)"
+        ],
+        [
+          "لكل **نسخة/منطقة**",
+          "خدمة في منطقة مقابل تانية",
+          "routing + weights",
+          "تحويل للحمل المتبقي"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) Throttling: احمِ نفسك قبل ما تحمي عملاءك"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Gateway/RateLimiting.cs",
+      "title": "مقسّم حسب المستأجر + عام + token bucket للانفجارات",
+      "code": "\n// requires: using System.Globalization;               // ← NumberFormatInfo\n//           using System.Threading.RateLimiting;      // ← limiters + MetadataName\n//           using Microsoft.AspNetCore.RateLimiting;\n\npublic static class GatewayRateLimiting\n{\n    public static IServiceCollection AddGatewayRateLimiting(this IServiceCollection services)\n    {\n        services.AddRateLimiter(options =>\n        {\n            // ✓ الرفض لازم يكون مفهومًا: 429 + Retry-After + جسم problem+json (درس 2.1.4)\n            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;\n            options.OnRejected = async (context, ct) =>\n            {\n                var lease = context.Lease;\n                if (lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))\n                {\n                    context.HttpContext.Response.Headers.RetryAfter =\n                        ((int)retryAfter.TotalSeconds).ToString(NumberFormatInfo.InvariantInfo);\n                }\n\n                ThrottleMetrics.Rejections.Add(1, new(\n                    \"policy\", context.HttpContext.GetEndpoint()?.DisplayName ?? \"unknown\",\n                    \"tenant\", context.HttpContext.User.FindFirst(\"tenant_id\")?.Value ?? \"anonymous\"));\n\n                context.HttpContext.Response.ContentType = \"application/problem+json\";\n                await context.HttpContext.Response.WriteAsJsonAsync(new\n                {\n                    type = \"https://tools.ietf.org/html/rfc6585#section-4\",\n                    title = \"Too Many Requests\",\n                    status = 429,\n                    detail = \"تجاوزت الحد المسموح — راجع ترويسة Retry-After\",\n                }, ct);\n            };\n\n            // ① سياسة لكل مستأجر: نافذة منزلقة (أعدل من الثابتة عند الحدود)\n            options.AddPolicy(\"per-tenant\", httpContext =>\n            {\n                var tenantId = httpContext.User.FindFirst(\"tenant_id\")?.Value\n                               ?? httpContext.Connection.RemoteIpAddress?.ToString()\n                               ?? \"anonymous\";\n\n                return RateLimitPartition.GetSlidingWindowLimiter(tenantId, _ => new SlidingWindowRateLimiterOptions\n                {\n                    PermitLimit = 120,                              // 120 طلب\n                    Window = TimeSpan.FromMinutes(1),               // في الدقيقة\n                    SegmentsPerWindow = 6,                          // ★ دقة أعلى = عدل أكثر\n                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,\n                    QueueLimit = 0,                                 // ✓ بلا طابور: ارفض فورًا (backpressure)\n                });\n            });\n\n            // ② سياسة للانفجارات: token bucket يسمح بدفعة ثم يهدّئ\n            options.AddPolicy(\"burst\", httpContext =>\n                RateLimitPartition.GetTokenBucketLimiter(\n                    httpContext.User.FindFirst(\"tenant_id\")?.Value ?? \"anonymous\",\n                    _ => new TokenBucketRateLimiterOptions\n                    {\n                        TokenLimit = 50,\n                        TokensPerPeriod = 10,\n                        ReplenishmentPeriod = TimeSpan.FromSeconds(1),\n                        QueueLimit = 0,\n                        AutoReplenishment = true,\n                    }));\n\n            // ③ حد عام لكل الخدمة (حماية أخيرة من DDoS خفيف/خطأ في عميل)\n            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>\n                RateLimitPartition.GetFixedWindowLimiter(\"global\", _ => new FixedWindowRateLimiterOptions\n                {\n                    PermitLimit = 5_000,\n                    Window = TimeSpan.FromSeconds(1),\n                    QueueLimit = 0,\n                }));\n        });\n\n        return services;\n    }\n}\n\npublic static class ThrottleMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Gateway\", \"1.0.0\");\n    public Counter<long> Rejections = Meter.CreateCounter<long>(\"gateway.rate_limit.rejections\");\n}\n\n// ── الاستخدام ──\n// var app = builder.Build();\n// app.UseRateLimiter();                              // ★ بعد المصادقة (عشان تقسّم بالمستأجر) وقبل الـendpoints\n// app.MapGet(\"/api/catalog/products\", Handler).RequireRateLimiting(\"per-tenant\");\n// app.MapPost(\"/api/orders\",        Handler).RequireRateLimiting(\"burst\");\n// app.MapPost(\"/api/reports\",       Handler).RequireRateLimiting(\"per-tenant\");   // ← المسارات الغالية أولًا\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "Throttling: 6 قرارات لا تتجاهلها",
+      "md": "\n1. **ارفض بوضوح**: `429` + `Retry-After` + `application/problem+json`. عميل بلا `Retry-After` بيعيد فورًا = ذروة تانية.\n2. **التقسيم بالمستأجر/العميل، مش بالمنفذ العام فقط** — حد عام بس معناه إن مستأجر واحد مسيء يعطّل الكل.\n3. **الترتيب مهم**: `UseAuthentication` → `UseRateLimiter` → endpoints (وإلا هتقسّم بـ«anonymous» للجميع).\n4. **احمي المسارات الغالية أولًا** (تقارير، بحث، تصدير) — مش كل المسارات بنفس الحد.\n5. **ثبّت الحدود بقياس**: من p95 للحمل الحقيقي × هامش، مش رقم من مقال. وراجعها كل فترة.\n6. **لا تعاقب عملاءك بإعادة محاولة أعمى**: في **جهة العميل** احترم `Retry-After` عبر `DelayGenerator`\n   (درس 5.2.4) — وقلّل المعدل محليًا (client-side throttling) بدل ما تغرق الشبكة.\n\n⚠ **فرّق بين throttling وbulkhead**: الـthrottling بيحدّ **معدل** الطلبات (لكل فترة)،\nوالـbulkhead بيحدّ **التزامن** (كم طلب شغال دلوقتي). الاتنين مطلوبين لحماية مختلفة:\nمعدل عالي بتزامن منخفض = طوابير، وتزامن عالي بمعدل منخفض = انفجار لحظي.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) Queue-Based Load Leveling: امتصاص الذروة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Ingest/IngestionQueue.cs",
+      "title": "Channel محدود + backpressure + مقاييس",
+      "code": "\n// requires: using System.Threading.Channels;\n\n/// <summary>\n/// ★ النمط: قبول العمل فورًا في طابور **محدود**، ومعالجته بمعدل ثابت — بدل الانهيار تحت الذروة.\n/// استخدم وسيط رسائل (RabbitMQ/Kafka) لما تحتاج توزيعًا/تكرارًا/تسليمًا موثوقًا (درس 5.2.1)،\n/// و`Channel` في الذاكرة لما الطابور داخلي لعملية واحدة ولازم يكون رخيصًا.\n/// </summary>\npublic sealed class IngestionQueue(IngestionOptions options, IngestionMetrics metrics, ILogger<IngestionQueue> log)\n{\n    // ✓ BoundedChannelOptions.FullMode.Wait = backpressure: المنتج ينتظر بدل ما يملأ الذاكرة\n    private readonly Channel<IngestItem> _channel = Channel.CreateBounded<IngestItem>(\n        new BoundedChannelOptions(options.Capacity)\n        {\n            FullMode = BoundedChannelFullMode.Wait,\n            SingleReader = false,\n            SingleWriter = false,\n        });\n\n    public async ValueTask EnqueueAsync(IngestItem item, CancellationToken ct)\n    {\n        // ⚠ لو الطابور ممتلئ: `WriteAsync` هينتظر. لو الانتظار أطول من الميزانية → ارفض (429/503)\n        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);\n        timeout.CancelAfter(options.EnqueueTimeout);\n\n        try\n        {\n            await _channel.Writer.WriteAsync(item, timeout.Token);\n            metrics.EnqueueDepth.Add(1);\n        }\n        catch (OperationCanceledException) when (!ct.IsCancellationRequested)\n        {\n            metrics.Rejections.Add(1, new(\"reason\", \"queue_full\"));\n            log.LogWarning(\"ingestion queue full (capacity {Capacity}) — rejecting item\", options.Capacity);\n            throw new QueueFullException(options.Capacity);     // ← يتحوّل لـ429/503 في الـendpoint\n        }\n    }\n\n    /// <summary>المعالجة بمعدل ثابت (مستهلك واحد أو أكثر) — ★ لا تطلق مهام بلا حدود.</summary>\n    public async Task ProcessAsync(Func<IngestItem, CancellationToken, Task> handler, CancellationToken ct)\n    {\n        await foreach (var item in _channel.Reader.ReadAllAsync(ct))\n        {\n            metrics.EnqueueDepth.Add(-1);\n            try\n            {\n                await handler(item, ct);\n            }\n            catch (Exception ex) when (ex is not OperationCanceledException)\n            {\n                // ✓ فشل عنصر لا يوقف الطابور: سجل + عدّاد + (اختياري) طابور ميت\n                metrics.Failures.Add(1, new(\"reason\", ex.GetType().Name));\n                log.LogError(ex, \"failed to process ingestion item {ItemId}\", item.Id);\n            }\n        }\n    }\n}\n\npublic sealed record IngestItem(Guid Id, string Kind, string PayloadJson, DateTimeOffset ReceivedAt);\n\npublic sealed class IngestionOptions\n{\n    public int Capacity { get; init; } = 10_000;                      // ★ محدود دائمًا\n    public TimeSpan EnqueueTimeout { get; init; } = TimeSpan.FromMilliseconds(500);\n    public int Workers { get; init; } = 4;                            // ← bulkhead ضمني على المعالجة\n}\n\npublic sealed class QueueFullException(int capacity)\n    : Exception($\"طابور الاستيعاب ممتلئ ({capacity})\");\n\npublic sealed class IngestionMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Ingest\", \"1.0.0\");\n    public Counter<long> Rejections = Meter.CreateCounter<long>(\"ingest.rejections\");\n    public Counter<long> Failures   = Meter.CreateCounter<long>(\"ingest.failures\");\n    public Counter<long> EnqueueDepth = Meter.CreateCounter<long>(\"ingest.depth_delta\");   // ✓ عمق الطابور (delta)\n}\n\n// ── التشغيل كـBackgroundService (درس 2.3.2) ──\npublic sealed class IngestionWorker(IngestionQueue queue, IngestionOptions options, IngestHandler handler)\n    : BackgroundService\n{\n    protected override async Task ExecuteAsync(CancellationToken ct)\n    {\n        // ★ عدد عمال ثابت = bulkhead على المعالجة (بلا Task.Run لكل عنصر)\n        var workers = Enumerable.Range(0, options.Workers)\n            .Select(_ => queue.ProcessAsync(handler.HandleAsync, ct))\n            .ToArray();\n\n        await Task.WhenAll(workers);\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "إعداد وسيط الرسائل",
+        "أثره",
+        "متى تزوّده"
+      ],
+      "rows": [
+        [
+          "`PrefetchCount` (MassTransit/RabbitMQ)",
+          "كم رسالة محجوزة عند المستهلك قبل المعالجة",
+          "الحمل عالي والعناصر قصيرة → زوّد؛ العناصر ثقيلة/ذاكرة محدودة → قلّل"
+        ],
+        [
+          "`ConcurrentMessageLimit`",
+          "أقصى معالجة متزامنة **لكل** مستهلك",
+          "التابع بطيء/محدود (bulkhead) → قلّله"
+        ],
+        [
+          "عدد المستهلكين (instances)",
+          "القدرة الكلية على المعالجة",
+          "عمق الطابور بيكسر باستمرار → زوّد النسخ (HPA في K8s)"
+        ],
+        [
+          "`QueueLimit` / `Capacity`",
+          "حد الطابور قبل الرفض",
+          "دائمًا محدود — بلا حدود = OOM"
+        ],
+        [
+          "TTL على الطابور/الرسالة",
+          "رمي الرسائل القديمة بدل معالجتها متأخرة",
+          "أحداث لها صلاحية (أسعار، إشعارات فورية)"
+        ],
+        [
+          "Dead-letter + إعادة تسليم",
+          "مصير الرسائل الفاشلة",
+          "دائمًا (درس 5.2.1) — بلاها الرسائل بتضيع بصمت"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "6) وثّق القرار: ADR للنمط المختار"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "filename": "docs/adr/0007-bulkhead-per-tenant.md",
+      "title": "قالب ADR لنمط (قصير، قابل للمراجعة)",
+      "code": "\n# ADR-0007: عزل التزامن لكل مستأجر (Bulkhead) في Orders API\n\n- الحالة: مقبول\n- التاريخ: 2026-10-22\n- أصحاب القرار: فريق Orders + فريق المنصة\n\n## السياق (بأرقام، مش بإحساس)\nفي 2026-10-14 بين 09:10 و09:25، مستأجر واحد (`tenant-77`) بعت 1,900 طلب إنشاء طلب\n(مقابل متوسط 60/دقيقة لباقي المستأجرين). النتيجة المقاسة من لوحة Aspire وPrometheus:\n- p95 لإنشاء الطلب عبر **كل** المستأجرين: 240ms → 6.8s\n- 412 طلب فشلوا بـ504 من الـgateway\n- استهلاك pool اتصالات Postgres: 100% (Max Pool Size=100) لمدة 9 دقايق\nالسبب: مفيش حد على التزامن لكل مستأجر → الطلبات البطيئة احتلت كل الاتصالات.\n\n## القرار\nنطبق **Bulkhead** لكل مستأجر بحد 8 عمليات متزامنة و`AcquireTimeout` = 2 ثانية،\nوالرفض يرجع `429` + `Retry-After: 2` + `application/problem+json`.\nبالإضافة لـ**Throttling** لكل مستأجر: 120 طلب/دقيقة (نافذة منزلقة، 6 قطع).\n\n## البدائل المرفوضة\n1. **حد عام لكل الخدمة فقط**: ما بيمنعش مستأجر واحد من استهلاك الحصة كلها (وده اللي حصل).\n2. **طابور غير متزامن لكل الطلبات**: بيغير عقد الـAPI (متزامن → غير متزامن) ويأثر على كل العملاء.\n3. **رفع `Max Pool Size`**: بيأجل المشكلة وينقلها لـDB (درس 3.4.2) — بلا عزل السبب الجذري.\n4. **throttling فقط بلا bulkhead**: المعدل ممكن يبقى ضمن الحد لكن بالتزامن الكامل (طلبات طويلة).\n\n## النتائج\n**إيجابية:**\n- فشل مستأجر واحد ما يعديش لباقي المستأجرين (يُثبت باختبار فشل مُفتعل — درس 5.3.3).\n- رفض سريع وواضح (429) بدل timeouts غامضة.\n\n**سلبية / تكلفة:**\n- عميل شرعي بيعمل دفعة كبيرة هياخد 429 → محتاج توثيق + دعم `Retry-After` في SDK العميل.\n- إعداد إضافي لكل مستأجر (الحدود) → بدأنا بقيمة واحدة وبعدين per-tenant overrides.\n- مقياس جديد للمراقبة (`bulkhead.rejections`, `bulkhead.inflight`) وإنذار عند رفض > 1%.\n\n## التحقق (مقاس بعد التطبيق)\n- p95 أثناء إعادة تمثيل الحادث: 6.8s → 310ms (باقي المستأجرين غير متأثرين)\n- `tenant-77`: 429s واضحة بدل 504s\n- الاختبار: `When_tenant_exceeds_concurrency_other_tenants_are_unaffected` (أخضر في CI)\n\n## مراجعة\nتُراجع الحدود كل ربع سنة مقابل الحمل الفعلي، أو فورًا لو `bulkhead.rejections` > 1% من الطلبات.\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "8 أخطاء في تطبيق الأنماط (بتحوّل الحل لمشكلة)",
+      "md": "\n1. **الكاش كمصدر حقيقة**: لو فقدان الكاش بيعطّل الخدمة، ده مش كاش — ده قاعدة بيانات بلا متانة. اختبر fail-open.\n2. **Bulkhead بلا timeout على الانتظار**: الطابور بيكبر لحد استهلاك الذاكرة. الرفض السريع أفضل من الانتظار الطويل.\n3. **Circuit breaker واحد لكل التبعيات**: تابع واحد بطيء بيفتح الدايرة على الكل. breaker **لكل تابع** (درس 5.2.4).\n4. **Throttling بلا `Retry-After`**: العملاء بيعيدوا المحاولة فورًا → الذروة بتتكرر.\n5. **طابور بلا حد أقصى**: بلا `Capacity`/`QueueLimit`، الذروة بتتحول لـOOM بدل رفض واضح.\n6. **نمط بلا مقياس**: لو مش بتقيس hit rate / rejections / breaker state، مش هتعرف إنه شغال أو إنه بيضر.\n7. **أنماط متراكمة بلا حاجة**: retry + breaker + bulkhead + hedging + fallback على نداء داخلي بسيط =\n   تعقيد وأعطال جديدة (زي «retry داخل retry» في درس 5.2.4). طبّق النمط لما **القياس** يثبت المشكلة.\n8. **نسخ كود من مقال بلا فهم الوسائط**: `PermitLimit=12` من أين؟ من قياس p95 وقدرة التابع — مش رقم سحري.\n\n✅ **اختبار سريع لأي نمط طبقته**: «لو المكوّن ده فشل/امتلى، إيه اللي بيحصل للمستخدم؟» —\nلو الإجابة «مش عارف»، النمط ناقص (مقياس/رفض واضح/fallback/توثيق).\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أختار النمط من مشكلة **مقاسة** (جدول الاختيار)، وأعرف تكلفة كل نمط وأرفض ما لا أحتاجه.",
+        "أنفّذ Cache-aside بـ`IHybridCache`: وسوم إبطال، TTL + jitter، حماية stampede، fail-open، وحماية penetration.",
+        "أنفّذ Bulkhead لكل تابع ولكل مستأجر بحدود تزامن وطوابير محدودة وtimeout ورفض صريح (429).",
+        "أنفّذ Throttling مقسّمًا بالمستأجر (نافذة منزلقة + token bucket + حد عام) مع `Retry-After` وproblem+json.",
+        "أنفّذ Queue-based load leveling بطابور محدود + backpressure + عمال ثابتين + مقاييس عمق الطابور.",
+        "أوثّق كل نمط في ADR بأرقام من السياق وبدائل مرفوضة ونتائج مُقاسة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "في Cache-aside، عند الكتابة بنعمل إيه؟",
+          "options": [
+            "نحدّث الكاش ثم المصدر",
+            "نكتب للمصدر ثم **نبطل** مدخلات الكاش (invalidate) — التحديث المتزامن من نسختين بيسبب بيانات قديمة دائمة",
+            "نكتب للكاش فقط",
+            "ما نلمسش الكاش ونسيب TTL"
+          ],
+          "answer": 1,
+          "explain": "الإبطال أبسط وآمن. وسيب TTL كحد أقصى لعمر البيانات القديمة، مع jitter عشان المفاتيح ما تنتهيش كلها في نفس اللحظة."
+        },
+        {
+          "q": "فرق Throttling عن Bulkhead؟",
+          "options": [
+            "مفيش فرق",
+            "Throttling بيحدّ **المعدل** (طلبات/فترة) · Bulkhead بيحدّ **التزامن** (كم عملية شغالة دلوقتي) — والاتنين مطلوبين",
+            "Bulkhead للشبكة فقط",
+            "Throttling للتبعيات الخارجية فقط"
+          ],
+          "answer": 1,
+          "explain": "معدل ضمن الحد بتزامن كامل = طوابير/استهلاك موارد. وتزامن منخفض بمعدل عالي = رفض كتير. الحماية الكاملة تحتاج الاتنين."
+        },
+        {
+          "q": "ليه `BoundedChannelOptions.FullMode.Wait` + `EnqueueTimeout` بدل طابور غير محدود؟",
+          "options": [
+            "أداء أفضل",
+            "الطابور غير المحدود بيحوّل الذروة لاستهلاك ذاكرة بلا نهاية (OOM)؛ المحدود + timeout بيدي **backpressure** واضح (رفض 429/503)",
+            "مطلوب من Channel",
+            "عشان المقاييس"
+          ],
+          "answer": 1,
+          "explain": "الرفض السريع والواضح أفضل من الانهيار البطيء. وبلّغ العميل بـ429 + `Retry-After` عشان يعدّل معدله."
+        },
+        {
+          "q": "مستأجر واحد بعت 30 ضعف المعدل الطبيعي. حد عام واحد (global limiter) كفاية؟",
+          "options": [
+            "نعم، ده الغرض منه",
+            "لا — لازم تقسيم لكل مستأجر/عميل (partitioned)، وإلا المستأجر المسيء هيستهلك الحصة العامة ويحرم الباقي (bulkhead + throttling لكل مستأجر)",
+            "كفاية لو زاد الحد",
+            "كفاية مع retry"
+          ],
+          "answer": 1,
+          "explain": "الحد العام حماية أخيرة. الحماية الحقيقية بتقسيم الموارد/المعدلات لكل مستأجر — وده اللي بيثبته الـADR في الدرس."
+        },
+        {
+          "q": "Circuit breaker واحد مشترك لكل التبعيات الخارجية. المشكلة؟",
+          "options": [
+            "مفيش مشكلة (أبسط)",
+            "تابع واحد فاشل بيفتح الدايرة على **كل** التبعيات → نداءات صحية بتُرفض. breaker لكل تابع بإعداداته الخاصة",
+            "بيستهلك ذاكرة",
+            "ما بيشتغلش مع retry"
+          ],
+          "answer": 1,
+          "explain": "كل تابع له ميزانية مهلة وحد فشل مختلف (درس 5.2.4). العزل ده هو نفسه فكرة الـbulkhead مطبقة على الفشل."
+        },
+        {
+          "q": "طبقت 4 أنماط (retry + breaker + bulkhead + hedging) على نداء داخلي سريع. التقييم؟",
+          "options": [
+            "ممتاز — حماية قصوى",
+            "over-engineering: كل نمط تكلفة وتعقيد وفشل جديد محتمل. طبّق النمط لما **قياس** يثبت المشكلة",
+            "ينقصه fallback",
+            "ينقصه timeout"
+          ],
+          "answer": 1,
+          "explain": "القاعدة: نمط واحد لكل مشكلة مقاسة. تكديس الأنماط بيولد تفاعلات غريبة (مثل retry داخل retry) وبيصعّب التشخيص."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "3 أنماط مطبقة ومقاسة + ADR لكل واحد",
+          "md": "اختار 3 أنماط من الجدول (منها Cache-aside وBulkhead أو Throttling إلزاميًا) وطبّقهم في مشروعك على مشكلة **مقاسة فعلًا**، واكتب ADR لكل نمط بالسياق الرقمي والبدائل المرفوضة والنتائج بعد التطبيق.",
+          "criteria": [
+            "لكل نمط: دليل رقمي على المشكلة **قبل** التطبيق (لقطة/مقياس/لوج من اللوحة أو Prometheus)",
+            "تنفيذ كامل بالكود: Cache-aside (إبطال بوسوم + TTL+jitter + fail-open) · Bulkhead (حد + طابور محدود + timeout + 429) · Throttling (تقسيم مستأجر + `Retry-After` + problem+json)",
+            "مقياس لكل نمط (`cache.hit/miss`, `bulkhead.rejections/inflight`, `gateway.rate_limit.rejections`) معروض في اللوحة",
+            "اختبار لكل نمط: فقدان الكاش → الخدمة ترد (أبطأ) · تجاوز التزامن لمستأجر → مستأجر تاني غير متأثر · تجاوز المعدل → 429 مع `Retry-After`",
+            "3 ملفات ADR بالقالب (سياق بأرقام · قرار · بدائل مرفوضة · نتائج · مراجعة)",
+            "الوسائط مبررة (من أين جاء `PermitLimit=8`؟) — مش أرقام منسوخة",
+            "جدول «الأنماط المرفوضة»: نمط × سبب الرفض (دليل إنك اخترت بوعي)"
+          ],
+          "hint": "ابدأ بالقياس: شغّل k6 أو 50 طلب متزامن وشوف p95 ومقاييسك، وبعدين طبّق النمط وقِس تاني. الفرق الرقمي هو محتوى الـADR.",
+          "solution": "",
+          "resources": [
+            {
+              "label": "Azure Architecture Center — Cloud design patterns",
+              "url": "https://learn.microsoft.com/azure/architecture/patterns/"
+            },
+            {
+              "label": "Cache-Aside pattern",
+              "url": "https://learn.microsoft.com/azure/architecture/patterns/cache-aside"
+            },
+            {
+              "label": "Bulkhead pattern",
+              "url": "https://learn.microsoft.com/azure/architecture/patterns/bulkhead"
+            }
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "اختبار فشل مُفتعل يثبت إن الأنماط شغالة",
+          "md": "ابنِ سيناريو اختبار (في Aspire أو slice) يفتعل حملًا/فشلًا ويثبت إن كل نمط بيشتغل زي ما هو موثق: امتلاء الطابور، تشبع الـbulkhead، فتح الـbreaker، إبطال الكاش بعد الكتابة، ورفض المعدل. كل سيناريو بيتحقق من **سلوك المستخدم** (كود الحالة/الجسم/الرؤوس) مش من اللوجات فقط.",
+          "criteria": [
+            "5 سيناريوهات: queue full · tenant saturation · breaker open · cache invalidation بعد الكتابة · rate limit exceeded",
+            "كل سيناريو بيتحقق من كود الحالة + `Retry-After`/`X-Degraded` + جسم problem+json (حيث ينطبق)",
+            "كل سيناريو بيتحقق من **عدم تعدّي الضرر**: مستأجر/تابع تاني غير متأثر (assertion صريح)",
+            "حقن العطل عبر مفاتيح تكوين (Development/test فقط) — بلا تعديل كود الإنتاج وقت الاختبار",
+            "المقاييس بتتغير كما هو متوقع (assert على العدادات حيث ممكن)",
+            "الاختبارات مستقرة: 3 تشغيلات متتالية خضرا (بلا `Task.Delay` ثابت)",
+            "فقرة في `docs/patterns.md`: لكل نمط — إزاي أتأكد إنه شغال في الإنتاج (مقياس + إنذار)"
+          ],
+          "solution": "",
+          "resources": [
+            {
+              "label": "Circuit Breaker pattern",
+              "url": "https://learn.microsoft.com/azure/architecture/patterns/circuit-breaker"
+            },
+            {
+              "label": "Throttling pattern",
+              "url": "https://learn.microsoft.com/azure/architecture/patterns/throttling"
+            },
+            {
+              "label": "Queue-Based Load Leveling pattern",
+              "url": "https://learn.microsoft.com/azure/architecture/patterns/queue-based-load-leveling"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Azure Architecture Center — design patterns",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/"
+        },
+        {
+          "label": "Cache-Aside pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/cache-aside"
+        },
+        {
+          "label": "Bulkhead pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/bulkhead"
+        },
+        {
+          "label": "Circuit Breaker pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/circuit-breaker"
+        },
+        {
+          "label": "Throttling pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/throttling"
+        },
+        {
+          "label": "Queue-Based Load Leveling pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/queue-based-load-leveling"
+        },
+        {
+          "label": "Rate limiting in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/performance/rate-limit"
+        },
+        {
+          "label": "HybridCache in .NET",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/hybridcache"
+        }
+      ]
+    }
+  ]
+}

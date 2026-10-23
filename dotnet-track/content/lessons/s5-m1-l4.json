@@ -1,0 +1,329 @@
+{
+  "id": "s5-m1-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nلما الخدمات بتزيد، العميل ما ينفعش يعرف 7 عناوين، ولا يعمل 5 نداءات لتركيب صفحة واحدة،\nولا يتعامل مع TLS ومصادقة ومهل لكل خدمة. هنا بييجي دور **API Gateway**: نقطة دخول واحدة\nبتوجّه، بتجمّع، بتطبّق سياسات (auth، rate limiting، timeouts، retries)، وبتقيس كل حاجة.\n\nفي .NET الاختيار الطبيعي هو **YARP (Yarp Reverse Proxy)**: مكتبة من مايكروسوفت، قابلة للتخصيص بالكامل،\nبتشتغل كـmiddleware داخل ASP.NET Core (مش عملية منفصلة)، وبتدعم HTTP/2 وgRPC وWebSocket.\n\nالدرس ده: إعداد مسارات ومجموعات (routes/clusters) من الإعدادات أو الكود، تحويلات (transforms)،\nتجميع (aggregation) مع فشل جزئي، سياسات أمان ومرونة، canary، ومراقبة — وليه الـgateway\n**ماينفعش يبقى مكان منطق العمل**.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Reverse Proxy",
+          "def": "وسيط يستقبل طلبات العملاء ويوجّهها لخدمات داخلية — العميل يعرف الـgateway فقط."
+        },
+        {
+          "term": "Cluster (YARP)",
+          "def": "مجموعة وجهات (destinations) لخدمة واحدة + سياساتها (توزيع حمل، صحة، affinity، HTTP client)."
+        },
+        {
+          "term": "Route (YARP)",
+          "def": "قاعدة مطابقة (path/host/method/header) → cluster + تحويلات + سياسات."
+        },
+        {
+          "term": "Transform",
+          "def": "تعديل الطلب/الاستجابة أثناء العبور: إضافة/حذف headers، تغيير path، إعادة كتابة host."
+        },
+        {
+          "term": "Load Balancing Policy",
+          "def": "كيف تُختار الوجهة: `FirstAlphabetical`, `Random`, `RoundRobin`, `LeastRequests`, `PowerOfTwoChoices`."
+        },
+        {
+          "term": "Active/Passive Health",
+          "def": "فحص دوري للوجهات (active) مقابل استنتاج الصحة من أكواد الاستجابة (passive) → إبعاد الوجهات المريضة."
+        },
+        {
+          "term": "Session Affinity",
+          "def": "تثبيت العميل على وجهة محددة (مطلوب لبعض الحالات؛ يقلل مرونة التوسع)."
+        },
+        {
+          "term": "API Composition",
+          "def": "جمع نتائج عدة خدمات في استجابة واحدة — في الـgateway أو في BFF."
+        },
+        {
+          "term": "BFF (Backend for Frontend)",
+          "def": "gateway مخصص لواجهة واحدة (ويب/موبايل) — شكله من احتياجات الواجهة."
+        },
+        {
+          "term": "Canary / Blue-Green",
+          "def": "توجيه نسبة صغيرة (أو بحسب header) لإصدار جديد، مع إمكانية الرجوع الفوري."
+        },
+        {
+          "term": "Edge concerns",
+          "def": "ما يخص الحافة: TLS، رؤوس موجهة (Forwarded)، rate limiting، إخفاء داخلي، CORS."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) الإعداد: من appsettings (الأسرع)"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم والمشروع",
+      "code": "\ndotnet new web -n Shop.Gateway -o src/Services/Shop.Gateway\ncd src/Services/Shop.Gateway\ndotnet add package Yarp.ReverseProxy\ndotnet add package Microsoft.Extensions.Http.Resilience\ndotnet add package Serilog.AspNetCore\ndotnet add package Microsoft.Extensions.ServiceDiscovery.Yarp   # خدمة discovery (Aspire، درس 5.3.1)\n"
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "filename": "src/Services/Shop.Gateway/appsettings.json",
+      "title": "مسارات ومجموعات: config-driven",
+      "code": "\n{\n  \"ReverseProxy\": {\n    \"Routes\": {\n      \"catalog-route\": {\n        \"ClusterId\": \"catalog\",\n        \"Match\": { \"Path\": \"/api/catalog/{**catch-all}\", \"Methods\": [ \"GET\", \"POST\", \"PUT\", \"PATCH\", \"DELETE\" ] },\n        \"Transforms\": [\n          { \"PathRemovePrefix\": \"/api/catalog\" },\n          { \"PathPrefix\": \"/catalog\" },\n          { \"RequestHeader\": \"X-Forwarded-Prefix\", \"Set\": \"/api/catalog\" },\n          { \"ResponseHeader\": \"X-Frame-Options\", \"Append\": \"DENY\" }\n        ],\n        \"Metadata\": { \"TimeoutMs\": \"5000\" },\n        \"AuthorizationPolicy\": \"AuthenticatedUsers\",\n        \"RateLimiterPolicy\": \"api-default\",\n        \"CorsPolicy\": \"web-app\"\n      },\n\n      \"orders-route\": {\n        \"ClusterId\": \"orders\",\n        \"Match\": { \"Path\": \"/api/orders/{**catch-all}\" },\n        \"Transforms\": [ { \"PathRemovePrefix\": \"/api\" } ],\n        \"AuthorizationPolicy\": \"AuthenticatedUsers\",\n        \"RateLimiterPolicy\": \"api-default\"\n      },\n\n      \"orders-canary\": {\n        \"ClusterId\": \"orders-v2\",\n        \"Match\": {\n          \"Path\": \"/api/orders/{**catch-all}\",\n          \"Headers\": [ { \"Name\": \"X-Canary\", \"Values\": [ \"v2\" ], \"Mode\": \"ExactHeader\" } ]\n        },\n        \"Order\": -1,\n        \"Transforms\": [ { \"PathRemovePrefix\": \"/api\" } ]\n      },\n\n      \"health-route\": {\n        \"ClusterId\": \"orders\",\n        \"Match\": { \"Path\": \"/internal/orders/health\" },\n        \"AuthorizationPolicy\": \"Anonymous\",\n        \"RateLimiterPolicy\": \"internal\"\n      }\n    },\n\n    \"Clusters\": {\n      \"catalog\": {\n        \"LoadBalancingPolicy\": \"LeastRequests\",\n        \"Destinations\": {\n          \"c1\": { \"Address\": \"http://catalog-1:5080/\" },\n          \"c2\": { \"Address\": \"http://catalog-2:5080/\" }\n        },\n        \"HealthCheck\": {\n          \"Active\": {\n            \"Enabled\": \"true\",\n            \"Interval\": \"00:00:10\",\n            \"Timeout\": \"00:00:02\",\n            \"Policy\": \"ConsecutiveFailures\",\n            \"Path\": \"/health/live\"\n          },\n          \"Passive\": {\n            \"Enabled\": \"true\",\n            \"Policy\": \"TransportFailureRate\",\n            \"ReactivationPeriod\": \"00:00:30\"\n          }\n        },\n        \"HttpClient\": {\n          \"DangerousAcceptAnyServerCertificate\": \"false\",\n          \"MaxConnectionsPerServer\": 100,\n          \"RequestTimeout\": \"00:00:05\"\n        },\n        \"Metadata\": { \"ServiceVersion\": \"1.4.2\" }\n      },\n\n      \"orders\": {\n        \"LoadBalancingPolicy\": \"PowerOfTwoChoices\",\n        \"Destinations\": { \"o1\": { \"Address\": \"http://orders:5081/\" } },\n        \"SessionAffinity\": { \"Enabled\": \"false\" }\n      },\n\n      \"orders-v2\": {\n        \"LoadBalancingPolicy\": \"RoundRobin\",\n        \"Destinations\": { \"o2\": { \"Address\": \"http://orders-v2:5081/\" } }\n      },\n\n      \"catalog-grpc\": {\n        \"Destinations\": { \"g1\": { \"Address\": \"http://catalog-1:5081/\" } },\n        \"HttpClient\": { \"Http2Only\": \"true\" }\n      }\n    }\n  }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Shop.Gateway/Program.cs",
+      "title": "التركيب: YARP + سياسات الحافة",
+      "code": "\nvar builder = WebApplication.CreateBuilder(args);\n\n// ═══ ① YARP ═══\nbuilder.Services.AddReverseProxy()\n    .LoadFromConfig(builder.Configuration.GetSection(\"ReverseProxy\"))\n    .AddServiceDiscoveryDestinationResolver()          // ✓ يحل أسماء الخدمات (Aspire/K8s) بدل عناوين ثابتة\n    .AddTransforms<CorrelationHeaderTransform>()       // تحويلات مخصصة (ITransformProvider)\n    // ✓ retries/circuit breaker لكل cluster — تحقق من توفر الامتداد في إصدارك:\n    //   البديل: .ConfigureHttpClient(c => c.AddStandardResilienceHandler()) لكل cluster\n    .AddHttpClientResilience();\n\n// ═══ ② سياسات الحافة (تُطبق على المسارات بالاسم) ═══\nbuilder.Services.AddAuthorization(options =>\n{\n    options.AddPolicy(\"AuthenticatedUsers\", p => p.RequireAuthenticatedUser());\n    options.AddPolicy(\"InternalOnly\", p => p.RequireClaim(\"scope\", \"internal.ops\"));\n});\n\nbuilder.Services.AddRateLimiter(options =>\n{\n    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;\n    options.AddPolicy(\"api-default\", http => RateLimitPartition.GetSlidingWindowLimiter(\n        partitionKey: http.User.Identity?.Name ?? http.Connection.RemoteIpAddress?.ToString() ?? \"anon\",\n        factory: _ => new SlidingWindowRateLimiterOptions\n        {\n            PermitLimit = 120, Window = TimeSpan.FromMinutes(1), SegmentsPerWindow = 6,\n            QueueProcessingOrder = QueueProcessingOrder.OldestFirst, QueueLimit = 0,\n        }));\n    options.AddFixedWindowLimiter(\"internal\", o => { o.PermitLimit = 30; o.Window = TimeSpan.FromSeconds(10); });\n});\n\nbuilder.Services.AddCors(o => o.AddPolicy(\"web-app\", p => p\n    .WithOrigins(builder.Configuration.GetSection(\"Cors:Origins\").Get<string[]>() ?? [])\n    .AllowAnyHeader().AllowAnyMethod().AllowCredentials()));\n\n// ✓ المصادقة عند الحافة **و** في كل خدمة (دفاع بالعمق — درس 2.2.x)\nbuilder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)\n    .AddJwtBearer(o =>\n    {\n        o.Authority = builder.Configuration[\"Auth:Authority\"];\n        o.TokenValidationParameters = new TokenValidationParameters\n        {\n            ValidateAudience = true, ValidAudience = \"shop.api\",\n            ValidateIssuer = true, ClockSkew = TimeSpan.FromSeconds(30),\n            ValidAlgorithms = [SecurityAlgorithms.RsaSha256],\n        };\n    });\n\nbuilder.Services.AddOutputCache();\nbuilder.Services.AddHealthChecks();\nbuilder.Services.AddOpenTelemetry().WithTracing(t => t\n    .AddAspNetCoreInstrumentation().AddHttpClientInstrumentation()\n    .AddSource(\"Yarp.ReverseProxy.Forwarder\")             // ★ تتبع عبور الـgateway (تحقق من اسم المصدر في إصدارك)\n    .AddOtlpExporter());\n\nvar app = builder.Build();\n\n// ═══ ③ ترتيب الـmiddleware (الحافة أولًا) ═══\napp.UseExceptionHandler(\"/error\");\napp.UseForwardedHeaders(new ForwardedHeadersOptions     // ★ قبل كل شيء (وإلا IP/البروتوكول غلط)\n{\n    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,\n    KnownProxies = { IPAddress.Parse(app.Configuration[\"Gateway:KnownProxy\"] ?? \"10.0.0.1\") },\n});\napp.UseSerilogRequestLogging(o => o.EnrichDiagnosticContext = (ctx, http) =>\n{\n    ctx.SetProperty(\"RemoteIp\", http.Connection.RemoteIpAddress?.ToString());\n    ctx.SetProperty(\"Cluster\", http.Items.TryGetValue(\"ClusterId\", out var c) ? c : null);\n});\napp.UseHsts();\napp.UseHttpsRedirection();\napp.UseSecurityHeaders();                                 // درس 2.2.3\napp.UseCors();\napp.UseAuthentication();\napp.UseAuthorization();\napp.UseRateLimiter();\napp.UseOutputCache();\n\n// ═══ ④ المسارات ═══\napp.MapHealthChecks(\"/gateway/health\");\napp.MapGet(\"/gateway/clusters\", (IProxyStateLookup proxy) =>       // ✓ شفافية تشغيلية\n    proxy.GetClusters().Select(c => new\n    {\n        c.ClusterId,\n        c.Model.Config.LoadBalancingPolicy,\n        Destinations = c.Destinations.Select(d => new { d.DestinationId, d.Model.Address, Healthy = d.Model.Health.Active }),\n    })).RequireAuthorization(\"InternalOnly\");\n\napp.MapPost(\"/error\", (HttpContext ctx) => Results.Problem(       // استجابة موحدة للأخطاء\n    statusCode: 500, title: \"GatewayError\",\n    extensions: new Dictionary<string, object?> { [\"traceId\"] = ctx.TraceIdentifier }));\n\napp.MapReverseProxy(proxyPipeline =>                       // ★ pipeline خاص بالبروكسي\n    proxyPipeline.Use(async (ctx, next) =>\n    {\n        ctx.Response.Headers[\"X-Gateway\"] = \"shop-gateway\";\n        await next();\n    }));\n\napp.Run();\n\n/// <summary>\n/// تحويل مطبّق على **كل** المسارات: يمرر correlation id مولّدًا ويحذف رؤوسًا داخلية حساسة.\n/// (`ITransformProvider` هو الـAPI الذي يقبله `AddTransforms&lt;T&gt;()`.)\n/// </summary>\npublic sealed class CorrelationHeaderTransform : ITransformProvider\n{\n    public void ValidateRoute(TransformRouteValidationContext context) { }\n    public void ValidateCluster(TransformClusterValidationContext context) { }\n\n    public void Apply(TransformBuilderContext context)\n    {\n        context.AddRequestTransform(transformContext =>\n        {\n            var correlation = transformContext.HttpContext.Request.Headers[\"X-Correlation-Id\"].FirstOrDefault()\n                              ?? Activity.Current?.TraceId.ToString() ?? Guid.NewGuid().ToString(\"N\");\n\n            transformContext.ProxyRequest.Headers.Remove(\"X-Correlation-Id\");   // ✓ لا تثق برأس العميل أعمى\n            transformContext.ProxyRequest.Headers.TryAddWithoutValidation(\"X-Correlation-Id\", correlation);\n\n            // ★ احذف رؤوس داخلية حساسة لو العميل حاول حقنها\n            foreach (var header in new[] { \"X-Internal-Token\", \"X-Forwarded-Host\" })\n                transformContext.ProxyRequest.Headers.Remove(header);\n\n            transformContext.HttpContext.Response.Headers[\"X-Correlation-Id\"] = correlation;\n            return ValueTask.CompletedTask;\n        });\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) التجميع (API Composition) مع فشل جزئي"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Shop.Gateway/Composition/OrderDetailsAggregator.cs",
+      "title": "نداءات متوازية + مهلة لكل واحد + تدهور مقصود",
+      "code": "\n/// <summary>\n/// BFF-style composition: صفحة تفاصيل الطلب تحتاج (طلب + شحن + دفع + إشعارات).\n/// ★ القواعد: توازي، مهلة لكل نداء، فشل جزئي مُعلن (لا فشل كامل)، ولا منطق عمل هنا.\n/// </summary>\npublic sealed class OrderDetailsAggregator(\n    OrdersClient orders, ShippingClient shipping, PaymentsClient payments,\n    ILogger<OrderDetailsAggregator> log, TimeProvider time)\n{\n    private static readonly TimeSpan SectionTimeout = TimeSpan.FromSeconds(2);\n    private static readonly System.Diagnostics.ActivitySource Source = new(\"Shop.Gateway.Aggregation\");\n\n    public async Task<IResult> GetAsync(Guid orderId, string? accessToken, CancellationToken ct)\n    {\n        using var scope = Source.StartActivity(\"aggregate.order_details\");\n        scope?.SetTag(\"order.id\", orderId);\n\n        // ① النداء الأساسي: لو فشل → فشل كامل (بلا تفاصيل الطلب مفيش صفحة)\n        var order = await TryAsync(\"orders\", ct,\n            () => orders.GetAsync(orderId, accessToken, ct), required: true);\n        if (order is null) return Results.NotFound(new { orderId });\n\n        // ② الأقسام الثانوية بالتوازي — الفشل يُعلن كقسم ناقص (partial)\n        var shipmentTask = TryAsync(\"shipping\", ct, () => shipping.GetAsync(orderId, accessToken, ct), required: false);\n        var paymentTask  = TryAsync(\"payments\", ct, () => payments.GetAsync(orderId, accessToken, ct), required: false);\n        await Task.WhenAll(shipmentTask, paymentTask);\n\n        var shipment = shipmentTask.Result;      // ✓ آمنة: اكتملت بعد WhenAll\n        var payment  = paymentTask.Result;\n\n        var degraded = shipment is null || payment is null;\n        if (degraded)\n        {\n            log.LogWarning(\"partial aggregation for {OrderId}: shipping={S} payments={P}\",\n                orderId, shipment is not null, payment is not null);\n            GatewayMetrics.PartialResponses.Add(1);\n        }\n\n        return Results.Ok(new OrderDetailsPage(\n            Order: order,\n            Shipment: shipment,\n            Payment: payment,\n            Meta: new PageMeta(Degraded: degraded,\n                MissingSections: Missing(shipment, payment),\n                GeneratedAt: time.GetUtcNow())));\n    }\n\n    private static string[] Missing(ShipmentDto? s, PaymentDto? p) =>\n        [.. new[] { s is null ? \"shipping\" : null, p is null ? \"payment\" : null }.Where(x => x is not null)!];\n\n    private async Task<T?> TryAsync<T>(string name, CancellationToken ct, Func<Task<T>> call, bool required)\n    {\n        try\n        {\n            // ✓ مهلة لكل قسم مستقلًا — قسم بطيء لا يسحب المهلة كلها\n            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);\n            timeout.CancelAfter(SectionTimeout);\n            return await call().WaitAsync(SectionTimeout, timeout.Token);\n        }\n        catch (Exception ex) when (ex is TaskCanceledException or TimeoutException or HttpRequestException)\n        {\n            GatewayMetrics.SectionFailures.Add(1, new(\"section\", name));\n            if (required) { log.LogError(ex, \"required section {Section} failed\", name); throw; }\n            log.LogWarning(ex, \"optional section {Section} unavailable — degrading\", name);\n            return default;\n        }\n    }\n}\n\npublic sealed record OrderDetailsPage(OrderDto Order, ShipmentDto? Shipment, PaymentDto? Payment, PageMeta Meta);\npublic sealed record PageMeta(bool Degraded, string[] MissingSections, DateTimeOffset GeneratedAt);\n\n// تسجيل كمسار في الـgateway (بلا تمرير عبر YARP)\npublic static class CompositionEndpoints\n{\n    public static void Map(this IEndpointRouteBuilder app) =>\n        app.MapGet(\"/bff/orders/{orderId:guid}/details\",\n            async (Guid orderId, string? accessToken, OrderDetailsAggregator agg, CancellationToken ct) =>\n                await agg.GetAsync(orderId, accessToken, ct))\n           .RequireAuthorization()\n           .WithTags(\"BFF\")\n           .Produces<OrderDetailsPage>();\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "الـgateway ليس مكان منطق العمل",
+      "md": "\nأشهر انهيار معماري: الـgateway يبدأ يحتوي قواعد عمل (حساب أسعار، تحقق من مخزون، تحويل DTOs معقدة).\nالنتيجة: **distributed monolith** — كل الخدمات مقترنة بنشر الـgateway، وهو نقطة فشل واحدة لكل شيء.\n\n**ما يُسمح به في الـgateway:**\nتوجيه، تحويلات (headers/path)، مصادقة/تفويض عند الحافة، rate limiting، retries/timeouts/circuit breakers،\nتجميع عرض **بلا قواعد** (fan-out + دمج)، ضغط/كاش استجابات عامة، مراقبة، canary.\n\n**ما يُمنع:**\nقواعد عمل، وصول مباشر لقواعد بيانات الخدمات، معاملات، منطق تسعير/مخزون،\nوتحويلات معقدة للـDTOs (دي مسؤولية BFF مخصص أو الخدمة نفسها).\n\nوالقاعدة التشغيلية: **شغّل نسختين على الأقل من الـgateway** خلف load balancer — هو نقطة دخول وحيدة،\nفلازم ما يكونش نقطة فشل وحيدة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) YARP مقابل ingress مقابل service mesh"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "YARP (داخل .NET)",
+        "K8s Ingress / Envoy",
+        "Service Mesh (Istio/Linkerd)"
+      ],
+      "rows": [
+        [
+          "أين يعمل",
+          "عملية ASP.NET Core (تطبيق)",
+          "على حافة الـcluster",
+          "sidecar بجانب كل خدمة"
+        ],
+        [
+          "التخصيص بالكود",
+          "✓ كامل (middleware/transforms)",
+          "△ (annotations/CRDs)",
+          "△ (سياسات mesh)"
+        ],
+        [
+          "مصادقة/تفويض",
+          "✓ ASP.NET Core (JWT/policies)",
+          "△ (plugins/OIDC proxy)",
+          "✓ (mTLS + policies)"
+        ],
+        [
+          "mTLS بين الخدمات",
+          "△ يدوي",
+          "△",
+          "✓ تلقائي"
+        ],
+        [
+          "التتبع/المقاييس",
+          "✓ OpenTelemetry",
+          "✓",
+          "✓✓ تلقائي"
+        ],
+        [
+          "Canary/تقسيم حركة",
+          "✓ (routes/headers/weights)",
+          "✓ (Ingress annotations)",
+          "✓✓ (قوي)"
+        ],
+        [
+          "تكلفة التشغيل",
+          "منخفضة (تطبيق عادي)",
+          "متوسطة",
+          "**عالية** (تعلم + موارد)"
+        ],
+        [
+          "مناسب لـ",
+          "فرق .NET، أنظمة متوسطة، BFF",
+          "K8s موجود أصلًا",
+          "منظمات كبيرة بفرق متعددة اللغات ومتطلبات أمان صارمة"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "اختيار عملي لفرق .NET",
+      "md": "\n- **محليًا / خدمة واحدة / بداية التقسيم**: YARP كتطبيق .NET — أسرع طريق وأسهل تصحيح.\n- **على Kubernetes**: Ingress (أو Gateway API) للحافة الخارجية + YARP كـBFF داخلي للواجهات.\n- **مؤسسة كبيرة متعددة اللغات**: service mesh لـmTLS والسياسات — لكن ادفع تكلفته بوعي (مش افتراضي).\n- **لا تجمع الثلاث طبقات بلا سبب**: كل طبقة بتضيف زمن وتقلل وضوح تتبع الطلب.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) الاختبار والتشغيل"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.Gateway.Tests/RoutingTests.cs",
+      "title": "اختبارات التوجيه والتحويلات (على خدمات وهمية)",
+      "code": "\npublic class GatewayRoutingTests : IAsyncLifetime\n{\n    private WebApplicationFactory<Program> _gateway = default!;\n    private StubServer _catalog = default!;                 // خدمة وهمية (HttpListener/Kestrel اختباري)\n\n    public async ValueTask InitializeAsync()\n    {\n        _catalog = await StubServer.StartAsync();            // يرد بـ200 + جسم معروف ويسجل الرؤوس\n        _gateway = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>\n            b.UseSetting(\"ReverseProxy:Clusters:catalog:Destinations:c1:Address\", _catalog.BaseUrl));\n    }\n    public ValueTask DisposeAsync() { _gateway.Dispose(); _catalog.Dispose(); return ValueTask.CompletedTask; }\n\n    [Fact]\n    public async Task Route_strips_prefix_and_forwards_to_cluster()\n    {\n        var client = _gateway.CreateClient();\n        var response = await client.GetAsync(\"/api/catalog/products/KB-1\");\n\n        response.StatusCode.Should().Be(HttpStatusCode.OK);\n        _catalog.LastRequestPath.Should().Be(\"/catalog/products/KB-1\", \"PathRemovePrefix + PathPrefix طُبّقا\");\n    }\n\n    [Fact]\n    public async Task Correlation_id_is_generated_and_forwarded_not_trusted()\n    {\n        var client = _gateway.CreateClient();\n        var request = new HttpRequestMessage(HttpMethod.Get, \"/api/catalog/products/KB-1\");\n        request.Headers.Add(\"X-Correlation-Id\", \"attacker-controlled\");       // ★ محاولة حقن\n        request.Headers.Add(\"X-Internal-Token\", \"secret\");                    // ★ رأس داخلي\n\n        await client.SendAsync(request);\n\n        _catalog.LastHeaders.Should().NotContainKey(\"X-Internal-Token\", \"الرؤوس الداخلية تُحذف عند الحافة\");\n        _catalog.LastHeaders.Should().ContainKey(\"X-Correlation-Id\");\n    }\n\n    [Fact]\n    public async Task Unauthenticated_request_is_rejected_at_edge()\n    {\n        var client = _gateway.CreateClient();\n        var response = await client.GetAsync(\"/api/orders/1\");\n\n        response.StatusCode.Should().BeOneOf(HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden);\n        _catalog.RequestCount.Should().Be(0, \"الطلب لم يصل للخدمة أصلًا\");\n    }\n\n    [Fact]\n    public async Task Canary_header_routes_to_v2_cluster()\n    {\n        var client = _gateway.CreateClient();\n        var request = new HttpRequestMessage(HttpMethod.Get, \"/api/orders/1\");\n        request.Headers.Add(\"X-Canary\", \"v2\");\n\n        await client.SendAsync(request);\n\n        _gateway.Services.GetRequiredService<IProxyStateLookup>()\n            .GetClusters().Should().Contain(c => c.ClusterId == \"orders-v2\");\n    }\n\n    [Fact]\n    public async Task Unhealthy_destination_is_excluded_by_passive_health()\n    {\n        _catalog.FailNext(3);                                // 3 أخطاء 502/503\n        var client = _gateway.CreateClient();\n\n        for (var i = 0; i < 3; i++) await client.GetAsync(\"/api/catalog/products/1\");\n\n        var cluster = _gateway.Services.GetRequiredService<IProxyStateLookup>()\n            .GetClusters().Single(c => c.ClusterId == \"catalog\");\n\n        cluster.Destinations.Values.Should()\n            .Contain(d => d.Model.Health.Passive == DestinationHealth.Unhealthy);\n    }\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أعرف ما يُسمح به في الـgateway (توجيه/سياسات/تجميع بلا قواعد) وما يُمنع، وأشغّل نسختين على الأقل.",
+        "أضبط YARP بمسارات ومجموعات من الإعدادات أو الكود، مع تحويلات وحدود ومهل وسياسات مفروضة بالاسم.",
+        "أطبق سياسات الحافة بالترتيب الصحيح (ForwardedHeaders → logging → security → auth → rate limit → proxy).",
+        "أجمّع الاستجابات بتوازي ومهلة لكل قسم وتدهور مُعلن، وأختبر التوجيه والتحويلات وحذف الرؤوس الحساسة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه `UseForwardedHeaders` لازم يكون مبكرًا وبـ`KnownProxies` صريح؟",
+          "options": [
+            "للأداء",
+            "لأن الـgateway/الـLB بيضيف رؤوس X-Forwarded؛ من غير تحديد proxies موثوقة، عميل يقدر ينتحل IP وبروتوكول (ويكسر rate limiting وHTTPS detection)",
+            "مطلب YARP",
+            "لتحسين اللوجات فقط"
+          ],
+          "answer": 1,
+          "explain": "قاعدة أمان: لا تثق برؤوس قادمة من عميل. حدّد `KnownProxies`/`KnownNetworks` وامسح الرؤوس الواردة عند الحافة."
+        },
+        {
+          "q": "قسم ثانوي (شحن) فشل أثناء تجميع صفحة تفاصيل الطلب. التصرف؟",
+          "options": [
+            "500 للصفحة كلها",
+            "تدهور مقصود: أرجع الصفحة مع `Meta.Degraded=true` وقائمة الأقسام الناقصة + مقياس وتنبيه",
+            "أعد المحاولة للأبد",
+            "ارجع بيانات وهمية"
+          ],
+          "answer": 1,
+          "explain": "الأقسام الثانوية لا يجب أن تسقط الصفحة. لكن **أعلن** التدهور (لا بيانات وهمية صامتة) وقسّه."
+        },
+        {
+          "q": "إمتى تحتاج Session Affinity في YARP؟",
+          "options": [
+            "دائمًا",
+            "نادراً: لو الخدمة تحتفظ بحالة في الذاكرة (WebSocket غير مدعوم عبر النسخ، أو تخزين محلي) — والأفضل إصلاح الخدمة لتبقى stateless",
+            "للأداء",
+            "للأمان"
+          ],
+          "answer": 1,
+          "explain": "الـaffinity بتقلل مرونة التوسع وبتعمل hotspots. Services stateless + Redis backplane للحالات المشتركة (درس 2.3.1) هو الحل."
+        },
+        {
+          "q": "canary بـ10% من الحركة — أنظف طريقة في YARP؟",
+          "options": [
+            "نسخ الكود لخدمة تانية",
+            "route إضافي بترتيب أسبق (`Order`) يطابق header أو وزن، يوجّه لـcluster الإصدار الجديد، مع إمكانية إزالة الـroute فورًا للرجوع",
+            "DNS",
+            "middleware مخصص يغيّر العنوان"
+          ],
+          "answer": 1,
+          "explain": "الأوزان/Header-based routing في الإعدادات = تغيير بلا نشر كود. رجوع فوري بحذف المسار أو تعديل الوزن."
+        },
+        {
+          "q": "الـgateway بقى فيه منطق تسعير وتحقق مخزون. الحكم؟",
+          "options": [
+            "تحسين (نداءات أقل)",
+            "distributed monolith: اقتران نشر لكل الخدمات + نقطة فشل واحدة — انقل المنطق للخدمات وخلّي الـgateway يوجّه ويجمّع فقط",
+            "مقبول لو موثق",
+            "يحتاج كاش"
+          ],
+          "answer": 1,
+          "explain": "اختبار سريع: لو تغيير في خدمة بيحتاج نشر الـgateway → الحدود انكسرت."
+        },
+        {
+          "q": "بروكسي gRPC عبر YARP — إيه المطلوب؟",
+          "options": [
+            "لا شيء",
+            "HTTP/2 على الطرفين (`Http2Only` للـcluster) وبلا buffering للاستجابات الـstreaming، وتحقق إن أي proxy وسيط بيدعم HTTP/2",
+            "تحويل لـJSON",
+            "gRPC-Web دائمًا"
+          ],
+          "answer": 1,
+          "explain": "HTTP/1.1 في المنتصف بيكسر gRPC (خصوصًا streaming). تأكد من `HttpProtocols.Http2` و`Http2Only` في الإعدادات."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "gateway يعمل لمشروعك",
+          "md": "ابنِ gateway بـYARP أمام خدمتين/موديولين من مشروعك: مسارات بـtransforms، مصادقة عند الحافة، rate limiting لكل مسار، health checks نشطة وسلبية للوجهات، ومقاييس/تتبع. شغّله بـcompose مع الخدمات.",
+          "criteria": [
+            "≥ 3 مسارات (واحد بـcanary بالـheader، واحد داخلي بسياسة مختلفة)",
+            "تحويلات: إزالة/إضافة prefix، correlation id مولّد (غير موثوق من العميل)، وحذف رؤوس داخلية",
+            "مصادقة JWT عند الحافة **+** في الخدمة (دفاع بالعمق) مع اختبار يثبت رفض غير المصادق",
+            "rate limiter مفروض بالاسم على المسارات مع 429 و`Retry-After`",
+            "active + passive health checks مع إبعاد وجهة مريضة (اختبار)",
+            "تتبع OpenTelemetry يشمل `Yarp.ReverseProxy.Forwarder` ومقياس لكل cluster",
+            "`docker compose` يشغّل gateway + خدمتين + قاعدة، ويثبت التوجيه بـcurl"
+          ],
+          "hint": "لو الاختبارات بتشتكي من `WebApplicationFactory` مع إعدادات YARP: استخدم `UseSetting(\"ReverseProxy:Clusters:…\")` لتغيير الوجهات وقت الاختبار بدل تعديل appsettings."
+        },
+        {
+          "id": "t2",
+          "title": "تجميع BFF بفشل جزئي",
+          "md": "أضف endpoint تجميع (BFF) يجمع 3 أقسام من خدمات مختلفة بتوازي، مع مهلة لكل قسم وتدهور مُعلن، واختبر الفشل الجزئي والتجاوز الزمني.",
+          "criteria": [
+            "نداءات متوازية (لا تسلسلية) — مثبت بقياس زمن (≈ أبطأ قسم، مش مجموعها)",
+            "مهلة مستقلة لكل قسم + `WaitAsync`/linked CTS",
+            "قسم أساسي يفشل → 404/503؛ قسم ثانوي يفشل → 200 مع `Meta.Degraded` وقائمة الناقص",
+            "مقاييس: `partial_responses` و`section_failures` بوسم القسم",
+            "لا منطق عمل في المجمع (مراجعة: لا قواعد، لا وصول لقواعد بيانات)",
+            "اختباران: فشل قسم ثانوي، وتجاوز مهلة قسم"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "YARP documentation",
+          "url": "https://yarp.dev/"
+        },
+        {
+          "label": "YARP — Config & transforms",
+          "url": "https://yarp.dev/current/docs/config-files"
+        },
+        {
+          "label": "Gateway Aggregation (Azure Architecture)",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/gateway-aggregation"
+        },
+        {
+          "label": "Backends for Frontends",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/backends-for-frontends"
+        },
+        {
+          "label": "Kubernetes Gateway API",
+          "url": "https://gateway-api.sigs.k8s.io/"
+        },
+        {
+          "label": "HTTP Resilience (Microsoft.Extensions.Http.Resilience)",
+          "url": "https://learn.microsoft.com/dotnet/core/resilience/http-resilience"
+        }
+      ]
+    }
+  ]
+}

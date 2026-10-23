@@ -1,0 +1,184 @@
+{
+  "id": "s1-m3-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "callout",
+      "kind": "goal",
+      "title": "المشروع ده هو معيار اجتياز المرحلة الأولى",
+      "md": "\nمش هتتعلم حاجة جديدة هنا — هتطبّق كل اللي فات على **مشروع واحد حقيقي**.\nالمعيار مش «الكود يشتغل»؛ المعيار إن أي مطور تاني يقدر يفهمه، يختبره، ويعدّله من غير ما يسألك.\n"
+    },
+    {
+      "type": "text",
+      "md": "\n## المطلوب\n\nخد Web API موجود — إما مشروعك السابق (CRUD بـEF Core)، أو نسخة من مستودع «فوضوي» — وحوّله لمشروع\nإنتاجي. لو مفيش مشروع جاهز، ابدأ من `dotnet new webapi -n Shop.Api` وأضف 3 موارد (Products, Customers, Orders)\nبعلاقات حقيقية، وبعدين طبّق القائمة.\n\nالمدة المتوقعة: **12-16 ساعة عمل** موزعة على أيام (مش جلسة واحدة).\n"
+    },
+    {
+      "type": "steps",
+      "title": "خطوات التنفيذ",
+      "items": [
+        {
+          "title": "افصل الطبقات",
+          "md": "أنشئ `Shop.Domain` (كيانات + استثناءات + عقود/interfaces) و`Shop.Infrastructure` (EF Core, Email, HTTP) و`Shop.Api` (endpoints, DTOs, validators) — واتجاه الاعتماد للداخل. الـDomain **ما يعرفش** EF Core ولا ASP.NET.",
+          "code": {
+            "lang": "bash",
+            "title": "الهيكل",
+            "code": "dotnet new sln -n Shop\ndotnet new classlib -n Shop.Domain\ndotnet new classlib -n Shop.Infrastructure\ndotnet new webapi   -n Shop.Api\ndotnet new xunit   -n Shop.Tests\ndotnet sln add ./**/**.csproj\ndotnet add Shop.Infrastructure reference Shop.Domain\ndotnet add Shop.Api reference Shop.Domain Shop.Infrastructure\ndotnet add Shop.Tests reference Shop.Domain Shop.Api"
+          }
+        },
+        {
+          "title": "أعد توزيع المسؤوليات (SRP/DIP)",
+          "md": "كل خدمة تعمل حاجة واحدة. الحقن عبر interfaces مسجّلة في `Program.cs`. مفيش `new` لتبعيات خارجية جوه كلاس العمل، ومفيش connection string مكتوب في الكود.",
+          "code": {
+            "lang": "csharp",
+            "title": "فحص الاعتماديات (اختبار معماري بسيط)",
+            "code": "[Fact]\npublic void Domain_does_not_reference_Infrastructure()\n{\n    var domain = typeof(Order).Assembly;\n    var forbidden = domain.GetReferencedAssemblies()\n        .Select(a => a.Name!)\n        .Where(n => n.Contains(\"Infrastructure\") || n.Contains(\"EntityFrameworkCore\"));\n    forbidden.Should().BeEmpty(\"الـDomain ما يعرفش تفاصيل البنية التحتية\");\n}"
+          }
+        },
+        {
+          "title": "إعدادات وخيارات",
+          "md": "كل قسم إعدادات في كلاس Options مع `ValidateDataAnnotations().ValidateOnStart()`، والأسرار في User Secrets محليًا ومتغيرات بيئة في Docker."
+        },
+        {
+          "title": "تحقق وأخطاء موحّدة",
+          "md": "Validators لكل DTO، تشغيلها قبل منطق العمل، وردود `ValidationProblem` للأخطاء 400. و`IExceptionHandler` واحد يحوّل استثناءات الـDomain لأكواد HTTP مبررة مع `traceId`."
+        },
+        {
+          "title": "لوجنج مهيكل",
+          "md": "Serilog (Console + File rolling) مع CorrelationId في كل حدث وفي ترويسة الرد. قوالب بحقول، والاستثناء كمعامل أول. صفر أسرار في اللوج."
+        },
+        {
+          "title": "اختبارات",
+          "md": "على الأقل: 8 اختبارات Unit على منطق الـDomain (بـfakes مش mocks قدر الإمكان)، و5 اختبارات Integration بـ`WebApplicationFactory` تغطي مسار نجاح + مسار فشل + عقد الأخطاء. ولو Docker متاح: Testcontainers مع Postgres بدل InMemory.",
+          "code": {
+            "lang": "bash",
+            "title": "تشغيل كل شيء",
+            "code": "dotnet build -warnaserror\ndotnet test --collect:\"XPlat Code Coverage\"\ndotnet run --project Shop.Api"
+          }
+        },
+        {
+          "title": "وثّق قراراتك",
+          "md": "ثلاثة ADRs قصيرة في `docs/adr/`: (1) ليه Layered/Clean، (2) ليه FluentValidation مش DataAnnotations، (3) ليه lifetimes دي للخدمات. كل ADR: السياق، القرار، البدائل، العواقب."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "معايير القبول (قيّم نفسك بصدق)"
+    },
+    {
+      "type": "table",
+      "head": [
+        "#",
+        "المعيار",
+        "إزاي تتحقق"
+      ],
+      "rows": [
+        [
+          "1",
+          "`dotnet build -warnaserror` ينجح",
+          "شغّلها — أي تحذير nullable أو analyzer يكسر البناء"
+        ],
+        [
+          "2",
+          "صفر `IConfiguration[\"key\"]` خارج Program.cs",
+          "`grep -rn \"IConfiguration\\[\" Shop.Api Shop.Domain Shop.Infrastructure`"
+        ],
+        [
+          "3",
+          "الـDomain لا يرجّع EF ولا ASP.NET",
+          "اختبار المعمارية في الخطوة 2 ناجح"
+        ],
+        [
+          "4",
+          "كل endpoint يرجع problem+json عند الخطأ",
+          "اختبار Integration يتحقق من الـmedia type وtraceId"
+        ],
+        [
+          "5",
+          "تغطية ≥ 70% على منطق الـDomain",
+          "تقرير التغطية (coverlet) — مش على المشروع كله"
+        ],
+        [
+          "6",
+          "كل حدث لوج فيه CorrelationId",
+          "اعمل طلب وشوف السطر في logs/shop-*.log"
+        ],
+        [
+          "7",
+          "مفيش سر في المستودع",
+          "`git grep -iE \"password|apikey|secret\" -- ':!*Tests*'` ما يرجعش قيم حقيقية"
+        ],
+        [
+          "8",
+          "3 ADRs مكتوبة",
+          "ملفات في docs/adr/"
+        ],
+        [
+          "9",
+          "README يشرح التشغيل في 3 أوامر",
+          "جرّبه على مستنسخ نظيف (clone في مجلد جديد)"
+        ],
+        [
+          "10",
+          "التطبيق يفشل عند الإقلاع لو إعداد ناقص",
+          "احذف `ConnectionStrings:Shop` وشوف الرسالة"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أخطاء شائعة في المشروع ده",
+      "md": "\n- **إعادة كتابة كل حاجة من الصفر** بدل التعديل التدريجي — الهدف مهارة التطوير الآمن لكود موجود.\n- **مبالعة في التجريد**: interface لكل كلاس، Repository فوق EF Core، طبقات فاضية. لو الطبقة ما بتضيفش قرار، احذفها.\n- **اختبارات هشة**: assertion على نص رسالة اللوج أو على ترتيب نداءات mocks بدل السلوك.\n- **نسيان مسار الفشل**: كل الاختبارات نجاح — دي مش اختبارات، دي عرض.\n"
+    },
+    {
+      "type": "tasks",
+      "title": "التسليم",
+      "items": [
+        {
+          "id": "t1",
+          "title": "سلّم المشروع لنفسك بمعايير الفريق",
+          "md": "بعد ما تخلص، اعمل Pull Request (حتى لو على فرع في مستودعك) واكتب وصف يشرح: المشكلة، الحل، القرارات، والمخاطر. وبعدين راجع الـdiff بنفسك كأنك reviewer.",
+          "criteria": [
+            "كل معايير القبول العشرة متحققة وموثقة بلقطة أو أمر",
+            "وصف PR يشرح القرارات لا التعديلات فقط",
+            "مراجعة ذاتية سجلت فيها 3 تحسينات إضافية (حتى لو مؤجلة)"
+          ],
+          "hint": "أفضل طريقة للحكم: اطلب من زميل (أو من نفسك بعد أسبوع) يشغّل المشروع من README بس. لو سأل سؤال، README ناقص."
+        },
+        {
+          "id": "t2",
+          "title": "اربطه بالمرحلة التالية",
+          "md": "اكتب قائمة من 5 نقاط «اللي هيتغير في المرحلة 2»: OpenAPI/Scalar، JWT، Rate limiting، Health checks، Background worker — وحدد أنهي ملفات هتتحرك.",
+          "criteria": [
+            "5 بنود محددة بأسماء ملفات/مجلدات",
+            "ترتيب تنفيذ منطقي",
+            "مخاطر لكل بند"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": ".NET architecture guides",
+          "url": "https://learn.microsoft.com/dotnet/architecture/"
+        },
+        {
+          "label": "Integration tests in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/test/integration-tests"
+        },
+        {
+          "label": "Architecture decision records",
+          "url": "https://adr.github.io/"
+        },
+        {
+          "label": "eShop (مرجع لنظام .NET حديث)",
+          "url": "https://github.com/dotnet-architecture/eShop"
+        }
+      ]
+    }
+  ]
+}

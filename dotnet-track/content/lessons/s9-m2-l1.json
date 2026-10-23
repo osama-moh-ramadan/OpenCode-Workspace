@@ -1,0 +1,423 @@
+{
+  "id": "s9-m2-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "مقابلات .NET فيها شقّان: **السلوكي** (s10-m3) و**التقني**. الشق التقني فيه سؤال واحد لا يخطئه أحد: **«ما تعقيد الحل ده؟»** — ولذلك الدرس ده مش «خوارزميات للامتحان»، هو **أداة قياس** هتستخدمها في كل مراجعة كود بعد كده.\n\nالهدف العملي: تقرأ أي كود وتقول تعقيده في 10 ثوانٍ · وتحوّل حلًا O(n²) إلى O(n) بـ`Dictionary` · وتقلّل التخصيصات بـ`Span<T>`."
+    },
+    {
+      "type": "terms",
+      "title": "المصطلحات الأساسية",
+      "items": [
+        {
+          "term": "Big-O",
+          "def": "الحد الأعلى لنمو الزمن/الذاكرة مع حجم المدخل. نتجاهل الثوابت: O(2n) = O(n)."
+        },
+        {
+          "term": "Amortized",
+          "def": "متوسط التكلفة على مدى عمليات كثيرة. `List.Add` = O(1) amortized رغم أن بعض الإضافات O(n) عند التوسيع."
+        },
+        {
+          "term": "Space complexity",
+          "def": "ذاكرة إضافية نسبية للمدخل. O(1) = بلا بنية جديدة · O(n) = قاموس/قائمة مساعدة."
+        },
+        {
+          "term": "Hash collision",
+          "def": "مفتاحان بنفس الـhash → تعارض. في .NET يُحلّ بالسلاسل/العنونة المفتوحة، والبحث يتدهور إلى O(n) في أسوأ حالة."
+        },
+        {
+          "term": "Dictionary<TKey,TValue>",
+          "def": "خريطة hash: إدراج/بحث O(1) متوسط. مهم: **تُثبِّت ترتيبًا غير مضمون** — لا تعتمد على الترتيب."
+        },
+        {
+          "term": "HashSet<T>",
+          "def": "مجموعة بلا تكرار، O(1) للاحتوائية (`Contains`) — أداة «هل رأيت هذا؟»."
+        },
+        {
+          "term": "Span<T> / ReadOnlySpan<T>",
+          "def": "نافذة على ذاكرة موجودة بلا نسخ (stack/array/string). أساس تقليل التخصيصات في .NET الحديث."
+        },
+        {
+          "term": "StringBuilder",
+          "def": "بناء سلاسل متغير الطول بـO(1) amortized للإضافة بدل O(n) لكل `+`."
+        },
+        {
+          "term": "Two-pointer",
+          "def": "مؤشران يتحركان على مصفوفة/سلسلة — يحوّل مسائل O(n²) إلى O(n) عندما يكون الترتيب متاحًا."
+        },
+        {
+          "term": "Prefix sums",
+          "def": "مصفوفة تراكمية: مجموع أي نطاق = `pre[r] - pre[l]` بـO(1) بعد O(n) بناء."
+        },
+        {
+          "term": "In-place",
+          "def": "تعديل نفس المصفوفة بذاكرة O(1) — يُطلب كثيرًا في المقابلات."
+        },
+        {
+          "term": "Off-by-one",
+          "def": "أشهر سبب فشل: حدود الحلقة `i < n` مقابل `i <= n`، أو نطاق `[l, r)` مقابل `[l, r]`."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① جدول التعقيدات اللي لازم تكون تلقائيًا"
+    },
+    {
+      "type": "table",
+      "caption": "مرجع سريع — .NET 10",
+      "head": [
+        "العملية",
+        "البنية",
+        "متوسط",
+        "أسوأ حالة",
+        "ملاحظة"
+      ],
+      "rows": [
+        [
+          "وصول بفهرس",
+          "`T[]` / `List<T>`",
+          "O(1)",
+          "O(1)",
+          "—"
+        ],
+        [
+          "بحث خطي",
+          "`T[]`",
+          "O(n)",
+          "O(n)",
+          "استخدمه فقط للمجموعات الصغيرة (< 20)"
+        ],
+        [
+          "بحث ثنائي",
+          "مصفوفة مرتّبة",
+          "O(log n)",
+          "O(log n)",
+          "`Array.BinarySearch` أو `span.BinarySearch`"
+        ],
+        [
+          "إدراج في الوسط",
+          "`List<T>`",
+          "O(n)",
+          "O(n)",
+          "الانزياح هو التكلفة — استخدم `LinkedList` نادرًا فقط"
+        ],
+        [
+          "إضافة في النهاية",
+          "`List<T>`",
+          "O(1) amortized",
+          "O(n) عند التوسيع",
+          "اضبط السعة مسبقًا لو تعرف الحجم"
+        ],
+        [
+          "بحث بمفتاح",
+          "`Dictionary`",
+          "O(1)",
+          "O(n)",
+          "الأسوأ عند تعارض hash سيئ"
+        ],
+        [
+          "احتوائية",
+          "`HashSet`",
+          "O(1)",
+          "O(n)",
+          "—"
+        ],
+        [
+          "أصغر/أكبر",
+          "`SortedSet`/`PriorityQueue`",
+          "O(log n)",
+          "O(log n)",
+          "PriorityQueue في .NET جاهزة (heap)"
+        ],
+        [
+          "إضافة/حذف بالطرفين",
+          "`LinkedList`/`Deque` يدوي",
+          "O(1)",
+          "O(1)",
+          "لكن الوصول بالوسط O(n)"
+        ],
+        [
+          "تجميع",
+          "`GroupBy` LINQ",
+          "O(n)",
+          "O(n)",
+          "تخصيصات أعلى من حلقة يدوية — قِس"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "كيف تحسب في 10 ثوانٍ",
+      "md": "**①** هل فيه حلقة داخل حلقة على نفس `n`؟ → O(n²).\n**②** هل تنصّف المشكلة في كل خطوة؟ → O(log n).\n**③** هل كل عنصر يُزار مرة واحدة؟ → O(n).\n**④** هل الترتيب (`Array.Sort`) قبل أي شيء؟ → أضف O(n log n) وهي غالبًا المهيمنة.\n**⑤** اذكر الذاكرة أيضًا: `Dictionary` بـn عنصر = O(n) مساحة."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② من O(n²) إلى O(n): الحالة الكلاسيكية"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "TwoSum — ثلاث درجات تحسّن، بنفس الواجهة",
+      "filename": "Algorithms/TwoSum.cs",
+      "code": "public static class TwoSum\n{\n    // ── ① ساذج: O(n²) زمن · O(1) مساحة ───────────────────────────\n    public static (int, int)? Naive(int[] nums, int target)\n    {\n        for (var i = 0; i < nums.Length; i++)\n        for (var j = i + 1; j < nums.Length; j++)\n            if (nums[i] + nums[j] == target) return (i, j);\n        return null;\n    }\n\n    // ── ② مرتب: O(n log n) زمن (فرز) · O(1) مساحة — مؤشران ──────\n    public static bool Sorted(int[] nums, int target)\n    {\n        Array.Sort(nums);\n        int l = 0, r = nums.Length - 1;\n        while (l < r)\n        {\n            var sum = nums[l] + nums[r];\n            if (sum == target) return true;\n            if (sum < target) l++;      // نحتاج أكبر\n            else r--;                    // نحتاج أصغر\n        }\n        return false;\n    }\n\n    // ── ③ hash: O(n) زمن · O(n) مساحة — الحل المطلوب غالبًا ─────\n    public static (int, int)? OnePass(int[] nums, int target)\n    {\n        var seen = new Dictionary<int, int>(capacity: nums.Length);\n        for (var i = 0; i < nums.Length; i++)\n        {\n            var need = target - nums[i];\n            if (seen.TryGetValue(need, out var j)) return (j, i);\n            seen[nums[i]] = i;           // نسجّل بعد الفحص (يمنع استخدام نفس العنصر مرتين)\n        }\n        return null;\n    }\n}\n\n/*\n المقايضة في سطر:\n   n = 10,000 → Naive ≈ 50 مليون مقارنة · OnePass ≈ 10,000 عملية hash.\n   الثمن: قاموس بحجم n (≈ 40–80 بايت/عنصر) — وهذا مقبول.\n   القاعدة: نضحي بمساحة O(n) لنشتري زمنًا O(n) إلا لو الذاكرة مقيّدة صراحةً.\n*/"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Span<T> — نفس الحل بلا تخصيص (نسخة إنتاجية)",
+      "filename": "Algorithms/SpanBasics.cs",
+      "code": "using System.Buffers;\n\npublic static class SpanBasics\n{\n    /// <summary>بحث ثنائي على Span: بلا نسخ وبلا LINQ.</summary>\n    public static int BinarySearch(ReadOnlySpan<int> sorted, int target)\n    {\n        var lo = 0;\n        var hi = sorted.Length - 1;\n        while (lo <= hi)\n        {\n            var mid = lo + ((hi - lo) >> 1);     // لا (lo+hi)/2 — يمنع overflow\n            var v = sorted[mid];\n            if (v == target) return mid;\n            if (v < target) lo = mid + 1;\n            else hi = mid - 1;\n        }\n        return ~lo;                              // نقطة الإدراج (نفس دلالة Array.BinarySearch)\n    }\n\n    /// <summary>عدّ الكلمات في سطر طويل — بلا `Split` (الذي يخصّص مصفوفة + سلاسل).</summary>\n    public static int CountWords(ReadOnlySpan<char> text)\n    {\n        var count = 0;\n        var inWord = false;\n        foreach (var c in text)\n        {\n            if (char.IsWhiteSpace(c)) { inWord = false; }\n            else if (!inWord) { inWord = true; count++; }\n        }\n        return count;\n    }\n\n    /// <summary>قلب جزء من مصفوفة في المكان (in-place) — أساس reverse words.</summary>\n    public static void Reverse(Span<char> span)\n    {\n        for (int i = 0, j = span.Length - 1; i < j; i++, j--)\n            (span[i], span[j]) = (span[j], span[i]);\n    }\n\n    /// <summary>معالجة سطر ضخم من الشبكة بلا تخصيص كامل — مثال واقعي.</summary>\n    public static int CountDelimiter(Stream utf8Stream, byte delimiter, int bufferSize = 4096)\n    {\n        var buffer = ArrayPool<byte>.Shared.Rent(bufferSize);\n        try\n        {\n            var total = 0;\n            int read;\n            while ((read = utf8Stream.Read(buffer, 0, buffer.Length)) > 0)\n            {\n                var span = buffer.AsSpan(0, read);\n                foreach (var b in span)\n                    if (b == delimiter) total++;\n            }\n            return total;\n        }\n        finally\n        {\n            ArrayPool<byte>.Shared.Return(buffer);   // ✅ لا تنسَ الإرجاع\n        }\n    }\n}"
+    },
+    {
+      "type": "table",
+      "caption": "أين تُستخدم Span فعليًا في الشغل اليومي",
+      "head": [
+        "الحالة",
+        "قبل",
+        "بعد",
+        "المكسب"
+      ],
+      "rows": [
+        [
+          "`Substring` في حلقة",
+          "تخصيص سلسلة لكل جزء",
+          "`ReadOnlySpan<char>` + `Slice`",
+          "صفر تخصيص"
+        ],
+        [
+          "تحليل CSV/سجل ضخم",
+          "`Split(',')`",
+          "المسح بـSpan",
+          "ذاكرة أقل 5–10×"
+        ],
+        [
+          "معالجة bytes من الشبكة",
+          "`byte[]` جديد لكل قراءة",
+          "`ArrayPool` + `Span`",
+          "تقليل GC pressure"
+        ],
+        [
+          "تحويل رقم من نص",
+          "`int.Parse(s.Substring(1))`",
+          "`int.Parse(s.AsSpan(1))`",
+          "صفر تخصيص"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أخطاء Span الشائعة",
+      "md": "**① `Span<T>` لا يمكن تخزينه في حقل** من class (struct فقـط و`ref struct` — لا يُعبّئ الـheap).\n**② `async` + `Span` = خطأ ترجمة** — استخدم `Memory<T>` في الدوال غير المتزامنة.\n**③ `stackalloc` حجمه محدود** — لا تخصص به حجمًا من مدخل مستخدم (StackOverflow).\n**④ نسيان إرجاع `ArrayPool`** — تسريب دائم يظهر كاستهلاك ذاكرة متزايد.\n**⑤ `Span` ليس آمنًا بعد انتهاء صلاحية الذاكرة الأصلية** — لا ترجعه من دالة كمرجع لذاكرة محلية."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ السلاسل: 4 أخطاء أداء شائعة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Strings/StringPitfalls.cs — قبل/بعد",
+      "filename": "Algorithms/StringPitfalls.cs",
+      "code": "using System.Text;\n\npublic static class StringPitfalls\n{\n    // ❌ O(n²): كل `+=` ينسخ السلسلة كاملة\n    public static string BuildBad(IEnumerable<string> parts)\n    {\n        var s = \"\";\n        foreach (var p in parts) s += p;\n        return s;\n    }\n\n    // ✅ O(n): StringBuilder بسعة مبدئية\n    public static string BuildGood(IReadOnlyList<string> parts)\n    {\n        var sb = new StringBuilder(capacity: parts.Sum(p => p.Length));\n        foreach (var p in parts) sb.Append(p);\n        return sb.ToString();\n    }\n\n    // ✅ أفضل عندما يكون المصدر مصفوفة: تخصيص واحد فقط\n    public static string JoinGood(string[] parts) => string.Concat(parts);\n\n    // ❌ مقارنة بلا وعي بالحالة/الثقافة في بيانات تقنية\n    public static bool CompareBad(string a, string b) => a.ToLower() == b.ToLower();\n\n    // ✅ مقارنة صريحة (ثقافة ثابتة + تجاهل الحالة) — أسرع وبلا تخصيص\n    public static bool CompareGood(string a, string b) =>\n        string.Equals(a, b, StringComparison.OrdinalIgnoreCase);\n\n    // ❌ التحقق من الفراغ بطريقة فضفاضة\n    public static bool BlankBad(string? s) => s == null || s.Trim().Length == 0;\n\n    // ✅ بلا تخصيص\n    public static bool BlankGood(string? s) => string.IsNullOrWhiteSpace(s);\n\n    // ❌ `Split` ثم معالجة جزء واحد\n    public static string FirstTokenBad(string line) => line.Split(',')[0];\n\n    // ✅ Span: بلا مصفوفة وسيطة\n    public static ReadOnlySpan<char> FirstToken(ReadOnlySpan<char> line)\n    {\n        var idx = line.IndexOf(',');\n        return idx < 0 ? line : line[..idx];\n    }\n\n    // ✅ قلب كلمات بلا `Split` — O(n) زمن · O(1) مساحة إضافية\n    public static string ReverseWords(string s)\n    {\n        var arr = s.ToCharArray().AsSpan();\n        SpanBasics.Reverse(arr);                       // اقلب كل شيء\n        var start = 0;\n        for (var i = 0; i <= arr.Length; i++)\n        {\n            if (i == arr.Length || arr[i] == ' ')\n            {\n                SpanBasics.Reverse(arr[start..i]);      // اقلب كل كلمة\n                start = i + 1;\n            }\n        }\n        return new string(arr);\n    }\n}\n\n/*\n ملاحظة: `string.Concat(string[])` يحسب الطول الكلي مرة واحدة ويخصص سلسلة واحدة —\n أسرع من `StringBuilder` عندما تكون الأجزاء كلها متاحة في مصفوفة.\n*/"
+    },
+    {
+      "type": "table",
+      "caption": "قواعد سريعة للسلاسل",
+      "head": [
+        "القاعدة",
+        "السبب"
+      ],
+      "rows": [
+        [
+          "`+=` في حلقة = ❌",
+          "كل إضافة تُنشئ سلسلة جديدة O(n) — O(n²) إجمالًا"
+        ],
+        [
+          "قارن بـ`StringComparison.Ordinal` للبيانات",
+          "أسرع وأصح لمعرّفات/مفاتيح (لا قواعد لغوية)"
+        ],
+        [
+          "استخدم `OrdinalIgnoreCase` لا `ToLower()`",
+          "بلا تخصيص + بلا فروق ثقافية"
+        ],
+        [
+          "`StringBuilder` لما العدد غير معروف",
+          "تخصيصات أقل ونمو أسّي للسعة"
+        ],
+        [
+          "`Span` لما الجزء صغير ومؤقت",
+          "صفر تخصيص"
+        ],
+        [
+          "`StringComparison.CurrentCulture` للنصوص للمستخدم فقط",
+          "لغة/حروف عربية تحتاج مقارنة ثقافية"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "تحسب تعقيد كود موجود (زمن + مساحة) بلا تشغيله.",
+        "تعرف متوسط/أسوأ حالة في `Dictionary` وتشرح سبب الأسوأ.",
+        "تحوّل بحثًا مزدوجًا إلى `Dictionary`/`HashSet` وتبيّن ثمن المساحة.",
+        "تستخدم مؤشرين على مصفوفة مرتّبة وتشرح لماذا ينجح.",
+        "تكتب `Span`/`ReadOnlySpan` بلا `Substring` ولا `Split`.",
+        "تعرف قيود `Span` (لا حقول، لا `async`، `stackalloc` محدود).",
+        "تستخدم `ArrayPool` وتُرجع المخزن في `finally`.",
+        "تفرّق بين `Ordinal` و`CurrentCulture` في المقارنات.",
+        "تضبط `capacity` مسبقًا في `List`/`StringBuilder` عند معرفة الحجم."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "8 أسئلة — حساب سريع وأخطاء شائعة.",
+      "questions": [
+        {
+          "q": "`Dictionary` بحث بمفتاح — ما أسوأ تعقيد؟",
+          "options": [
+            "O(1)",
+            "O(log n)",
+            "O(n)",
+            "O(n²)"
+          ],
+          "answer": 2,
+          "explain": "المتوسط O(1) لكن عند تعارض hash متكرر (دالة hash سيئة أو هجوم مقصود) تتحول السلسلة إلى بحث خطي O(n). .NET الحديث فيه حماية من hash flooding، لكن المبدأ صحيح."
+        },
+        {
+          "q": "لماذا `s += x` في حلقة تعتبر O(n²)؟",
+          "options": [
+            "لأن `+` بطيء",
+            "لأن كل إضافة تُنشئ سلسلة جديدة وتنسخ المحتوى الحالي — مجموع الأطوال = 1+2+…+n",
+            "لأن السلاسل غير قابلة للتغيير فقط",
+            "لأسباب GC"
+          ],
+          "answer": 1,
+          "explain": "النسخ التراكمي هو المشكلة: 10 آلاف قطعة = ~50 مليون نسخة محرف. الحل `StringBuilder` (سعة متزايدة) بزمن O(n)."
+        },
+        {
+          "q": "`List<T>.Add` — ما التعقيد؟",
+          "options": [
+            "O(1) دائمًا",
+            "O(1) amortized مع O(n) عند التوسيع",
+            "O(n) دائمًا",
+            "O(log n)"
+          ],
+          "answer": 1,
+          "explain": "السعة تتضاعف عند الامتلاء (نسخ O(n)) وتحدث نادرًا، فالمتوسط O(1). لو تعرف الحجم، مرّر `capacity` لتجنب النسخ."
+        },
+        {
+          "q": "أي حالة لا يصح فيها استخدام `Span<T>`؟",
+          "options": [
+            "داخل دالة متزامنة",
+            "كحقل في class، أو داخل `async` (استخدم `Memory<T>`)",
+            "مع المصفوفات",
+            "مع `stackalloc`"
+          ],
+          "answer": 1,
+          "explain": "`Span<T>` هو `ref struct`: لا يُعبّأ في الـheap فيمنع أن يكون حقلًا في class، ولا يمر عبر `await`. الحل في الشيفرة غير المتزامنة: `Memory<T>`/`ReadOnlyMemory<T>`."
+        },
+        {
+          "q": "لماذا `Ordinal` أفضل من `CurrentCulture` لمقارنة المفاتيح؟",
+          "options": [
+            "أدق لغويًا",
+            "مقارنة بايت/محرف مباشرة: أسرع وحتمية، ولا تخلط قواعد لغوية في بيانات تقنية",
+            "لأن الثقافة لا تعمل مع العربية",
+            "لأنها أبطأ لكن أصح"
+          ],
+          "answer": 1,
+          "explain": "المفاتيح والمعرّفات ليست نصًا للمستخدم. `Ordinal` حتمي وسريع. `CurrentCulture` يُستخدم لعرض/فرز النصوص للمستخدم فقط (وحتى هناك قد تحتاج `InvariantCulture` للثبات)."
+        },
+        {
+          "q": "ما أفضل تحسين لـ«هل يحتوي هذا الاسم على تكرار؟»",
+          "options": [
+            "`List.Contains`",
+            "`HashSet<string>`",
+            "ترتيب ثم بحث ثنائي",
+            "`IndexOf`"
+          ],
+          "answer": 1,
+          "explain": "`HashSet.Add` ترجع false عند التكرار بزمن O(1) متوسط — أسرع من O(n²) في `List.Contains`. الترتيب O(n log n) أقل كفاءة."
+        },
+        {
+          "q": "متى تختار الحل O(n log n) على O(n) بمساحة O(n)؟",
+          "options": [
+            "أبدًا",
+            "عندما تكون الذاكرة مقيّدة (مثلًا معالجة ملايين العناصر في بيئة محدودة)",
+            "دائمًا",
+            "عندما تكون n صغيرة فقط"
+          ],
+          "answer": 1,
+          "explain": "المقايضة الحقيقية: زمن مقابل مساحة. لو الذاكرة مقيّدة (حاوية 512MB، دفعة كبيرة) فالفرز في المكان أفضل رغم الزمن الأعلى. القرار يُكتب صراحة."
+        },
+        {
+          "q": "ما الخطر في `stackalloc` بحجم من مدخل المستخدم؟",
+          "options": [
+            "بطء",
+            "StackOverflow وانهيار العملية — المكدس محدود (غالبًا 1MB)",
+            "تسريب ذاكرة",
+            "خطأ ترجمة"
+          ],
+          "answer": 1,
+          "explain": "`stackalloc` يخصص على مكدس الخيط. حجم كبير/متغيّر = انهيار فوري غير قابل للالتقاط. القاعدة: حجم ثابت صغير (`<= 256` بايت تقريبًا)، وإلا `ArrayPool`."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمة واحدة",
+      "intro": "تحسين حقيقي بالقياس.",
+      "items": [
+        {
+          "id": "s9-m2-l1-t1",
+          "title": "حوّل دالة O(n²) إلى O(n) وقِس",
+          "md": "خُذ دالة من مشروعك (أو من الكود أعلاه) فيها حلقة داخل حلقة، وحسّنها بـ`Dictionary`/`HashSet` أو مؤشرين. قِس الزمن بـ`Stopwatch` أو BenchmarkDotNet على أحجام 1k/10k/100k.",
+          "criteria": [
+            "بيان التعقيد قبل وبعد مكتوب (زمن + مساحة) مع التبرير.",
+            "ثلاثة أحجام قياس على الأقل + جدول نتائج (ms) ونسبة التسريع.",
+            "اختبارات تكافؤ: 10 حالات على الأقل (بما فيها مدخل فارغ، عنصر واحد، تكرارات).",
+            "نسخة ثانية بـ`Span`/`StringBuilder` لو العملية على نصوص — مع قياس التخصيصات (`GC.GetAllocatedBytesForCurrentThread`).",
+            "ملاحظة مكتوبة عن المقايضة: ماذا دفعت من مساحة مقابل الزمن."
+          ],
+          "hint": "استخدم `Stopwatch` مع تسخين (warm-up) قبل القياس، أو BenchmarkDotNet لو محتاج دقة. وللتحقق من التكافؤ، اكتب اختبارًا يقارن النتيجة القديمة بالجديدة على مدخلات عشوائية — أسرع طريقة لكشف خطأ off-by-one.",
+          "solution": "النتيجة النموذجية: تحسّن 50–500× عند n = 10k، مع زيادة ذاكرة خطية. الأهم: تكتشف أن بعض الحالات (n صغير) لا تتحسن أصلًا — فالتحسين الحقيقي هو **قرار مبني على قياس** لا على حدس.",
+          "resources": [
+            "https://learn.microsoft.com/dotnet/api/system.diagnostics.stopwatch",
+            "https://learn.microsoft.com/dotnet/standard/memory-and-spans/memory-t-usage-guidelines",
+            "https://benchmarkdotnet.org/"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Memory<T> وSpan<T> — إرشادات",
+          "url": "https://learn.microsoft.com/dotnet/standard/memory-and-spans/memory-t-usage-guidelines"
+        },
+        {
+          "label": "StringComparison best practices",
+          "url": "https://learn.microsoft.com/dotnet/standard/base-types/best-practices-strings"
+        },
+        {
+          "label": "Dictionary<TKey,TValue>",
+          "url": "https://learn.microsoft.com/dotnet/api/system.collections.generic.dictionary-2"
+        },
+        {
+          "label": "BenchmarkDotNet",
+          "url": "https://benchmarkdotnet.org/"
+        }
+      ]
+    }
+  ]
+}

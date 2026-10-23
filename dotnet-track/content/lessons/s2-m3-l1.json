@@ -1,0 +1,374 @@
+{
+  "id": "s2-m3-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nفيه حاجات المستخدم مستني يشوفها **دلوقتي**: حالة الطلب اتغيرت، المخزون نفد، إشعار من الدعم.\nالـpolling (كل 5 ثواني) بيستهلك طلبات بلا فايدة وبيبقى متأخر. الحلول الحقيقية ثلاثة:\n**SignalR** (اتصال ثنائي الاتجاه، الأبسط والأشهر في .NET)، **SSE** (اتجاه واحد من الخادم، أخف وأبسط بروتوكوليًا)،\nو**WebSocket** خام (تحكم كامل، شغل أكتر).\n\nالدرس ده: تبني Hub يبعت تحديثات لمجموعة مستخدمين، تتعامل مع إعادة الاتصال والأخطاء،\nوتختار بين SignalR وSSE بمعيار واضح — مش بحسب الموضة.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Hub",
+          "def": "نقطة نهاية SignalR: تستقبل استدعاءات من العملاء وتبعت لهم أحداثًا."
+        },
+        {
+          "term": "ConnectionId",
+          "def": "معرّف اتصال واحد. المستخدم الواحد ممكن يكون له أكثر من اتصال (موبايل + لابتوب)."
+        },
+        {
+          "term": "Group",
+          "def": "مجموعة اتصالات تبعت لها مرة واحدة (`orders:<customerId>`) — أهم أداة للخصوصية والأداء."
+        },
+        {
+          "term": "`IHubContext<THub>`",
+          "def": "طريقة الإرسال من خارج الـHub (من service أو handler أو consumer) — الاستخدام الأشهر."
+        },
+        {
+          "term": "Strongly-typed Hub",
+          "def": "`Hub<IOrdersClient>`: الواجهة بتعرّف الأحداث فتاخد IntelliSense وفحص ترجمة."
+        },
+        {
+          "term": "Backplane",
+          "def": "وسيط (Redis/Azure SignalR Service) يربط أكثر من نسخة من التطبيق عشان الرسائل توصل لكل الاتصالات."
+        },
+        {
+          "term": "SSE (Server-Sent Events)",
+          "def": "`text/event-stream` فوق HTTP: اتجاه واحد من الخادم، إعادة اتصال تلقائية من المتصفح، وبلا مكتبات."
+        },
+        {
+          "term": "`IUserIdProvider`",
+          "def": "يقرر أنهي claim يمثّل «المستخدم» عشان `Clients.User(id)` يشتغل."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "SignalR",
+        "SSE",
+        "Polling"
+      ],
+      "rows": [
+        [
+          "الاتجاه",
+          "ثنائي (العميل ينادي الخادم والعكس)",
+          "من الخادم فقط",
+          "العميل يطلب"
+        ],
+        [
+          "التأخير",
+          "فوري",
+          "فوري",
+          "بقدْر الفترة"
+        ],
+        [
+          "البروتوكول",
+          "WebSocket (مع fallback لـSSE/long-polling)",
+          "HTTP عادي",
+          "HTTP عادي"
+        ],
+        [
+          "إعادة الاتصال",
+          "يدوية/بمكتبة (`withAutomaticReconnect`)",
+          "تلقائية من المتصفح",
+          "لا حاجة"
+        ],
+        [
+          "الحمل على الخادم",
+          "اتصالات طويلة + backplane للتوسع",
+          "اتصالات طويلة أخف",
+          "طلبات متكررة"
+        ],
+        [
+          "المرور عبر proxies/WAF",
+          "قد يحتاج ضبط (WebSocket upgrade)",
+          "أبسط",
+          "الأسهل"
+        ],
+        [
+          "المتصفح",
+          "كل المتصفحات",
+          "كل المتصفحات الحديثة",
+          "كل شيء"
+        ],
+        [
+          "أنسب حالة",
+          "شات، لوحات تحكم، أوامر متبادلة",
+          "تقدّم مهمة، إشعارات، أسعار، تدفّق AI",
+          "بيانات نادرة التغيّر"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قاعدة الاختيار في سطر",
+      "md": "\n**لو العميل محتاج يبعت حاجة للخادم عبر نفس القناة → SignalR. لو التدفق اتجاه واحد → SSE (أخف وأبسط).**\nأمثلة: إشعارات حالة الطلب وتقدّم التصدير وأسعار اللحظي = SSE. شات ودعم مباشر ولعبة = SignalR.\nولو عندك 3 مستهلكين فقط وبيانات تتغير كل ساعة → polling بسيط أوفر تشغيليًا.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) SignalR: Hub آمن ومنظّم"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\n# الخادم: مدمج في ASP.NET Core\ndotnet add Shop.Api package Microsoft.AspNetCore.SignalR.StackExchangeRedis   # للتوسع (اختياري)\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Realtime/OrdersHub.cs",
+      "title": "Strongly-typed Hub + مجموعات + تفويض",
+      "code": "\nusing Microsoft.AspNetCore.Authorization;\nusing Microsoft.AspNetCore.SignalR;\n\n/// <summary>عقد الأحداث المتجهة للعميل — فحص ترجمة بدل أسماء سحرية.</summary>\npublic interface IOrdersClient\n{\n    Task OrderStatusChanged(OrderStatusChangedEvent evt);\n    Task StockLevelChanged(StockLevelChangedEvent evt);\n    Task Notification(string message);\n}\n\npublic sealed record OrderStatusChangedEvent(Guid OrderId, string Status, DateTimeOffset At);\npublic sealed record StockLevelChangedEvent(Guid ProductId, int Remaining);\n\n[Authorize]                                        // ✓ لا hub عام بلا مصادقة\npublic sealed class OrdersHub(ICurrentUser user, ILogger<OrdersHub> log)\n    : Hub<IOrdersClient>, IAsyncDisposable\n{\n    /// <summary>\n    /// مجموعة لكل مستخدم: العميل يشوف طلباته هو فقط.\n    /// ✗ لا تعتمد على اسم مجموعة يرسله العميل — ده BOLA فوري.\n    /// </summary>\n    public override async Task OnConnectedAsync()\n    {\n        if (user.UserId is { } id)\n        {\n            await Groups.AddToGroupAsync(Context.ConnectionId, GroupFor(id));\n            log.LogInformation(\"signalr connected user={UserId} connection={ConnectionId}\", id, Context.ConnectionId);\n        }\n        await base.OnConnectedAsync();\n    }\n\n    public override async Task OnDisconnectedAsync(Exception? exception)\n    {\n        if (user.UserId is { } id) await Groups.RemoveFromGroupAsync(Context.ConnectionId, GroupFor(id));\n        if (exception is not null)\n            log.LogWarning(exception, \"signalr disconnected with error user={UserId}\", user.UserId);\n        await base.OnDisconnectedAsync(exception);\n    }\n\n    /// <summary>\n    /// طلب تحديث حالة طلب — عبر الـHub. لاحظ فحص الملكية: الـHub endpoint زي أي endpoint.\n    /// </summary>\n    public async Task SubscribeToOrder(Guid orderId)\n    {\n        var allowed = await Orders.AuthorizeAccessAsync(orderId, user, Context.User!);\n        if (!allowed) throw new HubException(\"غير مصرّح بمتابعة هذا الطلب\");   // رسالة آمنة للعميل\n\n        await Groups.AddToGroupAsync(Context.ConnectionId, $\"order:{orderId:N}\");\n    }\n\n    public static string GroupFor(Guid userId) => $\"user:{userId:N}\";\n    public static string GroupForOrder(Guid orderId) => $\"order:{orderId:N}\";\n\n    public ValueTask DisposeAsync() => ValueTask.CompletedTask;\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Program.cs",
+      "title": "التسجيل + المصادقة عبر query string للـWebSocket",
+      "code": "\nbuilder.Services.AddSignalR(options =>\n{\n    options.EnableDetailedErrors = false;             // ✓ لا ترسل stack trace للعميل\n    options.MaximumReceiveMessageSize = 32 * 1024;    // حد صريح (الافتراضي 32KB)\n    options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);\n    options.KeepAliveInterval = TimeSpan.FromSeconds(15);\n    options.HandshakeTimeout = TimeSpan.FromSeconds(15);\n})\n// التوسع: أكثر من نسخة تحتاج backplane، وإلا الرسائل تضيع للاتصالات على النسخ الأخرى\n.AddStackExchangeRedis(config.GetConnectionString(\"Redis\")!);\n\nbuilder.Services\n    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)\n    .AddJwtBearer(options =>\n    {\n        // ... إعدادات التحقق من درس JWT\n        options.Events.OnMessageReceived = ctx =>\n        {\n            // WebSocket ما يقدرش يبعت رؤوس → التوكن في query string (بتوثيق وتأمين أدناه)\n            var token = ctx.Request.Query[\"access_token\"];\n            if (!string.IsNullOrEmpty(token) && ctx.HttpContext.Request.Path.StartsWithSegments(\"/hubs\"))\n                ctx.Token = token;\n            return Task.CompletedTask;\n        };\n    });\n\n// يرسل لأي مستخدم عبر Clients.User(id) — حدد الـclaim المعتمد\nbuilder.Services.AddSingleton<IUserIdProvider, SubClaimUserIdProvider>();\n\nvar app = builder.Build();\napp.UseAuthentication();\napp.UseAuthorization();\napp.MapHub<OrdersHub>(\"/hubs/orders\").RequireAuthorization();\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Realtime/SubClaimUserIdProvider.cs",
+      "title": "IUserIdProvider",
+      "code": "\nusing System.Security.Claims;\nusing Microsoft.AspNetCore.SignalR;\n\npublic sealed class SubClaimUserIdProvider : IUserIdProvider\n{\n    // ✓ نفس الـclaim اللي ICurrentUser بيعتمد عليه — اتساق بين المصادقة والـrealtime\n    public string? GetUserId(ClaimsPrincipal user) =>\n        user.FindFirstValue(JwtRegisteredClaimNames.Sub) ?? user.FindFirstValue(ClaimTypes.NameIdentifier);\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) الإرسال من خارج الـHub (الاستخدام الأشهر)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Orders/OrdersHandlers.cs",
+      "title": "IHubContext داخل الـservice — حدث واحد بعد نجاح العملية",
+      "code": "\nusing Microsoft.AspNetCore.SignalR;\n\npublic sealed class OrderService(\n    AppDbContext db, IHubContext<OrdersHub, IOrdersClient> hub, TimeProvider time,\n    ILogger<OrderService> log) : IOrderService\n{\n    public async Task CancelAsync(Guid orderId, ICurrentUser user, CancellationToken ct)\n    {\n        var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == orderId, ct)\n                    ?? throw new NotFoundException(\"Order\", orderId);\n\n        if (!order.CanCancel()) throw new ConflictException(\"Order\", orderId, \"الحالة لا تسمح بالإلغاء\");\n        if (order.CustomerId != user.UserId && !user.Roles.Contains(Roles.Admin))\n            throw new ForbiddenException(\"Order\", orderId);\n\n        order.Status = OrderStatus.Cancelled;\n        order.UpdatedAt = time.GetUtcNow();\n        await db.SaveChangesAsync(ct);\n\n        // ✓ بعد الحفظ — لا تبعت حدثًا عن حالة لم تُلتزم بعد\n        // ✓ لمجموعة المستخدم + مجموعة الطلب (مش Clients.All — تسريب وأداء سيئ)\n        var evt = new OrderStatusChangedEvent(order.Id, order.Status.ToString(), order.UpdatedAt);\n        await Task.WhenAll(\n            hub.Clients.Group(OrdersHub.GroupFor(order.CustomerId)).OrderStatusChanged(evt),\n            hub.Clients.Group(OrdersHub.GroupForOrder(order.Id)).OrderStatusChanged(evt));\n\n        log.LogInformation(\"order cancelled order={OrderId} by={UserId}\", orderId, user.UserId);\n    }\n}\n\n/// <summary>بديل أنضف معماريًا: نشر حدث domain واشتراك hub-notifier فيه (فصل كامل).</summary>\npublic sealed class OrderRealtimeNotifier(IHubContext<OrdersHub, IOrdersClient> hub)\n{\n    public Task HandleAsync(OrderStatusChanged domainEvent, CancellationToken ct) =>\n        hub.Clients.Group(OrdersHub.GroupFor(domainEvent.CustomerId))\n           .OrderStatusChanged(new OrderStatusChangedEvent(\n               domainEvent.OrderId, domainEvent.Status.ToString(), domainEvent.At));\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "أخطاء SignalR اللي بتاكل وقت",
+      "md": "\n- **`Clients.All` لحدث يخص مستخدم واحد** → تسريب بيانات + حمل بلا معنى. استخدم مجموعات.\n- **نسخ متعددة بلا backplane** → العميل المتصل بنسخة تانية ما يستلمش حاجة (ويظهر كـ«يشتغل أحيانًا»).\n- **توكن في query string** → بيظهر في access logs والـproxy. خفّفها: توكن قصير العمر، ولا تسجّل الـquery string، وافصل مسار `/hubs` في اللوجات.\n- **رسائل كبيرة** → حد الاستقبال 32KB افتراضيًا؛ ابعت **معرّفات** وخلى العميل يجلب التفاصيل، مش الكائن كله.\n- **استدعاء الـHub من `ExecuteAsync` بلا scope** → الـ`IHubContext` singleton فده آمن، لكن خدمات EF scoped لازم من scope (الدرس الجاي).\n- **استثناء داخل hub method** → بيوصل العميل كرسالة عامة؛ فعّل `EnableDetailedErrors` فقط في التطوير.\n"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "filename": "wwwroot/js/orders-realtime.js",
+      "title": "العميل: إعادة اتصال وأخطاء وحالة UI",
+      "code": "\nimport * as signalR from \"@microsoft/signalr\";\n\nexport function connectOrdersHub(getAccessToken, handlers) {\n  const connection = new signalR.HubConnectionBuilder()\n    .withUrl(\"/hubs/orders\", {\n      accessTokenFactory: getAccessToken,\n      skipNegotiation: true,                 // WebSocket مباشرة (يتطلب backplane/خادم يدعمه)\n      transport: signalR.HttpTransportType.WebSockets,\n    })\n    .withAutomaticReconnect([0, 2000, 5000, 15000, 30000])   // ✓ فترات متصاعدة\n    .configureLogging(signalR.LogLevel.Warning)\n    .build();\n\n  connection.on(\"OrderStatusChanged\", handlers.onOrderStatusChanged);\n  connection.on(\"StockLevelChanged\", handlers.onStockLevelChanged);\n  connection.on(\"Notification\", handlers.onNotification);\n\n  connection.onreconnecting(() => handlers.onState(\"reconnecting\"));\n  connection.onreconnected(async () => {\n    handlers.onState(\"connected\");\n    // ★ بعد إعادة الاتصال: المجموعات والاشتراكات ضاعت — أعد تسجيلها\n    for (const orderId of handlers.subscribedOrderIds()) {\n      await connection.invoke(\"SubscribeToOrder\", orderId);\n    }\n    await handlers.resync();                  // اجلب الحالة الحالية لسد فجوة الأحداث\n  });\n  connection.onclose(() => handlers.onState(\"closed\"));\n\n  // إعادة محاولة دائمة لو فشلت البداية (شبكات الموبايل)\n  const start = async () => {\n    try {\n      await connection.start();\n      handlers.onState(\"connected\");\n    } catch (err) {\n      handlers.onState(\"retrying\");\n      setTimeout(start, 10000);\n    }\n  };\n  void start();\n\n  return connection;\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "الحدث اللي هيفوتك: resync بعد إعادة الاتصال",
+      "md": "\nإعادة الاتصال **ما بتعوضش** الأحداث اللي فاتت. لو العميل بينادي `onreconnected` بس من غير ما يجلب\nالحالة الحالية، هيفضل يعرض حالة قديمة للأبد.\n\nالنمط الصحيح: اتصال + **لقطة حالة أولية** (`GET /api/orders?updatedSince=…`) ثم أحداث تزايدية.\nولو التسلسل مهم فعلًا، ابعت رقم نسخة (`version`/`seq`) مع كل حدث وتجاهل القديم، أو استخدم قناة\nمست durable (Redis Streams / Service Bus) بدل الـHub للتسليم المضمون.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) SSE: أخف حل لتدفّق اتجاه واحد"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Shop.Api/Features/Realtime/ProgressEndpoints.cs",
+      "title": "SSE مكتوبة يدويًا — تعمل على أي إصدار، وبلا مكتبات",
+      "code": "\nusing System.Runtime.CompilerServices;\nusing Microsoft.AspNetCore.Http.Json;\nusing Microsoft.Extensions.Options;\n\npublic static IEndpointRouteBuilder MapRealtimeApi(this IEndpointRouteBuilder app)\n{\n    var group = app.MapGroup(\"/api/stream\").WithTags(\"Realtime\").RequireAuthorization();\n\n    /// <summary>تقدّم تصدير ملف: أحداث حتى الانتهاء.</summary>\n    group.MapGet(\"/exports/{exportId:guid}/progress\", async (\n        Guid exportId, HttpContext http, IExportProgress progress,\n        IOptions<JsonOptions> json, CancellationToken ct) =>\n    {\n        // ✓ رؤوس SSE الثلاثة — بدونها المتصفح ما يعاملهاش كتدفّق\n        http.Response.Headers.ContentType = \"text/event-stream; charset=utf-8\";\n        http.Response.Headers.CacheControl = \"no-store, no-transform\";\n        http.Response.Headers[\"X-Accel-Buffering\"] = \"no\";     // يمنع buffering في nginx\n        http.Response.Headers.Connection = \"keep-alive\";\n\n        // دفق غير متزامن من الخدمة — والـCancellationToken من HttpContext.RequestAborted\n        await foreach (var update in progress.WatchAsync(exportId, ct).WithCancellation(ct))\n        {\n            var payload = JsonSerializer.Serialize(update, json.Value.SerializerOptions);\n\n            await http.Response.WriteAsync($\"id: {update.Seq}\\n\", ct);      // id → Last-Event-ID عند الإعادة\n            await http.Response.WriteAsync($\"event: progress\\n\", ct);\n            await http.Response.WriteAsync($\"data: {payload}\\n\\n\", ct);     // سطرا نهاية إلزاميان\n            await http.Response.Body.FlushAsync(ct);                        // ✓ Flush وإلا الأحداث تتحجز\n\n            if (update.IsFinal) break;\n        }\n    }).Produces<OrderExportProgress>(contentType: \"text/event-stream\");\n\n    return app;\n}\n\npublic sealed record OrderExportProgress(int Seq, string State, int Processed, int Total, bool IsFinal);\n\npublic interface IExportProgress\n{\n    IAsyncEnumerable<OrderExportProgress> WatchAsync(Guid exportId, CancellationToken ct);\n}\n\npublic sealed record ExportState(string State, int Processed, int Total, bool Done);\n\npublic interface IExportStateStore\n{\n    Task<ExportState> ReadAsync(Guid exportId, CancellationToken ct);\n}\n\n/// <summary>تنفيذ بسيط فوق Channel — نفس القناة اللي بيكتب فيها الـBackgroundService.</summary>\npublic sealed class ChannelExportProgress(IExportStateStore store) : IExportProgress\n{\n    private static readonly TimeSpan PollFallback = TimeSpan.FromSeconds(2);\n\n    public async IAsyncEnumerable<OrderExportProgress> WatchAsync(\n        Guid exportId, [EnumeratorCancellation] CancellationToken ct)\n    {\n        var seq = 0;\n        while (!ct.IsCancellationRequested)\n        {\n            var state = await store.ReadAsync(exportId, ct);\n            yield return new OrderExportProgress(++seq, state.State, state.Processed, state.Total, state.Done);\n            if (state.Done) yield break;\n\n            await Task.Delay(PollFallback, ct);   // بديل: انتظر على Channel/Redis PubSub بدل التأخير\n        }\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "javascript",
+      "filename": "wwwroot/js/export-progress.js",
+      "title": "العميل: EventSource (إعادة اتصال تلقائية)",
+      "code": "\nexport function watchExport(exportId, onProgress, onDone, onError) {\n  // EventSource ما يبعتش Authorization header — استخدم كوكي جلسة،\n  // أو مكتبة (event-source-polyfill / fetch-event-source) تسمح برؤوس مخصصة.\n  const source = new EventSource(`/api/stream/exports/${exportId}/progress`, { withCredentials: true });\n\n  source.addEventListener(\"progress\", (e) => {\n    const update = JSON.parse(e.data);\n    onProgress(update);\n    if (update.isFinal) { onDone(update); source.close(); }\n  });\n\n  source.onerror = (err) => {\n    // المتصفح بيعيد الاتصال تلقائيًا. لو القفل نهائي (401/404) اقفل يدويًا\n    if (source.readyState === EventSource.CLOSED) onError(err);\n  };\n\n  return () => source.close();\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": ".NET 10 وSSE",
+      "md": "\nASP.NET Core 10 أضاف دعمًا مدمجًا لـServer-Sent Events في Minimal APIs (بدل الكتابة اليدوية أعلاه).\nالنمط اليدوي ده صحيح وشغال على أي إصدار — لكن قبل ما تعتمد على API مدمج، راجع\n[What's new in ASP.NET Core 10](https://learn.microsoft.com/aspnet/core/release-notes/aspnetcore-10.0)\nللتأكد من الأسماء الدقيقة والسلوك في إصدارك (تجنّبًا لأي اختلاف بين الإصدارات).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) التوسع والمراقبة"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الموقف",
+        "الحل"
+      ],
+      "rows": [
+        [
+          "نسخة واحدة",
+          "SignalR في الذاكرة (بلا backplane)"
+        ],
+        [
+          "نسخ متعددة (K8s/scale set)",
+          "Redis backplane أو **Azure SignalR Service** (يدير الاتصالات عنك)"
+        ],
+        [
+          "اتصالات بالآلاف على نسخة واحدة",
+          "راجع حدود الـthreads والـGC؛ وفكّر في خدمة مخصصة للـrealtime"
+        ],
+        [
+          "تسليم مضمون/ترتيب",
+          "قناة مست durable (Redis Streams، Service Bus) + لقطة حالة عند الاتصال"
+        ],
+        [
+          "قياس",
+          "metrics: عدد الاتصالات، زمن الإرسال، أخطاء handshake، وحجم الرسائل"
+        ],
+        [
+          "اختبار",
+          "اختبر المنطق في الـservice/`IHubContext` mock، واختبار integration للـhandshake والتفويض"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "اختبار Hub logic بدون اتصالات حقيقية",
+      "code": "\n[Fact]\npublic async Task Cancel_publishes_to_customer_group_only()\n{\n    var hub = Substitute.For<IHubContext<OrdersHub, IOrdersClient>>();\n    var clients = Substitute.For<IHubClients<IOrdersClient>>();\n    var clientProxy = Substitute.For<IOrdersClient>();\n    hub.Clients.Returns(clients);\n    clients.Group(OrdersHub.GroupFor(customerId)).Returns(clientProxy);\n\n    var service = new OrderService(db, hub, clock, log);\n    await service.CancelAsync(orderId, AnUser.Customer(customerId), CancellationToken.None);\n\n    await clientProxy.Received(1).OrderStatusChanged(Arg.Is<OrderStatusChangedEvent>(\n        e => e.OrderId == orderId && e.Status == \"Cancelled\"));\n\n    // ✓ لم نرسل لكل الاتصالات\n    clients.DidNotReceiveWithAnyArgs().All(default!);\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أختار بين SignalR وSSE وpolling بمعيار الاتجاه والتأخير والتكلفة التشغيلية.",
+        "أبني Hub مفوَّض يبعت لمجموعات (مش `Clients.All`) وأرسل من `IHubContext` بعد الحفظ.",
+        "أضبط backplane للتوسع، وأتعامل مع إعادة الاتصال + resync على العميل.",
+        "أنفّذ SSE صحيحة (رؤوس + flush + `RequestAborted`) وأختبر منطق الـrealtime بمعزل عن الاتصالات."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "لو محتاج تبعت تقدّم مهمة للعميل فقط (مفيش أوامر من العميل) — أنهي أنسب؟",
+          "options": [
+            "SignalR",
+            "SSE",
+            "WebSocket خام",
+            "Long polling"
+          ],
+          "answer": 1,
+          "explain": "اتجاه واحد → SSE: أخف، بلا مكتبة على العميل (`EventSource`)، وإعادة اتصال تلقائية من المتصفح."
+        },
+        {
+          "q": "تطبيقك على 3 نسخ والعميل بيشتكي إن التحديثات بتوصل أحيانًا. السبب؟",
+          "options": [
+            "المتصفح بطيء",
+            "مفيش backplane: النسخة اللي بتبعت مش اللي عليها اتصال العميل",
+            "التوكن منتهي",
+            "المجموعات غلط"
+          ],
+          "answer": 1,
+          "explain": "الحل: Redis backplane أو Azure SignalR Service. التشخيص السريع: جرّب نسخة واحدة وشوف هل المشكلة اختفت."
+        },
+        {
+          "q": "ليه نبعت بعد `SaveChangesAsync` مش قبله؟",
+          "options": [
+            "أسرع",
+            "عشان العميل ما يستلمش حدثًا عن حالة ممكن تفشل أو تتراجع (transaction)",
+            "متطلب SignalR",
+            "لتقليل الرسائل"
+          ],
+          "answer": 1,
+          "explain": "حدث قبل الالتزام = العميل شاف حالة ما حصلتش. الأفضل معماريًا: outbox pattern للأحداث الحرجة."
+        },
+        {
+          "q": "بعد إعادة الاتصال، إيه الإجراء اللي الناس بتنساه؟",
+          "options": [
+            "إعادة تحميل الصفحة",
+            "إعادة الاشتراك في المجموعات + جلب لقطة حالة (resync) لسد الأحداث الفائتة",
+            "تغيير التوكن",
+            "تقليل حجم الرسائل"
+          ],
+          "answer": 1,
+          "explain": "الـgroups مرتبطة بالـconnectionId اللي مات. والأحداث اللي حصلت أثناء الانقطاع مش هتتعوض لوحدها."
+        },
+        {
+          "q": "حد `MaximumReceiveMessageSize` 32KB — إيه الخطر لو كبّرته بلا سبب؟",
+          "options": [
+            "رسائل أبطأ",
+            "استهلاك ذاكرة وهجمات استنزاف (عميل يبعت رسائل ضخمة) — والأفضل إرسال معرّفات بدل كائنات كاملة",
+            "فقدان الرسائل",
+            "لا خطر"
+          ],
+          "answer": 1,
+          "explain": "صمّم الرسائل صغيرة: `{ orderId, status }` والعميل يجلب التفاصيل لو محتاج. ده أأمن وأسرع وأبسط."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "تحديثات حالة الطلب لحظيًا",
+          "md": "أضف Hub مفوَّض (`/hubs/orders`) يبعت `OrderStatusChanged` لمجموعة المستخدم عند أي تغيير حالة، وعميل JavaScript بـ`withAutomaticReconnect` وresync. أرسل من `IHubContext` داخل الـservice بعد `SaveChangesAsync`.",
+          "criteria": [
+            "الـHub يتطلب مصادقة (`[Authorize]` + `RequireAuthorization`) ويرفض 401 بلا توكن",
+            "مستخدم A لا يستلم أحداث مستخدم B (اختبار/تحقق يدوي بحسابين)",
+            "العميل يعيد الاتصال ويشتغل بعد فصل الخادم 10 ثوانٍ",
+            "لا استخدام لـ`Clients.All` في أي مسار",
+            "اختبار unit للمنطق باستخدام `IHubContext` mock"
+          ],
+          "hint": "لو الاتصال بيرجع 401 رغم توكن صالح: تأكد من `OnMessageReceived` بيقرأ `access_token` من الـquery string **للمسار `/hubs` فقط**، وإن `IUserIdProvider` بيستخدم نفس الـclaim الموجود في التوكن."
+        },
+        {
+          "id": "t2",
+          "title": "SSE لتقدّم مهمة",
+          "md": "بدّل (أو أضف) مسار SSE يعرض تقدّم عملية طويلة (تصدير/معالجة) مع `id:` و`event:` وflush صحيح، وعميل `EventSource` يحدّث شريط تقدّم. أثبت إن إلغاء الطلب (قفل التبويب) بيوقف الشغل على الخادم.",
+          "criteria": [
+            "الرؤوس الثلاثة صحيحة والأحداث بتظهر تدريجيًا (مش في الآخر مرة واحدة)",
+            "`HttpContext.RequestAborted` بيوقف التكرار (تحقق من اللوجات)",
+            "الحدث الأخير `isFinal` ويقفل الاتصال من العميل",
+            "مسار محمي بمصادقة وموثق في OpenAPI بـ`text/event-stream`"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "SignalR overview",
+          "url": "https://learn.microsoft.com/aspnet/core/signalr/introduction"
+        },
+        {
+          "label": "SignalR hubs API guide",
+          "url": "https://learn.microsoft.com/aspnet/core/signalr/hubs"
+        },
+        {
+          "label": "Scale-out with Redis backplane",
+          "url": "https://learn.microsoft.com/aspnet/core/signalr/redis-backplane"
+        },
+        {
+          "label": "JWT auth with SignalR",
+          "url": "https://learn.microsoft.com/aspnet/core/signalr/authn-and-authz"
+        },
+        {
+          "label": "MDN — Server-Sent Events",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events"
+        },
+        {
+          "label": "What's new in ASP.NET Core 10",
+          "url": "https://learn.microsoft.com/aspnet/core/release-notes/aspnetcore-10.0"
+        }
+      ]
+    }
+  ]
+}

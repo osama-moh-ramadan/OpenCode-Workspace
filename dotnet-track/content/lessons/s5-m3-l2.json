@@ -1,0 +1,435 @@
+{
+  "id": "s5-m3-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nالدرس اللي فات شغّلنا النظام بأمر واحد. دلوقتي السؤال الأصعب:\n**طلب فشل — فين المشكلة؟** في gateway؟ في orders؟ في نداء catalog؟ في مستهلك RabbitMQ؟ في DB؟\n\nمن غير تتبع موزّع، الإجابة بتيجي من `Console.WriteLine` في 5 نوافذ طرفية ومحاولة مطابقة التوقيتات يدويًا.\n**لوحة Aspire** بتجمع الإشارات التلاتة — **logs · metrics · traces** — من كل الموارد (بما فيها الـcontainers)\nفي مكان واحد، وبتربط اللوج بالـtrace تلقائيًا. ومن Aspire 13.6 اللوحة بتخزن في **SQLite**\nفتقدر ترجع لـ**تشغيلات سابقة** (run history) وتقارن بينها.\n\nالهدف مش «أشوف لوحة حلوة» — الهدف **مهارة تشخيص**: منهجية ثابتة توصلك لسبب فشل عبر سلسلة خدمات في دقايق.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "OTLP",
+          "def": "OpenTelemetry Protocol — الطريقة الموحدة لإرسال traces/metrics/logs. اللوحة عندها مستقبل gRPC (4317/18889) وHTTP (4318/18890)."
+        },
+        {
+          "term": "Trace / Span",
+          "def": "الـtrace = رحلة طلب واحد. الـspan = وحدة عمل جواه (نداء HTTP، استعلام DB، معالجة رسالة) بمدته وسماته وحالته."
+        },
+        {
+          "term": "Trace Context Propagation",
+          "def": "تمرير `traceparent` عبر HTTP/الوسيط — هو اللي يخلي spans من خدمات مختلفة تتجمع في trace واحد."
+        },
+        {
+          "term": "Structured Logs",
+          "def": "لوجات بقوالب وحقول (`{OrderId}`) مش نصوص — قابلة للبحث والربط بالـtrace في اللوحة."
+        },
+        {
+          "term": "Log–Trace Correlation",
+          "def": "ربط كل سطر لوج بالـ`TraceId` الحالي — تفتح الـtrace فتلاقي لوجاته جنبه."
+        },
+        {
+          "term": "Resource Service",
+          "def": "القناة اللي اللوحة بتعرف منها الموارد وحالتها ومنافذها ولوجات الـconsole (بتشتغل تلقائيًا مع AppHost)."
+        },
+        {
+          "term": "Run / Run History",
+          "def": "تشغيل واحد للـAppHost. من 13.6 اللوحة بتحتفظ لحد **10 تشغيلات** لكل تطبيق (read-only) مع run selector وتثبيت (pin)."
+        },
+        {
+          "term": "API Key / Login Token",
+          "def": "اللوحة مؤمّنة افتراضيًا: token للمتصفح و`x-otlp-api-key` لـOTLP ingest. `--allow-anonymous` للتطوير المحلي فقط."
+        },
+        {
+          "term": "Telemetry Limits",
+          "def": "`DASHBOARD__TELEMETRYLIMITS__MAX{LOG,TRACE}COUNT` (100,000 افتراضيًا) و`MAXMETRICSCOUNT` (50,000 لكل بُعد) — اللوحة للتطوير مش تخزين دائم."
+        },
+        {
+          "term": "Cardinality",
+          "def": "عدد القيم المختلفة لـtag. لو حطيت `OrderId` كـtag في مقياس → آلاف السلاسل الزمنية وانهيار الذاكرة. (درس 2.3.5)"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) تشغيل اللوحة: 3 طرق"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "مع AppHost · standalone container · CLI",
+      "code": "\n# ═══ ① تلقائيًا مع AppHost (الأشهر في التطوير) ═══\ndotnet run --project src/Shop.AppHost\n#   → اللوحة بتفتح في المتصفح، وكل مورد بيبعت OTLP تلقائيًا\n#   → الـAppHost بيحقن للخدمات: OTEL_EXPORTER_OTLP_ENDPOINT + OTEL_EXPORTER_OTLP_HEADERS (api key) + OTEL_SERVICE_NAME\n\n# ═══ ② standalone: لخدمة/لغة مش تحت AppHost (Java/Go/Python أو خدمة قديمة) ═══\ndocker run --rm -d --name aspire-dashboard \\\n  -p 127.0.0.1:18888:18888 \\\n  -p 127.0.0.1:4317:18889 \\\n  -p 127.0.0.1:4318:18890 \\\n  mcr.microsoft.com/aspire/dashboard:latest      # اسم بديل مكافئ: mcr.microsoft.com/dotnet/aspire-dashboard:13\n#   18888 = واجهة اللوحة · 4317→18889 = OTLP/gRPC · 4318→18890 = OTLP/HTTP\n#   ★ اربط على 127.0.0.1 فقط — اللوحة بتشوف لوجاتك وأسرارك المحتملة\n\n# مع تسجيل دخول معطّل (تطوير محلي فقط، بلا أي بيانات حقيقية):\ndocker run --rm -d --name aspire-dashboard \\\n  -p 127.0.0.1:18888:18888 -p 127.0.0.1:4317:18889 -p 127.0.0.1:4318:18890 \\\n  -e ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true \\\n  mcr.microsoft.com/aspire/dashboard:latest\n\n# ★ الاحتفاظ بالبيانات بين إعادات التشغيل (13.6):\ndocker run --rm -d --name aspire-dashboard \\\n  -p 127.0.0.1:18888:18888 -p 127.0.0.1:4317:18889 -p 127.0.0.1:4318:18890 \\\n  -e ASPIRE_DASHBOARD_PERSISTENCE_MODE=Resume \\\n  -e ASPIRE_DASHBOARD_APPLICATION_NAME=shop-local \\\n  -e ASPIRE_DASHBOARD_DATA_DIRECTORY=/data \\\n  -v aspire-dashboard-data:/data \\\n  mcr.microsoft.com/aspire/dashboard:latest\n\n# ═══ ③ عبر Aspire CLI (بلا docker) ═══\naspire dashboard run                                   # افتراضي: UI 18888، gRPC 4317، HTTP 4318\naspire dashboard run --allow-anonymous                 # تطوير محلي فقط\naspire dashboard run --otlp-grpc-url http://localhost:4317\n\n# ═══ ⑤ توصيل تطبيق خارجي باللوحة ═══\nexport OTEL_EXPORTER_OTLP_ENDPOINT=\"http://localhost:4317\"\nexport OTEL_EXPORTER_OTLP_PROTOCOL=\"grpc\"\nexport OTEL_EXPORTER_OTLP_HEADERS=\"x-otlp-api-key=<key-from-dashboard-output>\"\nexport OTEL_SERVICE_NAME=\"orders-api\"\nexport OTEL_RESOURCE_ATTRIBUTES=\"deployment.environment=dev\"\n\n# ⚠ token المتصفح بيتغيّر مع كل تشغيل — اطبعه من مخرجات `docker run` (رابط /login?t=…)\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المتغير / الخيار",
+        "الافتراضي",
+        "الاستخدام"
+      ],
+      "rows": [
+        [
+          "`ASPNETCORE_URLS`",
+          "`http://localhost:18888`",
+          "منفذ واجهة اللوحة"
+        ],
+        [
+          "`ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL`",
+          "`http://localhost:18889` (داخل الـcontainer)",
+          "OTLP/gRPC — التطبيقات بتبعت له"
+        ],
+        [
+          "`ASPIRE_DASHBOARD_OTLP_HTTP_ENDPOINT_URL`",
+          "`http://localhost:18890`",
+          "OTLP/HTTP (`POST /v1/traces|/v1/metrics|/v1/logs`)"
+        ],
+        [
+          "`ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS`",
+          "غير مفعّل",
+          "يلغي token المتصفح وapi key — **تطوير محلي فقط**"
+        ],
+        [
+          "`x-otlp-api-key` (header)",
+          "مولّد تلقائيًا",
+          "تأمين OTLP ingest في الوضع standalone"
+        ],
+        [
+          "`ASPIRE_DASHBOARD_PERSISTENCE_MODE`",
+          "`None` (standalone) / `Run` (مع AppHost)",
+          "`Resume` = الاحتفاظ بنفس الـrun بين إعادات التشغيل"
+        ],
+        [
+          "`ASPIRE_DASHBOARD_APPLICATION_NAME`",
+          "—",
+          "اسم التطبيق (بيفصل البيانات المخزنة)"
+        ],
+        [
+          "`ASPIRE_DASHBOARD_DATA_DIRECTORY`",
+          "مؤقت",
+          "مسار قاعدة SQLite"
+        ],
+        [
+          "`DASHBOARD__TELEMETRYLIMITS__MAXLOGCOUNT` / `MAXTRACECOUNT`",
+          "100,000",
+          "حدود التخزين — اللوحة مش تخزين دائم"
+        ],
+        [
+          "`DASHBOARD__TELEMETRYLIMITS__MAXMETRICSCOUNT`",
+          "50,000 لكل بُعد",
+          "حماية من cardinality عالية"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) إزاي الخدمة بتبعت إشارات مفيدة (مش افتراضية بس)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Orders/Diagnostics/Instrumentation.cs",
+      "title": "مصدر Activity مخصص + مقاييس + ربط اللوج بالـtrace",
+      "code": "\n// requires: using System.Diagnostics; using System.Diagnostics.Metrics;\n\n/// <summary>\n/// ★ `AddSource(builder.Environment.ApplicationName)` في ServiceDefaults هو اللي بيخلي المصدر ده يظهر في اللوحة.\n/// الاسم مهم: لو اسم الـActivitySource مختلف عن اسم التطبيق، أضفه صراحةً بـAddSource(\"Shop.Orders\").\n/// </summary>\npublic static class OrderInstrumentation\n{\n    public static readonly ActivitySource Activities = new(\"Shop.Orders\", \"1.0.0\");\n    private static readonly Meter Meter = new(\"Shop.Orders\", \"1.0.0\");\n\n    public static readonly Counter<long> OrdersPlaced   = Meter.CreateCounter<long>(\"shop.orders.placed\");\n    public static readonly Counter<long> OrdersFailed   = Meter.CreateCounter<long>(\"shop.orders.failed\");\n    public static readonly Histogram<double> PlaceOrderDuration =\n        Meter.CreateHistogram<double>(\"shop.orders.place_order.duration\", \"ms\", \"مدة إنشاء الطلب\");\n\n    /// <summary>span لعملية أعمال واحدة — بسمات منخفضة cardinality.</summary>\n    public static Activity? StartPlaceOrder(Guid orderId)\n    {\n        var activity = Activities.StartActivity(\"orders.place\", ActivityKind.Internal);\n        if (activity is null) return null;\n\n        activity.SetTag(\"order.id\", orderId.ToString());            // ✓ معرّف = مفيد للتتبع (مش مقياس)\n        activity.SetTag(\"order.channel\", \"web\");                    // ✓ cardinality منخفضة\n        // ⚠ ممنوع: activity.SetTag(\"order.total\", total) لو هيتحوّل لمقياس — استخدمه كـevent/لوج\n        return activity;\n    }\n}\n\n// ═══ الاستخدام في الـhandler ═══\npublic static class OrdersApi\n{\n    public static async Task<IResult> PlaceOrder(PlaceOrderRequest req, OrdersDbContext db,\n                                                 ILogger<Program> log, CancellationToken ct)\n    {\n        using var activity = OrderInstrumentation.StartPlaceOrder(req.OrderId);\n        var sw = Stopwatch.StartNew();\n\n        try\n        {\n            // درس 4.2.1: الـDomain بياخد خطوط بقيمة مطلقة (minor units)\n            var order = Order.Place(req.OrderId,\n                req.Lines.Select(l => new OrderLine(l.ProductId, l.Quantity, l.UnitPriceMinor)).ToList());\n            db.Orders.Add(order);\n            await db.SaveChangesAsync(ct);                          // ✓ Outbox بيتكتب في نفس المعاملة (4.2.3)\n\n            OrderInstrumentation.OrdersPlaced.Add(1, new(\"channel\", \"web\"));\n\n            // ★ لوج منظّم بحقول — بيربط نفسه بالـTraceId الحالي تلقائيًا\n            log.LogInformation(\"Order {OrderId} placed with {LineCount} lines in {Elapsed}ms\",\n                order.Id, order.Lines.Count, sw.ElapsedMilliseconds);\n\n            // ✓ event على الـspan (بدل tag لو القيمة متغيرة/كبيرة)\n            activity?.AddEvent(new ActivityEvent(\"placed\",\n                tags: new ActivityTagsCollection { [\"lines\"] = order.Lines.Count }));\n\n            return Results.Created($\"/api/orders/{order.Id}\", new { order.Id });\n        }\n        catch (Exception ex)\n        {\n            OrderInstrumentation.OrdersFailed.Add(1, new(\"reason\", ex.GetType().Name));   // ✓ cardinality منخفضة\n            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);\n            activity?.AddTag(\"exception.type\", ex.GetType().FullName);\n            log.LogError(ex, \"Failed to place order {OrderId}\", req.OrderId);\n            throw;                                                  // IExceptionHandler يتعامل معه (درس 2.1.4)\n        }\n        finally\n        {\n            OrderInstrumentation.PlaceOrderDuration.Record(sw.Elapsed.TotalMilliseconds);\n        }\n    }\n}\n\npublic sealed record PlaceOrderRequest(Guid OrderId, IReadOnlyList<OrderLineDto> Lines);\npublic sealed record OrderLineDto(Guid ProductId, int Quantity, long UnitPriceMinor);\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Orders/Program.cs",
+      "title": "لوجات موحّدة: Serilog + correlation عبر HTTP والوسيط",
+      "code": "\n// requires: using Serilog; using Serilog.Context; using Serilog.Core; using Serilog.Events;\n// packages:  Serilog.AspNetCore · Serilog.Sinks.OpenTelemetry · Serilog.Enrichers.Environment\n\nbuilder.Host.UseSerilog((ctx, services, cfg) => cfg\n    .ReadFrom.Configuration(ctx.Configuration)\n    .Enrich.FromLogContext()\n    // ★ الحقول دي هي اللي بتخلي اللوج قابل للبحث والربط في اللوحة\n    .Enrich.WithProperty(\"service\", \"orders\")\n    .Enrich.WithProperty(\"version\", typeof(Program).Assembly.GetName().Version?.ToString() ?? \"0.0.0\")\n    .Enrich.With<TraceIdEnricher>()\n    .WriteTo.Console(outputTemplate:\n        \"[{Timestamp:HH:mm:ss} {Level:u3}] [{TraceId}] {Message:lj}{NewLine}{Exception}\")\n    .WriteTo.OpenTelemetry(options =>                       // ✓ تصدير اللوجات كـOTLP (حزمة Serilog.Sinks.OpenTelemetry)\n    {\n        // الـendpoint والـheaders بيجوا من OTEL_* اللي حقنها الـAppHost\n        options.ResourceAttributes = new Dictionary<string, object> { [\"service.name\"] = \"orders\" };\n    }));\n\n// ★ middleware: correlation id واحد عبر الطلب كله (ومروره للخارج)\napp.Use(async (context, next) =>\n{\n    var correlationId = context.Request.Headers[\"X-Correlation-Id\"].FirstOrDefault()\n                        ?? Activity.Current?.TraceId.ToString()\n                        ?? Guid.NewGuid().ToString(\"N\");\n\n    context.Response.Headers[\"X-Correlation-Id\"] = correlationId;\n    using (LogContext.PushProperty(\"CorrelationId\", correlationId))\n    {\n        await next();\n    }\n});\n\n// وفي مستهلك MassTransit: خد الـtrace من رؤوس الرسالة (الوسيط بينقل traceparent تلقائيًا مع OTel)\npublic sealed class OrderPlacedConsumer(ILogger<OrderPlacedConsumer> log) : IConsumer<OrderPlaced>\n{\n    public Task Consume(ConsumeContext<OrderPlaced> context)\n    {\n        // ✓ MassTransit + OTel: الـspan بيتربط بالـtrace الأصلي للطلب تلقائيًا (درس 5.2.1 فعّل AddMassTransitOpenTelemetry)\n        log.LogInformation(\"Consumed {MessageId} for order {OrderId}\", context.MessageId, context.Message.OrderId);\n        return Task.CompletedTask;\n    }\n}\n\n/// <summary>يضيف TraceId لكل سطر لوج — الربط الأساسي بين اللوجات والـtraces.</summary>\ninternal sealed class TraceIdEnricher : ILogEventEnricher\n{\n    public void Enrich(LogEvent logEvent, ILogEventPropertyFactory factory) =>\n        logEvent.AddPropertyIfAbsent(factory.CreateProperty(\n            \"TraceId\", Activity.Current?.TraceId.ToString() ?? \"-\", destructureObjects: false));\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "الربط اللي بيوفر ساعات: log ↔ trace ↔ metric",
+      "md": "\n**الثلاثة لازم يشتركوا في معرّفات واحدة:**\n- **TraceId** في كل سطر لوج (enricher أو `Serilog` + OTel logs exporter) → في اللوحة تفتح الـtrace وتلاقي لوجاته.\n- **CorrelationId** في الرؤوس (`X-Correlation-Id`) ويمر للخدمات التالية **ولرسائل الوسيط** → تتبع تدفق أعمال عبر أحداث غير متزامنة.\n- **سمات منخفضة cardinality** في المقاييس (`channel`, `reason`, `endpoint`) → تقدر تجمّع وتنذر؛ المعرّفات (OrderId) مكانها الـtags واللوجات مش المقاييس.\n\n**قواعد عملية:**\n1. **بلا لوجات نصية** — `log.LogInformation(\"Order {OrderId} placed\", id)` مش `$\"Order {id} placed\"` (المنظّمة بتبقى قابلة للبحث).\n2. **بلا أسرار في اللوجات أو الـtags** — ولا connection strings، ولا tokens، ولا PAN. افحص قبل ما ترفع اللوحة لفريق.\n3. **`SetStatus(ActivityStatusCode.Error)`** على الـspan عند الفشل — اللوحة بتلوّن الـtrace أحمر وتقدر تفلتر عليه.\n4. **event على الـspan بدل tag** للقيم الكبيرة/المتغيرة (تجنب تضخيم الـspans).\n5. **لا تقيس ما لا تنذر عليه** — كل مقياس بيكلّف ذاكرة في اللوحة وفي الخلفية الإنتاجية.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) منهجية تشخيص فشل عبر سلسلة خدمات"
+    },
+    {
+      "type": "steps",
+      "title": "6 خطوات ثابتة (جرّبها على فشل حقيقي)",
+      "items": [
+        {
+          "title": "ابدأ من الطلب، مش من اللوجات",
+          "md": "في تبويب **Traces**: فلتر بالخدمة (gateway) + الحالة (Error) أو بمدة > 1s. اختار الطلب الفاشل. لو معاك `X-Correlation-Id` من العميل، ابحث بيه في **Structured logs**.",
+          "code": "# من الطرفية بدل اللوحة (13.6+؛ الأوامر موجودة لكن الوسائط بتتطور — شوف المساعدة)\naspire otel --help\naspire otel traces\naspire otel logs"
+        },
+        {
+          "title": "اقرأ الـwaterfall: فين الوقت راح؟",
+          "md": "أكبر span بياخد الوقت هو المشتبه الأول. قارن: `POST /api/orders` (gateway) → `orders.place` → `HTTP GET catalog` → ` Npgsql command`. لو span الوسيط (publish) موجود بس مفيش consume → المشكلة عند المستهلك مش الناشر.",
+          "code": ""
+        },
+        {
+          "title": "افتح اللوجات المرتبطة بالـtrace",
+          "md": "من صفحة الـtrace: **Logs** → هتشوف لوجات كل الخدمات لنفس الـTraceId بالترتيب. ابحث عن أول `Error`/`Warning` — أول خطأ في الزمن هو السبب غالبًا، والباقي توابع.",
+          "code": ""
+        },
+        {
+          "title": "افحص الحالة والاعتمادات",
+          "md": "تبويب **Resources**: هل مورد غير صحي؟ (health check فاشل = `WaitFor` علق المعتمدين). افتح `/health` بتاع الخدمة وشوف **أي** فحص فشل (db؟ redis؟ rabbit؟) — درس 2.3.7.",
+          "code": "curl -s http://localhost:<port>/health | jq\n# أو من اللوحة: endpoint المورد → /health"
+        },
+        {
+          "title": "قارن بالمقاييس (مش بالحدس)",
+          "md": "تبويب **Metrics**: `shop.orders.failed` بـ`reason` → نوع الفشل. `http.server.request.duration` p95 → بطء ولا خطأ؟ `shop.orders.place_order.duration` → فين الجزء البطيء. لو مقياس اختفى فجأة = الخدمة وقفت تبعت (مش إن المشكلة اختفت).",
+          "code": ""
+        },
+        {
+          "title": "أعد الإنتاج ثم صلح",
+          "md": "من 13.6: لو التشغيل انتهى، افتح الـ**run selector** وادخل على الـrun السابق (read-only) — أو **ثبّت (pin)** الـrun اللي فيه العطل عشان ما يتحذفش. بعدين أعد السيناريو محليًا بنفس البيانات، وحوّله لاختبار تكامل (درس 5.3.3) عشان ما يرجعش.",
+          "code": "# الـrun history بتتحفظ لحد 10 تشغيلات لكل تطبيق\n# ثبّت الـrun المهم من الـrun selector في رأس اللوحة"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "head": [
+        "العَرَض",
+        "أول مكان تبص فيه",
+        "السبب الشائع",
+        "الإصلاح"
+      ],
+      "rows": [
+        [
+          "الطلب بيرجع 504 من الـgateway",
+          "أطول span في الـwaterfall",
+          "خدمة تابعة بطيئة/معلّقة ومفيش timeout كفاية",
+          "ميزانية مهلة (5.2.4) + hedging للقراءات"
+        ],
+        [
+          "span فيه `HTTP GET catalog` بحالة Error وبعده retry×2",
+          "attributes بتاعة الـspan (`http.response.status_code`)",
+          "circuit breaker فتح أو الخدمة واقعـة",
+          "شوف `shop.orders.failed{reason=BrokenCircuitException}` + صحة catalog"
+        ],
+        [
+          "الحدث اتنشر بس مفيش span للاستهلاك",
+          "تبويب Resources → مستهلك الرسائل",
+          "المستهلك مش شغال / مفيش consumer على الطابور",
+          "`rabbitmqctl list_queues name messages consumers` (درس 5.2.1)"
+        ],
+        [
+          "الرسائل بتتكرر والمستهلك بيعالجها مرتين",
+          "Structured logs بـ`MessageId`",
+          "إعادة تسليم بلا idempotency",
+          "درس 5.2.5: dedup + قيد فريد"
+        ],
+        [
+          "الخدمة بتبدأ وتفشل في أول طلب",
+          "لوجات الـstartup + حالة المورد",
+          "بدأت قبل ما DB تجهز (بلا `WaitFor`)",
+          "`WaitFor(db)` + `EnableRetryOnFailure`"
+        ],
+        [
+          "p95 عالي بس p50 طبيعي",
+          "Metrics → histogram",
+          "tail latency: GC، pool connections صغير، استعلام بلا فهرس",
+          "درس 3.3.1/3.4.1 (EXPLAIN) + فحص GC"
+        ],
+        [
+          "اللوحة مفيهاش traces لخدمة واحدة",
+          "لوجات الـstartup للخدمة + `OTEL_EXPORTER_OTLP_ENDPOINT`",
+          "الخدمة مش بتنادي `AddServiceDefaults()` أو اسم الـActivitySource مختلف",
+          "أضف `AddSource(\"<اسم المصدر>\")` صراحةً"
+        ],
+        [
+          "المقاييس اختفت فجأة",
+          "حالة المورد + حدود اللوحة",
+          "وصلت لحد `MAXMETRICSCOUNT` (cardinality عالية) أو الخدمة وقفت",
+          "قلّل السمات + افحص tag فيه معرّفات"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "اللوحة أداة تطوير — مش backend للـobservability في الإنتاج",
+      "md": "\n- **التخزين محدود ومؤقت**: افتراضيًا standalone بيحذف قاعدة البيانات عند الإيقاف (`PERSISTENCE_MODE=None`)،\n  ومع AppHost بيحتفظ لحد **10 تشغيلات**. الحدود: 100,000 لوج/trace و50,000 نقطة مقياس لكل بُعد.\n- **البيانات بتضيع** عند إعادة التشغيل/الحذف — أي حاجة تحتاج **احتفاظ** أو **إنذار** لازم تروح لخلفية حقيقية\n  (Grafana + Prometheus + Loki/Tempo، أو Azure Monitor/App Insights، أو أي OTLP backend) — ده موضوع المرحلة 6.\n- **الأمان**: اللوحة بتشوف لوجات وtraces فيها بيانات حساسة محتملة.\n  اربط على `127.0.0.1`، ولا تستخدم `--allow-anonymous` إلا محليًا وبلا بيانات حقيقية، ولا تشارك اللوحة على الشبكة العامة.\n- **exponential histograms وsummaries مش مدعومة** في اللوحة — استخدم histograms صريحة.\n- **OTLP/HTTP** بيقبل `application/x-protobuf` أو `application/json` (غير كده → 415).\n- **لا تخلط environments**: بلا لوحة واحدة تستقبل telemetry من dev وstaging مع بعض بلا فصل بـ`OTEL_RESOURCE_ATTRIBUTES`.\n\n✅ **القاعدة**: استخدم اللوحة للتشخيص المحلي السريع، وصدّر نفس الإشارات لخلفية إنتاجية **بنفس الكود**\n(الفرق الوحيد هو `OTEL_EXPORTER_OTLP_ENDPOINT`). ده معنى «telemetry قابل للنقل».\n"
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "filename": "src/Shop.Orders/appsettings.Development.json",
+      "title": "تشغيل خدمة منفصلة نحو لوحة standalone",
+      "code": "\n{\n  \"Serilog\": {\n    \"MinimumLevel\": {\n      \"Default\": \"Information\",\n      \"Override\": {\n        \"Microsoft.AspNetCore\": \"Warning\",\n        \"Microsoft.EntityFrameworkCore.Database.Command\": \"Warning\",\n        \"System.Net.Http.HttpClient\": \"Warning\"\n      }\n    }\n  },\n\n  \"//\": \"OTEL_* ممكن تتحط كمتغيرات بيئة بدل appsettings (الـAppHost بيحقنها تلقائيًا)\",\n  \"OTEL_SERVICE_NAME\": \"orders\",\n  \"OTEL_RESOURCE_ATTRIBUTES\": \"deployment.environment=dev,service.version=1.4.0\",\n  \"OTEL_EXPORTER_OTLP_ENDPOINT\": \"http://localhost:4317\",\n  \"OTEL_EXPORTER_OTLP_PROTOCOL\": \"grpc\",\n  \"OTEL_TRACES_SAMPLER\": \"parentbased_traceidratio\",\n  \"OTEL_TRACES_SAMPLER_ARG\": \"1.0\",\n\n  \"//sampling\": \"★ محليًا 1.0 (كل الطلبات). في الإنتاج: نسبة أو ذيلي (tail-based) — عيّن كل الأخطاء والبطيء\"\n}\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أشغّل لوحة Aspire بثلاث طرق (مع AppHost، container standalone، CLI) وأفهم المنافذ والأمان والحدود.",
+        "أصدّر traces/metrics/logs من خدمتي بإشارات مفيدة: ActivitySource مخصص، سمات منخفضة cardinality، لوجات منظمة مربوطة بـTraceId.",
+        "أربط log ↔ trace ↔ metric بمعرّفات مشتركة (TraceId + CorrelationId) عبر HTTP والوسيط.",
+        "أتبع منهجية 6 خطوات لتشخيص فشل عبر سلسلة خدمات (waterfall → لوجات مرتبطة → صحة الموارد → مقاييس → إعادة إنتاج).",
+        "أعرف إن اللوحة للتطوير، وأنقل نفس الإشارات لخلفية إنتاجية بتغيير الـendpoint فقط."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "إيه المنافذ الثلاثة للوحة standalone؟",
+          "options": [
+            "18888 UI · 4317 OTLP/gRPC · 4318 OTLP/HTTP (محوّلة من 18889/18890 داخل الـcontainer)",
+            "8080/9090/5000",
+            "18888 بس",
+            "4317 UI و18888 OTLP"
+          ],
+          "answer": 0,
+          "explain": "`-p 18888:18888 -p 4317:18889 -p 4318:18890`. واجهة اللوحة 18888، ومستقبلات OTLP على 4317 (gRPC) و4318 (HTTP) من ناحية المضيف."
+        },
+        {
+          "q": "ليه `AddSource(builder.Environment.ApplicationName)` مهم في tracing؟",
+          "options": [
+            "شكلي",
+            "لأن OTel بيسجّل بس من الـActivitySources المعلنة — لو اسم مصدرك المخصص مختلف عن اسم التطبيق، الـspans بتاعتك مش هتظهر",
+            "بيسرّع التصدير",
+            "مطلوب للـmetrics بس"
+          ],
+          "answer": 1,
+          "explain": "الحل: إما تسمّي `ActivitySource` باسم التطبيق، أو تضيف `AddSource(\"Shop.Orders\")` صراحةً في ConfigureOpenTelemetry."
+        },
+        {
+          "q": "tag فيه `OrderId` على مقياس (Counter). المشكلة؟",
+          "options": [
+            "مفيش مشكلة",
+            "cardinality عالية: كل طلب = سلسلة زمنية جديدة → انفجار ذاكرة ووصول لحد اللوحة (50,000 لكل بُعد)",
+            "بيبطّأ التصدير شوية",
+            "بيتعارض مع الـtraces"
+          ],
+          "answer": 1,
+          "explain": "المعرّفات مكانها اللوجات وtags الـspans/events. المقاييس بتاخد سمات محدودة القيم: `channel`, `reason`, `endpoint`, `status`."
+        },
+        {
+          "q": "أول خطوة في تشخيص طلب فشل عبر 4 خدمات؟",
+          "options": [
+            "قراءة لوجات كل خدمة بالترتيب",
+            "افتح الـtrace بتاع الطلب وشوف الـwaterfall: أكبر span وأول span بحالة Error",
+            "إعادة تشغيل الخدمات",
+            "زيادة الـtimeout"
+          ],
+          "answer": 1,
+          "explain": "الـwaterfall بيحدد **مكان** المشكلة في ثواني (زمن/خطأ)، وبعدين اللوجات المرتبطة بنفس الـTraceId بتديك **السبب**. العكس بيضيع وقت."
+        },
+        {
+          "q": "الحدث اتنشر (فيه span للنشر) بس مفيش span للاستهلاك. تشخّص إزاي؟",
+          "options": [
+            "أعيد النشر",
+            "أفحص المستهلك: هل هو شغال وصحي؟ وهل فيه consumer متصل بالطابور؟ (`rabbitmqctl list_queues name messages consumers`) + هل الرسائل بتتكدس في `_error`؟",
+            "أزيد الـprefetch",
+            "أغيّر الـexchange"
+          ],
+          "answer": 1,
+          "explain": "التتبع بيوقف عند حد العملية. النشر نجح = المشكلة في الطرف التاني: مستهلك مش شغال، binding غلط، أو الرسالة راحت لطابور الأخطاء (درس 5.2.1)."
+        },
+        {
+          "q": "ممكن تعتمد على لوحة Aspire كخلفية observability للإنتاج؟",
+          "options": [
+            "نعم، بتخزن في SQLite",
+            "لا — التخزين محدود ومؤقت (10 تشغيلات، 100k trace/log، 50k مقياس/بُعد) ومفيش إنذارات/احتفاظ. صدّر OTLP لخلفية إنتاجية (Grafana/Prometheus/Azure Monitor)",
+            "نعم لو فعّلت Resume",
+            "نعم للـtraces فقط"
+          ],
+          "answer": 1,
+          "explain": "`Resume` بيخلي الـrun يعيش بين إعادات التشغيل — مفيد للتطوير والتحقيق، مش بديل عن الاحتفاظ والإنذار في الإنتاج. الكود نفسه بيتنقل: غيّر `OTEL_EXPORTER_OTLP_ENDPOINT`."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "تشخيص فشل مُفتعل بمنهجية 6 خطوات",
+          "md": "افتعل 3 أعطال مختلفة في نظامك (أوقف خدمة معتمدة، خلي فحص صحة يفشل، ارمِ استثناء في مستهلك رسائل)، وشخّص كل واحد **من اللوحة فقط** باستخدام الخطوات الست. اكتب تقرير تشخيص لكل عطل: العَرَض، أول span/لوج دلّك، السبب الجذري، الإصلاح، وإزاي تمنعه (اختبار/إنذار).",
+          "criteria": [
+            "3 أعطال مختلفة الأنواع (HTTP تابع · صحة مورد · مستهلك رسائل) — كل واحد متوثق",
+            "لكل عطل: لقطة/وصف للـwaterfall + أول سطر لوج مرتبط بالـTraceId + المقياس اللي أثبت الحالة",
+            "السبب الجذري مذكور بدقة (مش «فيه مشكلة في الشبكة»)",
+            "الإصلاح مطبّق بكود، + إجراء وقائي (اختبار تكامل أو إنذار) لكل عطل",
+            "مفيش `Console.WriteLine` في مسار التشخيص — لوجات منظمة فقط",
+            "الوقت المستغرق لكل تشخيص مسجّل (قارن بعد التمرين الثاني)"
+          ],
+          "hint": "خلي الأعطال قابلة للتفعيل بمفتاح تكوين (`Orders__FaultInjection__CatalogTimeout=true`) عشان تقدر تعيد السيناريو بدقة وتحوله لاختبار.",
+          "solution": "",
+          "resources": [
+            {
+              "label": "Aspire dashboard — standalone",
+              "url": "https://aspire.dev/dashboard/standalone/"
+            },
+            {
+              "label": "Aspire dashboard — configuration reference",
+              "url": "https://aspire.dev/dashboard/configuration/"
+            }
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "إشارات مخصصة: trace + metric + log مربوطين",
+          "md": "أضف لتدفق أعمال واحد في مشروعك (إنشاء طلب مثلًا): span مخصص بسمات منخفضة cardinality، مقياسَين (counter + histogram)، لوجات منظمة مربوطة بـTraceId، و`CorrelationId` يمر عبر HTTP والوسيط. أثبت في اللوحة إنك تقدر تبدأ من مقياس مرتفع وتوصل للـtrace ثم للوج السبب.",
+          "criteria": [
+            "`ActivitySource` مخصص ومسجّل في `ConfigureOpenTelemetry` (يظهر فعلًا في اللوحة)",
+            "الـspan فيه `SetStatus(Error)` + `exception.type` عند الفشل — والـtrace بيتلوّن أحمر",
+            "counter + histogram بسمات منخفضة cardinality فقط (مفيش معرّفات في المقاييس)",
+            "كل سطر لوج فيه TraceId (enricher) + اللوجات بتظهر مرتبطة بالـtrace في اللوحة",
+            "`X-Correlation-Id` بيتولّد/بيمرر في الرد وفي الرسائل — وتقدر تبحث بيه في اللوجات",
+            "لقطة تشرح المسار: مقياس → trace → لوج → سبب",
+            "لا أسرار/بيانات حساسة في اللوجات أو الـtags (افحص يدويًا واذكر إزاي تأكدت)"
+          ],
+          "solution": "",
+          "resources": [
+            {
+              "label": "OpenTelemetry with OTLP and the Aspire Dashboard",
+              "url": "https://learn.microsoft.com/dotnet/core/diagnostics/observability-otlp-example"
+            },
+            {
+              "label": "OpenTelemetry .NET",
+              "url": "https://opentelemetry.io/docs/languages/dotnet/"
+            },
+            {
+              "label": "Serilog",
+              "url": "https://serilog.net/"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Aspire dashboard — standalone",
+          "url": "https://aspire.dev/dashboard/standalone/"
+        },
+        {
+          "label": "Aspire dashboard — configuration",
+          "url": "https://aspire.dev/dashboard/configuration/"
+        },
+        {
+          "label": "Aspire 13.6: dashboard persistence & run history",
+          "url": "https://devblogs.microsoft.com/aspire/whats-new-aspire-13-6/"
+        },
+        {
+          "label": "Dashboard security considerations",
+          "url": "https://learn.microsoft.com/dotnet/aspire/fundamentals/dashboard/security-considerations"
+        },
+        {
+          "label": "Observability with OpenTelemetry in .NET",
+          "url": "https://learn.microsoft.com/dotnet/core/diagnostics/observability-with-otel"
+        },
+        {
+          "label": "OpenTelemetry Protocol (OTLP) spec",
+          "url": "https://opentelemetry.io/docs/specs/otlp/"
+        }
+      ]
+    }
+  ]
+}

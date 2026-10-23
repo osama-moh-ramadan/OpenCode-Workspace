@@ -1,0 +1,399 @@
+{
+  "id": "s6-m1-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nلحد دلوقتي كل حاجة بتشتغل على جهازك. **الصورة (Image) هي وحدة التسليم** في العالم الحقيقي:\nملف واحد فيه runtime + تطبيقك + تبعياته، بيتبني مرة وبيشتغل بنفس الشكل في CI وstaging وproduction.\n\nالدرس ده بيغطي 3 حاجات بتفرق مع كل فريق .NET:\n1. **Dockerfile multi-stage** — تبني بـSDK وتشغّل بـruntime فقط (صورة صغيرة وآمنة).\n2. **Layer caching** — ترتيب الطبقات يخلي البناء ياخد 20 ثانية بدل 6 دقايق.\n3. **التشغيل والشبكة محليًا** — أوامر حقيقية للفحص والتشخيص.\n\n⚠ ملحوظة: لو انت عملت المرحلة 5 بـ**Aspire**، فـAspire بيولّد صور/تشغيل تلقائيًا للتطوير.\nالدockerfile **لسه مطلوب** — لأنه اللي بيتبني في CI وبينتشر للإنتاج. Aspire بينسّق، وDockerfile بيوصف.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Image / Container",
+          "def": "الصورة = قالب للقراءة فقط بطبقات. الحاوية = نسخة شغالة من الصورة بحالة قابلة للكتابة (بتضيع لما تقف)."
+        },
+        {
+          "term": "Layer",
+          "def": "كل تعليمة في Dockerfile بتضيف طبقة (تقريبًا). الطبقة بتتخزن مرة وتُشارك بين الصور — عشان كده الترتيب مهم."
+        },
+        {
+          "term": "Multi-stage Build",
+          "def": "مراحل متعددة في ملف واحد: مرحلة بناء فيها SDK، ومرحلة نهائية فيها runtime فقط. النتيجة: صورة صغيرة بلا أدوات بناء."
+        },
+        {
+          "term": "Build Context",
+          "def": "المجلد اللي بيتبعت للـdaemon عند البناء. كل ما كبر، كل ما البناء أبطأ — `.dockerignore` بيقلصه."
+        },
+        {
+          "term": "Build Cache / Cache Mount",
+          "def": "إعادة استخدام نتائج طبقات سابقة. `--mount=type=cache` بيخلي كاش NuGet يعيش بين البناءات من غير ما يدخل في الصورة."
+        },
+        {
+          "term": "Registry / Tag / Digest",
+          "def": "الـregistry مخزن الصور (Docker Hub/GHCR/ACR). الـtag اسم قابل للتغيير (`:1.4.0`)، والـdigest بصمة ثابتة (`@sha256:…`) — الإنتاج بالـdigest."
+        },
+        {
+          "term": "Platform",
+          "def": "`linux/amd64` أو `linux/arm64`. لو جهازك ARM (Apple Silicon) والإنتاج amd64، لازم `--platform` وإلا الصورة مش هتشتغل."
+        },
+        {
+          "term": "ENTRYPOINT / CMD",
+          "def": "ENTRYPOINT = الأمر الثابت، CMD = الوسائط الافتراضية. لـ.NET: `ENTRYPOINT [\"dotnet\", \"App.dll\"]`."
+        },
+        {
+          "term": "Non-root User",
+          "def": "صور .NET من 8+ فيها مستخدم `app` (UID 1654) والمنفذ الافتراضي 8080 (بلا root، بلا الحاجة لصلاحيات)."
+        },
+        {
+          "term": "UseAppHost=false",
+          "def": "بلا ملف تنفيذي أصلي (`.exe`/apphost) — التشغيل عبر `dotnet App.dll`، وده اللي ينفع مع non-root وصور runtime."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) Dockerfile إنتاجي كامل"
+    },
+    {
+      "type": "code",
+      "lang": "dockerfile",
+      "filename": "src/Shop.Orders/Dockerfile",
+      "title": "multi-stage + cache mount + non-root + ترتيب طبقات صحيح",
+      "code": "\n# syntax=docker/dockerfile:1\n# ↑ يخبر BuildKit بأحدث صيغة (مطلوب لـ --mount=type=cache)\n\n# ══════════════ المرحلة 1: البناء (SDK — كبيرة، بس ما بتوصلش للصورة النهائية) ══════════════\nFROM mcr.microsoft.com/dotnet/sdk:10.0 AS build\nARG BUILD_CONFIGURATION=Release\nARG TARGETARCH                                # ★ multi-arch: amd64 أو arm64 حسب منصة البناء\nWORKDIR /src\n\n# ── ① انسخ ملفات المشاريع (.csproj) **فقط** ──\n# السبب: طبقة restore تتكسر فقط لو csproj اتغيّر — مش كل ما تلمس ملف كود.\nCOPY src/Shop.Orders/Shop.Orders.csproj                 src/Shop.Orders/\nCOPY src/Shop.Contracts/Shop.Contracts.csproj           src/Shop.Contracts/\nCOPY src/Shop.ServiceDefaults/Shop.ServiceDefaults.csproj src/Shop.ServiceDefaults/\n\n# ── ② restore مع كاش NuGet بين البناءات (مش جوه الصورة) ──\nRUN --mount=type=cache,id=nuget-${TARGETARCH},target=/root/.nuget/packages \\\n    dotnet restore src/Shop.Orders/Shop.Orders.csproj \\\n        --arch \"${TARGETARCH}\" \\\n        --os linux \\\n        /p:UseAppHost=false\n\n# ── ③ دلوقتي فقط انسخ باقي الكود ──\n# ⚠ لو COPY . . كانت قبل restore، أي تعديل في أي ملف كان هيكسر كاش الـrestore (بناء 6 دقايق كل مرة)\nCOPY . .\n\n# ── ④ النشر: إخراج مستقل عن أدوات البناء ──\nRUN --mount=type=cache,id=nuget-${TARGETARCH},target=/root/.nuget/packages \\\n    dotnet publish src/Shop.Orders/Shop.Orders.csproj \\\n        -c \"${BUILD_CONFIGURATION}\" \\\n        --arch \"${TARGETARCH}\" \\\n        --os linux \\\n        --no-restore \\\n        /p:UseAppHost=false \\\n        -o /app/publish\n\n# ══════════════ المرحلة 2: التشغيل (runtime فقط — صغيرة) ══════════════\nFROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final\nARG BUILD_CONFIGURATION=Release\n\n# ✓ صور .NET 8+ فيها مستخدم غير root (`app`, UID 1654) ومتغير APP_UID\nENV ASPNETCORE_HTTP_PORTS=8080 \\\n    ASPNETCORE_ENVIRONMENT=Production \\\n    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \\\n    DOTNET_gcServer=1 \\\n    DOTNET_TieredPGO=1\n\nWORKDIR /app\nCOPY --from=build /app/publish .\n\n# ✓ لا root: لو اتسرب التطبيق، المهاجم جوه حاوية بصلاحيات محدودة\nUSER $APP_UID\n\nEXPOSE 8080\n\n# ⚠ HEALTHCHECK داخل الصورة **بيحتاج أداة** (curl/wget) وصور .NET الحديثة ما فيهاش —\n#   وchiseled/distroless مافيهاش shell أصلًا. الحل الصحيح: فحص الصحة من المنسّق\n#   (K8s httpGet probe / compose healthcheck) — راجع درس 6.1.2 و6.1.5.\n#   لو لازم فحص من جوه الصورة، طبّق وضع `--health` في تطبيقك نفسه (نمط متقدم في درس 6.1.3).\n\n# ★ ENTRYPOINT ثابت + CMD للوسائط: تقدر تمرر وسائط إضافية وقت التشغيل\nENTRYPOINT [\"dotnet\", \"Shop.Orders.dll\"]\nCMD []\n\n# ── ملاحظات ──\n# • الحجم المتوقع للمرحلة النهائية: ~90–110MB (Debian slim) · ~45–55MB (alpine) · ~30MB (chiseled)\n# • لو التطبيق بيستخدم System.Text.Json فقط ومش محتاج ICU، تقدر تفعّل\n#   DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true وتصغّر الصورة (alpine/chiseled-extralite) —\n#   بس احذر: بيبطّل collation/فرز عربي صحيح. اختبر قبل ما تفعّله.\n"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "filename": ".dockerignore",
+      "title": "ملف في جذر المستودع (بيقلص الـcontext من GBs لـMBs)",
+      "code": "\n# ── مخرجات البناء والتبعيات (أهم بند: بيوفر دقايق) ──\n**/bin/\n**/obj/\n**/out/\n**/publish/\n**/node_modules/\n\n# ── أدوات واختبارات (مش محتاجينها جوه الصورة) ──\n**/*.Tests/\n**/tests/\n**/TestResults/\n**/*.trx\n**/coverage*.xml\n**/coverage*.json\n\n# ── مستودع وأدوات تطوير ──\n.git/\n.gitignore\n.github/\n.vs/\n.vscode/\n.idea/\n**/*.user\n**/*.suo\n\n# ── أسرار وبيئة (⚠ أهم بند أمنيًا) ──\n**/appsettings.*.json\n**/*.pfx\n**/*.pem\n**/*.key\n**/.env\n**/.env.*\n**/secrets/\n**/user-secrets*\n\n# ── ملفات كبيرة/غير ضرورية للبناء ──\n**/*.md\ndocs/\n**/*.png\n**/*.jpg\n**/*.mp4\ndocker-compose*.yml\nDockerfile*\n!.dockerignore\n\n# ── حاويات/بيانات محلية ──\ndata/\nlogs/\n**/*.db\n**/*.sqlite\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "`.dockerignore` والأسرار: غلطة بتكلف كتير",
+      "md": "\n**بلا `.dockerignore`، الـbuild context بيشمل كل حاجة** — بما فيها `.git/` (كل تاريخ المستودع)\nو`appsettings.Production.json` و`.env`.النتيجة:\n1. البناء بطيء (مئات MB بتتبعت للـdaemon كل مرة).\n2. **الأسرار ممكن تدخل في طبقات الصورة** حتى لو ما استخدمتهاش — أي حد يسحب الصورة يقدر يستخرجها\n   من الطبقات (`docker history` / تفكيك الطبقات).\n3. ملفات الاختبارات والمخرجات بتلوث الصورة.\n\n✅ **قاعدة**: الأسرار ما تدخلش الصورة **أبدًا** — لا في `ENV`، ولا `ARG`، ولا `COPY`.\nبتوصل للتطبيق وقت التشغيل من: environment (compose/K8s Secret) · Key Vault + Managed Identity (درس 6.2.3) ·\nmounted files. ولو دخل سر في صورة بالغلط: **اعتبره مكشوف** ولفّه (rotate) فورًا — حذف الطبقة مش كفاية.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) ترتيب الطبقات: إيه اللي بيكسر الكاش؟"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الترتيب",
+        "النتيجة",
+        "الحكم"
+      ],
+      "rows": [
+        [
+          "`COPY . .` ← `RUN dotnet restore`",
+          "أي تعديل في أي ملف = restore كامل من الصفر",
+          "✗ الأسوأ (6 دقايق لكل بناء)"
+        ],
+        [
+          "`COPY *.csproj` ← `RUN restore` ← `COPY . .` ← `RUN publish`",
+          "restore بيتكسر فقط لو التبعيات اتغيرت",
+          "★ الصحيح"
+        ],
+        [
+          "`RUN restore` بلا `--mount=type=cache`",
+          "الكاش جوه الطبقة → بيتكسر مع الطبقة + الصورة بتكبر",
+          "✗ استخدم cache mount"
+        ],
+        [
+          "`RUN apt-get update && apt-get install -y curl` في المرحلة النهائية",
+          "بيكسر الكاش + بيضيف حجم + سطح هجوم",
+          "✗ تجنّب؛ استخدم فحص من المنسّق"
+        ],
+        [
+          "`ENV` متغيرة (مثل `BUILD_DATE`) قبل `COPY`",
+          "كل بناء يكسر كل الطبقات بعده",
+          "✗ حطّها في الآخر أو استخدم labels"
+        ],
+        [
+          "`ARG` مستخدم في `RUN` بعد الطبقة",
+          "تغيير الـARG بيكسر الطبقة دي فقط (مقبول)",
+          "△ افهم أثره"
+        ],
+        [
+          "ملفات متغيرة كثيرًا (README/CHANGELOG) في الـcontext",
+          "تكسر `COPY . .` — بس restore محمي لو مرتب صح",
+          "△ أضفها لـ`.dockerignore`"
+        ],
+        [
+          "`dotnet publish` بلا `--no-restore`",
+          "restore تاني داخل publish = وقت مضاعف",
+          "✗ استخدم `--no-restore`"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "البناء · التشغيل · الفحص · القياس",
+      "code": "\n# ═══ 1) البناء ═══\ncd <repo-root>                       # ★ الـcontext = جذر المستودع (عشان المشاريع المرجعية)\ndocker build -f src/Shop.Orders/Dockerfile \\\n  -t shop/orders:1.4.0 \\\n  -t shop/orders:sha-$(git rev-parse --short HEAD) \\\n  --build-arg BUILD_CONFIGURATION=Release \\\n  .\n\n# بناء متعدد المنصات (جهاز ARM → إنتاج amd64)\ndocker buildx create --use --name shop-builder 2>/dev/null || true\ndocker buildx build --platform linux/amd64,linux/arm64 \\\n  -f src/Shop.Orders/Dockerfile -t ghcr.io/<org>/shop-orders:1.4.0 --push .\n\n# بديل بلا Dockerfile ولا Docker daemon: SDK container publishing\ndotnet publish src/Shop.Orders -c Release /t:PublishContainer \\\n  -p ContainerRepository=ghcr.io/<org>/shop-orders \\\n  -p ContainerImageTag=1.4.0 \\\n  -p ContainerBaseImage=mcr.microsoft.com/dotnet/aspnet:10.0\n\n# ═══ 2) الشبكة والتشغيل محليًا ═══\ndocker network create shop-net 2>/dev/null || true\n\ndocker run -d --name shop-orders \\\n  --network shop-net \\\n  -p 8080:8080 \\\n  -e ASPNETCORE_ENVIRONMENT=Development \\\n  -e ConnectionStrings__shopdb=\"Host=shop-postgres;Port=5432;Database=shopdb;Username=postgres;Password=local\" \\\n  -e ConnectionStrings__rabbit=\"amqp://shop:local@shop-rabbit:5672/shop\" \\\n  --health-cmd \"\" \\\n  shop/orders:1.4.0\n\n# ⚠ أسماء الـhosts جوه الشبكة = أسماء الحاويات (shop-postgres) مش localhost\n\n# ═══ 3) الفحص والتشخيص ═══\ndocker ps --filter name=shop-orders --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'\ndocker logs -f --tail 200 shop-orders                       # اللوجات (stdout/stderr)\ndocker exec -it shop-orders sh                              # shell (مش متاح في chiseled/distroless)\ndocker inspect shop-orders --format '{{json .State.Health}}'\ndocker stats --no-stream shop-orders                        # CPU/ذاكرة لحظية\ndocker top shop-orders                                      # العمليات (تأكد إنها مش root)\n\n# ═══ 4) القياس: حجم الصورة والطبقات ═══\ndocker images shop/orders --format '{{.Repository}}:{{.Tag}} {{.Size}}'\ndocker history shop/orders:1.4.0 --format 'table {{.Size}}\\t{{.CreatedBy}}' | head -20\ndocker image inspect shop/orders:1.4.0 --format '{{.Os}}/{{.Architecture}} · layers={{len .RootFS.Layers}}'\n\n# ═══ 5) التأكد إنها بتشتغل فعلًا ═══\ncurl -s -o /dev/null -w 'health %{http_code}\\n' http://localhost:8080/health\ncurl -s http://localhost:8080/alive\n\n# ═══ 6) التحقق إن الكاش شغال (البناء التاني لازم ياخد ثواني) ═══\ntime docker build -f src/Shop.Orders/Dockerfile -t shop/orders:cache-test .\n#   ← عدّل ملف Program.cs وابدأ من جديد: المفروض restore/publish يُعاد بس **restore لا**\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "8 قواعد لصورة .NET محترمة",
+      "md": "\n1. **multi-stage دائمًا** — SDK في مرحلة، runtime في النهائية. (فرق الحجم: ~800MB → ~100MB)\n2. **`COPY *.csproj` قبل `COPY . .`** — عشان كاش الـrestore يعيش.\n3. **`--mount=type=cache` لـNuGet** — تسريع كبير من غير تضخيم الصورة.\n4. **non-root (`USER $APP_UID`) + منفذ 8080** — صور .NET 8+ جاهزة لده؛ لا ترجع لـroot ولا لـ5000.\n5. **tags واضحة + digest للنشر**: `:1.4.0` و`:sha-abc1234` للتتبع، و**بالـdigest** في manifests الإنتاج\n   (`@sha256:…`) — `latest` معناها «مش عارف إنت بتشغّل إيه».\n6. **بلا أسرار في الصورة** (ولا `ARG`/`ENV`/`COPY`) — ولا `.git` في الـcontext.\n7. **لا تثبت أدوات في المرحلة النهائية** (curl/vim/ssh) — حجم + ثغرات + سطح هجوم.\n   التشخيص من بره: `docker exec` (لو فيه shell) أو ephemeral containers في K8s.\n8. **اختبر الصورة، مش الكود بس**: شغّلها وافحص `/health` قبل ما تدفعها للـregistry (درس 6.3.1).\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) 3 طرق لبناء الصورة — اختار بوعي"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الطريقة",
+        "المميزات",
+        "العيوب",
+        "إمتى"
+      ],
+      "rows": [
+        [
+          "**Dockerfile multi-stage**",
+          "تحكم كامل · يعمل في أي CI · مفهوم لكل الفرق · يدعم multi-arch",
+          "البناء أبطأ (يحتاج daemon) · ملف لازم يتصان",
+          "★ الافتراضي لمعظم الفرق"
+        ],
+        [
+          "**SDK container publishing** (`/t:PublishContainer`)",
+          "بلا Dockerfile ولا Docker daemon · سريع جدًا في CI · يعتمد على .NET SDK فقط",
+          "تحكم أقل (لا أدوات نظام/خطوات مخصصة) · بعض الإعدادات عبر MSBuild properties",
+          "CI بسيط · مشاريع بلا احتياجات نظام خاصة"
+        ],
+        [
+          "**نشر خارج الصورة + runtime-deps**",
+          "أصغر صورة · فصل كامل بين البناء والتعبئة · يناسب AOT",
+          "خطوتين (publish ثم COPY) · لازم تطابق إصدار runtime-deps",
+          "NativeAOT · صور minimal · توفير أقصى"
+        ],
+        [
+          "**Jib-like / Buildpacks (Cloud Native Buildpacks)**",
+          "بلا Dockerfile · طبقات محسّنة تلقائيًا",
+          "منظومة تانية للتعلم · تحكم أقل في التفاصيل",
+          "فرق بتستخدم `pack`/Paketo فعلًا"
+        ]
+      ]
+    },
+    {
+      "type": "steps",
+      "title": "ابنِ صورتك الأولى في 7 خطوات",
+      "items": [
+        {
+          "title": "أضف `.dockerignore` في جذر المستودع",
+          "md": "قبل أي Dockerfile. تحقق إن الـcontext صغير.",
+          "code": "du -sh .git node_modules **/bin **/obj 2>/dev/null\n# بعد الإضافة: قارن زمن `docker build` الأول"
+        },
+        {
+          "title": "اكتب Dockerfile بمرحلتين",
+          "md": "SDK للبناء، aspnet للتشغيل. انسخ csproj أولًا.",
+          "code": "FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build\n…\nFROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final"
+        },
+        {
+          "title": "ابنِ وقِس",
+          "md": "سجّل الحجم وزمن البناء — دول أرقامك الأساسية للمقارنة بعد التحسين.",
+          "code": "docker build -f src/Shop.Orders/Dockerfile -t shop/orders:baseline .\ndocker images shop/orders:baseline --format '{{.Size}}'"
+        },
+        {
+          "title": "شغّلها وتأكد من `/health`",
+          "md": "بلا تشغيل فعلي، «الصورة اتبنت» مش دليل إنها بتشتغل.",
+          "code": "docker run -d --name t -p 8080:8080 shop/orders:baseline\ncurl -s -o /dev/null -w '%{http_code}\\n' http://localhost:8080/health"
+        },
+        {
+          "title": "تحقق من المستخدم والمنفذ",
+          "md": "لازم non-root و8080. لو لقيت root أو 5000، صلّح قبل ما تكمل.",
+          "code": "docker exec t id            # uid=1654(app)\ndocker exec t printenv ASPNETCORE_HTTP_PORTS"
+        },
+        {
+          "title": "افحص الطبقات والحجم",
+          "md": "شوف أنهي طبقة كبيرة وليه. الطبقات المكررة = إهدار.",
+          "code": "docker history shop/orders:baseline --format 'table {{.Size}}\\t{{.CreatedBy}}' | head"
+        },
+        {
+          "title": "اجعل البناء جزءًا من CI",
+          "md": "بناء + فحص ثغرات + دفع للـregistry بـtag بالـcommit وdigest ثابت (درس 6.3.1 و6.1.3).",
+          "code": "# في GitHub Actions\n# docker/build-push-action@v6 مع cache-from/cache-to: type=gha"
+        }
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أكتب Dockerfile multi-stage لمشروع .NET بترتيب طبقات يستفيد من الكاش (csproj ← restore ← copy ← publish).",
+        "أستخدم `--mount=type=cache` لكاش NuGet و`--no-restore` مع publish، وأفهم ليه `COPY . .` في الأول كارثة.",
+        "أشغّل الحاوية non-root على 8080 وأتحقق من المستخدم والمنفذ والصحة.",
+        "أكتب `.dockerignore` يمنع تسريب الأسرار ويقلص الـcontext، وأفهم فرق tag مقابل digest.",
+        "أختار بين Dockerfile وSDK container publishing وruntime-deps/AOT بحسب الحاجة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "ليه ننسخ ملفات `.csproj` قبل باقي الكود؟",
+          "options": [
+            "عشان الترتيب الأبجدي",
+            "عشان طبقة `restore` تتكسر فقط عند تغيير التبعيات — أي تعديل في الكود ما يعيدش تحميل الحزم",
+            "مطلوب من BuildKit",
+            "عشان الصورة تصغر"
+          ],
+          "answer": 1,
+          "explain": "ده جوهر layer caching: الطبقات الثابتة (التبعيات) الأول، والمتغيرة (الكود) في الآخر. الفرق عمليًا: 20 ثانية مقابل 6 دقايق."
+        },
+        {
+          "q": "`--mount=type=cache,target=/root/.nuget/packages` بيحقق إيه؟",
+          "options": [
+            "بيخزّن الحزم جوه الصورة",
+            "كاش NuGet يعيش بين البناءات **من غير** ما يدخل في طبقات الصورة — تسريع بلا تضخيم",
+            "بيسرّع النشر",
+            "بديل عن restore"
+          ],
+          "answer": 1,
+          "explain": "الكاش ده خارج الصورة (mount مؤقت وقت تنفيذ التعليمة). لو خزنت الحزم في طبقة، الصورة هتكبر والكاش هيتكسر مع الطبقة."
+        },
+        {
+          "q": "إيه المنفذ والمستخدم الافتراضيان في صور ASP.NET Core من .NET 8؟",
+          "options": [
+            "5000 وroot",
+            "**8080** ومستخدم غير root (`app`, UID 1654 عبر `APP_UID`)",
+            "80 وroot",
+            "8080 وroot"
+          ],
+          "answer": 1,
+          "explain": "التغيير ده معناه إنك ما تحتاجش صلاحيات root ولا `ASPNETCORE_URLS=http://+:80`. ولو الكود القديم بيفترض 5000، حدّث المنفذ في compose/K8s."
+        },
+        {
+          "q": "حطيت كلمة سر قاعدة البيانات في `ENV` جوه Dockerfile. الحكم؟",
+          "options": [
+            "مقبول لو الصورة خاصة",
+            "خطأ أمني: السر بيثبت في طبقات الصورة ويستخرجه أي حد يقدر يسحبها — ولو اتسرب، لفّ السر فورًا (حذف الطبقة مش كفاية)",
+            "مقبول مع .dockerignore",
+            "مقبول لو multi-stage"
+          ],
+          "answer": 1,
+          "explain": "الأسرار وقت **التشغيل** (environment/Secret/Key Vault + Managed Identity)، مش وقت البناء. `.dockerignore` بيمنع دخول ملفات، مش `ENV` المكتوبة يدويًا."
+        },
+        {
+          "q": "ليه `HEALTHCHECK` جوه صورة .NET غالبًا مش فكرة جيدة؟",
+          "options": [
+            "بيبطّئ الإقلاع",
+            "بيحتاج أداة (curl/wget) مش موجودة في صور .NET الحديثة — وchiseled/distroless مافيهاش shell أصلًا. الأفضل فحص الصحة من المنسّق (K8s httpGet / compose)",
+            "Docker ما بيدعمهوش",
+            "بيتعارض مع /health"
+          ],
+          "answer": 1,
+          "explain": "تثبيت curl عشان healthcheck = حجم + ثغرات + سطح هجوم. المنسّق (K8s/compose) عنده فحص HTTP مدمج بلا أدوات جوه الصورة."
+        },
+        {
+          "q": "في الإنتاج، تشغّل الصورة بأي مرجع؟",
+          "options": [
+            "`:latest`",
+            "**digest ثابت** (`image@sha256:…`) أو tag إصدار محدد — `latest` معناها إنك مش عارف بتشغّل إيه والـrollback مستحيل",
+            "اسم الصورة فقط",
+            "tag بتاريخ البناء"
+          ],
+          "answer": 1,
+          "explain": "الـdigest بصمة لا تتغير. الـtag ممكن يُعاد توجيهه لنفس الاسم بمحتوى مختلف، وده بيكسر التكرارية والـrollback."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "Dockerfile محسّن بأرقام قبل/بعد",
+          "md": "اكتب Dockerfile multi-stage لواحدة من خدماتك مع `.dockerignore` كامل، وقِس: حجم الصورة، زمن البناء البارد، زمن البناء بعد تعديل ملف كود، والمستخدم/المنفذ. قارن بنسخة «ساذجة» (`COPY . .` أولًا) وأثبت الفرق بالأرقام.",
+          "criteria": [
+            "Dockerfile بمرحلتين (SDK → aspnet) مع `COPY *.csproj` قبل `COPY . .`",
+            "`--mount=type=cache` لـNuGet + `--no-restore` في publish + `/p:UseAppHost=false`",
+            "`.dockerignore` بيستثني `.git` و`bin/obj` و`tests` **وكل ملفات الأسرار**",
+            "الحاوية بتشتغل non-root على 8080 (`docker exec … id` = uid 1654) و`/health` بيرد 200",
+            "جدول أرقام: الحجم/البناء البارد/البناء بعد تعديل — للنسخة الساذجة مقابل المحسّنة (فرق ≥ 50% في زمن البناء الدافئ)",
+            "tag بإصدار + tag بـcommit sha، وإثبات `docker history` إن طبقة الـrestore مش بتتكسر عند تعديل كود",
+            "بلا أدوات مثبتة في المرحلة النهائية (لا curl/vim) — واكتب إزاي بتتشخص من غيرهم"
+          ],
+          "hint": "عدّل سطرًا في `Program.cs` وابنِ تاني: المفروض تشوف `CACHED` على خطوة الـrestore. لو ما ظهرش، الترتيب لسه غلط.",
+          "solution": "",
+          "resources": [
+            {
+              "label": "Docker with .NET",
+              "url": "https://learn.microsoft.com/dotnet/core/docker/"
+            },
+            {
+              "label": "Dockerfile reference",
+              "url": "https://docs.docker.com/reference/dockerfile/"
+            },
+            {
+              "label": ".NET container deployment guidance",
+              "url": "https://learn.microsoft.com/dotnet/core/deploying/"
+            }
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "تشغيل الخدمة مع تبعياتها على شبكة واحدة",
+          "md": "شغّل صورتك في شبكة Docker مع Postgres وRabbitMQ (حاويات جاهزة)، ومرّر الإعدادات عبر environment فقط (بلا تعديل كود)، وأثبت إن الخدمة بتشتغل وبتقرأ/تكتب في قاعدة البيانات وتستهلك من الوسيط.",
+          "criteria": [
+            "`docker network create` + كل الحاويات جواه (بأسماء ثابتة تُستخدم كـhostnames)",
+            "الخدمة بتوصل لـPostgres وRabbitMQ بأسماء الحاويات — مفيش `localhost` في الإعدادات",
+            "كل الإعدادات من environment/`--env-file` — `git grep` يثبت إن مفيش سر في Dockerfile أو appsettings",
+            "إثبات وظيفة: طلب HTTP بينشئ صف في DB + حدث في الطابور (مخرجات `psql` و`rabbitmqctl`)",
+            "إعادة تشغيل الحاوية ما بتفقدش البيانات (volumes) — مخرجات قبل/بعد",
+            "ملاحظة موثقة: إيه اللي حصل لما أوقفت DB (سلوك واضح: فشل صريح/إعادة محاولة) — مش صمت"
+          ],
+          "solution": "",
+          "resources": [
+            {
+              "label": "Docker networking",
+              "url": "https://docs.docker.com/engine/network/"
+            },
+            {
+              "label": "Manage data in Docker",
+              "url": "https://docs.docker.com/engine/storage/"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Docker with .NET",
+          "url": "https://learn.microsoft.com/dotnet/core/docker/"
+        },
+        {
+          "label": ".NET Docker images (tags & changelog)",
+          "url": "https://github.com/dotnet/dotnet-docker"
+        },
+        {
+          "label": "SDK container publishing (no Dockerfile)",
+          "url": "https://learn.microsoft.com/dotnet/core/docker/publish-as-container"
+        },
+        {
+          "label": "Dockerfile best practices",
+          "url": "https://docs.docker.com/build/building/best-practices/"
+        },
+        {
+          "label": "BuildKit & cache mounts",
+          "url": "https://docs.docker.com/build/cache/"
+        },
+        {
+          "label": "Buildx / multi-platform",
+          "url": "https://docs.docker.com/build/building/multi-platform/"
+        }
+      ]
+    }
+  ]
+}

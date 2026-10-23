@@ -1,0 +1,248 @@
+{
+  "id": "s1-m2-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nالـmocking أداة مفيدة وخطيرة: مفيدة لعزل التبعيات الخارجية، وخطيرة لأنها بتسهّل إنك تكتب اختبارات\nبتؤكد على **تفاصيل التنفيذ** بدل السلوك — فتنكسر مع كل refactor وتديك ثقة وهمية.\n\nالقاعدة اللي هنمشي عليها: **Fake > Stub > Mock**. لو تقدر تكتب تنفيذ مبسّط حقيقي (Fake)، اعمله.\nاستخدم الـsubstitute للتحقق من تفاعل **مهم فعلًا** (إرسال إشعار، استدعاء بوابة دفع) — مش لكل تبعية.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "SUT",
+          "def": "System Under Test — الكائن اللي بتختبره. كل ما زادت تبعياته، صعب الاختبار."
+        },
+        {
+          "term": "Dummy",
+          "def": "مُمرَّر عشان الإمضاء يتحقق بس — مش بيُستخدم."
+        },
+        {
+          "term": "Stub",
+          "def": "بيرجع قيم محددة مسبقًا (state). مثال: `clock` بيرجع تاريخ ثابت."
+        },
+        {
+          "term": "Spy / Mock",
+          "def": "بيسجّل كيف اتُستخدم (interaction). مثال: التأكد إن `notifier.NotifyAsync` اتنادت مرة."
+        },
+        {
+          "term": "Fake",
+          "def": "تنفيذ مبسّط لكنه حقيقي السلوك. مثال: `InMemoryOrderStore` بقائمة. **الأفضل للاختبار**."
+        },
+        {
+          "term": "AAA",
+          "def": "Arrange / Act / Assert — بنية اختبار مقروءة: إعداد، تنفيذ، تأكيد (وفراغ بين كل جزء)."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الحزم",
+      "code": "\ndotnet add Shop.Tests package NSubstitute\n# اختياري: توليد doubles تلقائيًا مع AutoFixture\ndotnet add Shop.Tests package AutoFixture\ndotnet add Shop.Tests package AutoFixture.AutoNSubstitute\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "الأولوية الأولى: Fake بدل Mock"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Testing/Fakes.cs",
+      "title": "fakes صغيرة وواضحة — بتختبر سلوك حقيقي",
+      "code": "\npublic sealed class InMemoryOrderStore : IOrderStore\n{\n    private readonly List<Order> _orders = [];\n\n    public IReadOnlyList<Order> Saved => _orders;\n    public int SaveCalls { get; private set; }\n\n    public void Seed(params Order[] orders) => _orders.AddRange(orders);\n    public bool FailNextSave { get; set; }          // للتحكم في سيناريو الفشل\n\n    public Task SaveAsync(Order order, CancellationToken ct = default)\n    {\n        SaveCalls++;\n        if (FailNextSave) throw new DbUpdateException(\"simulated failure\");\n        _orders.Add(order);\n        return Task.CompletedTask;\n    }\n}\n\npublic sealed class RecordingNotifier : IOrderNotifier\n{\n    public List<Order> Notified { get; } = [];\n    public Task NotifyAsync(Order order, CancellationToken ct = default)\n    {\n        Notified.Add(order);\n        return Task.CompletedTask;\n    }\n}\n\npublic sealed class FixedClock(DateTimeOffset now) : TimeProvider\n{\n    public override DateTimeOffset GetUtcNow() => now;\n}\n\n/// <summary>Object Mother: قيم افتراضية سليمة + تعديل ما تحتاجه فقط.</summary>\npublic static class AnOrder\n{\n    public static OrderBuilder Default() => new();\n\n    public sealed class OrderBuilder\n    {\n        private Guid _id = Guid.NewGuid();\n        private string _country = \"EG\";\n        private decimal _subTotal = 200m;\n\n        public OrderBuilder WithId(Guid id) { _id = id; return this; }\n        public OrderBuilder WithCountry(string c) { _country = c; return this; }\n        public OrderBuilder WithSubTotal(decimal v) { _subTotal = v; return this; }\n        public Order Build() => new()\n        {\n            Id = _id,\n            Customer = new Customer { Id = Guid.NewGuid(), Country = _country },\n            Lines = [new OrderLine(Guid.NewGuid(), 1, _subTotal)],\n        };\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "OrderPlacementServiceTests.cs",
+      "title": "اختبار على السلوك باستخدام fakes",
+      "code": "\npublic sealed class OrderPlacementServiceTests\n{\n    private readonly InMemoryOrderStore _store = new();\n    private readonly RecordingNotifier _notifier = new();\n    private readonly FixedClock _clock = new(new DateTimeOffset(2026, 1, 15, 10, 0, 0, TimeSpan.Zero));\n\n    private OrderPlacementService CreateSut() =>\n        new(_store, _notifier, new EgyptTaxPolicy(), _clock);\n\n    [Fact]\n    public async Task Place_saves_order_with_tax_and_notifies_customer()\n    {\n        var sut = CreateSut();\n        var order = AnOrder.Default().WithCountry(\"EG\").WithSubTotal(200m).Build();\n\n        await sut.PlaceAsync(order);\n\n        order.Total.Should().Be(228m);                 // السلوك: الضريبة اتحسبت\n        _store.Saved.Should().ContainSingle(o => o.Id == order.Id);\n        _notifier.Notified.Should().ContainSingle(o => o.Id == order.Id);\n    }\n\n    [Fact]\n    public async Task Place_when_store_fails_does_not_notify()\n    {\n        _store.FailNextSave = true;\n        var sut = CreateSut();\n        var order = AnOrder.Default().Build();\n\n        await Assert.ThrowsAsync<DbUpdateException>(() => sut.PlaceAsync(order));\n\n        _notifier.Notified.Should().BeEmpty();          // ✓ سلوك مهم: مفيش إشعار لطلب مش محفوظ\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "لما تحتاج substitute فعلًا: NSubstitute"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "PaymentGatewayTests.cs",
+      "title": "الأساسيات: Returns، Arg.Is، Received، الاستثناءات",
+      "code": "\nusing NSubstitute;\nusing NSubstitute.ExceptionExtensions;\n\npublic sealed class PaymentServiceTests\n{\n    private static readonly Guid orderId = Guid.NewGuid();\n\n    [Fact]\n    public async Task Charge_success_marks_order_paid()\n    {\n        // Arrange\n        var gateway = Substitute.For<IPaymentGateway>();\n        gateway.ChargeAsync(Arg.Any<ChargeRequest>(), Arg.Any<CancellationToken>())\n               .Returns(new ChargeResult(true, \"ch_123\", 228m));\n        var store = new InMemoryOrderStore();\n        var sut = new PaymentService(gateway, store, Substitute.For<ILogger<PaymentService>>());\n\n        // Act\n        await sut.PayOrderAsync(orderId, 228m);\n\n        // Assert — السلوك أولًا\n        var order = store.Saved.Single(o => o.Id == orderId);\n        order.Status.Should().Be(OrderStatus.Paid);\n\n        // والتفاعل المهم ثانيًا (المبلغ الصح اتبعت)\n        await gateway.Received(1).ChargeAsync(\n            Arg.Is<ChargeRequest>(r => r.OrderId == orderId && r.Amount == 228m),\n            Arg.Any<CancellationToken>());\n    }\n\n    [Fact]\n    public async Task Charge_failure_leaves_order_unpaid_and_logs()\n    {\n        var gateway = Substitute.For<IPaymentGateway>();\n        gateway.ChargeAsync(Arg.Any<ChargeRequest>(), Arg.Any<CancellationToken>())\n               .ThrowsAsync(new PaymentDeclinedException(\"card_declined\"));\n        var log = Substitute.For<ILogger<PaymentService>>();\n        var store = new InMemoryOrderStore();\n        store.Seed(AnOrder.WithId(orderId).Build());\n        var sut = new PaymentService(gateway, store, log);\n\n        await sut.PayOrderAsync(orderId, 228m);\n\n        store.Saved.Single().Status.Should().Be(OrderStatus.PaymentFailed);\n        log.Received(1).Log(\n            LogLevel.Warning,\n            Arg.Any<EventId>(),\n            Arg.Is<object>(o => o.ToString()!.Contains(\"card_declined\")),\n            Arg.Any<Exception>(),\n            Arg.Any<Func<object, Exception?, string>>());\n    }\n\n    [Fact]\n    public async Task Does_not_charge_twice_for_same_order()\n    {\n        var gateway = Substitute.For<IPaymentGateway>();\n        gateway.ChargeAsync(Arg.Any<ChargeRequest>(), Arg.Any<CancellationToken>())\n               .Returns(new ChargeResult(true, \"ch_1\", 228m));\n        var sut = new PaymentService(gateway, new InMemoryOrderStore(), Substitute.For<ILogger<PaymentService>>());\n\n        await sut.PayOrderAsync(orderId, 228m);\n        await sut.PayOrderAsync(orderId, 228m);          // إعادة (idempotency)\n\n        await gateway.Received(1).ChargeAsync(Arg.Any<ChargeRequest>(), Arg.Any<CancellationToken>());\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الموقف",
+        "استخدم",
+        "مثال NSubstitute"
+      ],
+      "rows": [
+        [
+          "تحتاج قيم مرجعة ثابتة",
+          "Stub",
+          "`clock.GetUtcNow().Returns(fixedDate)`"
+        ],
+        [
+          "تحتاج تأكيد إن تفاعل مهم حصل",
+          "Mock/Spy",
+          "`await notifier.Received(1).NotifyAsync(...)`"
+        ],
+        [
+          "تحتاج تأكيد إنه **ما** حصلش",
+          "Spy",
+          "`await gateway.DidNotReceive().ChargeAsync(...)`"
+        ],
+        [
+          "تحتاج سلوك حقيقي مبسّط",
+          "Fake",
+          "`InMemoryOrderStore` بقائمة"
+        ],
+        [
+          "تحتاج محاكاة فشل تبعية",
+          "Stub بيرمي",
+          "`.ThrowsAsync(new TimeoutException())`"
+        ],
+        [
+          "التبعية معقدة/خارجية (SDK)",
+          "لفّها في interface بتاعك ثم Fake",
+          "`IEmailClient` بدل `SmtpClient`"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "حاجات ما تعملهاش",
+      "md": "\n- **ما تعملش Mock لـ`DbContext`/`DbSet`**: EF معقد داخليًا، والـmock هيكذب. استخدم SQLite أو Testcontainers.\n- **ما تعملش Mock لنوع إنت ما تملكه** (SDK خارجي): لفّه في interface بتاعك (Anti-Corruption Layer) واختبر الـwrapper.\n- **ما تعملش Mock لـvalue objects/DTOs**: اعملها حقيقية — أرخص وأصدق.\n- **ما تتحققش من نداءات داخلية** بين مكونات الكلاس المُختبر: ده بيقفل التصميم.\n- **ما تستخدمش `Arg.Any` في كل حاجة**: لما تتحقق من تفاعل، حدد `Arg.Is<T>(x => …)` عشان الاختبار يبقى له معنى.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "اختبار هش مقابل اختبار صامد"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "قبل / بعد",
+      "code": "\n// ✗ هش: بيتحقق من تفاصيل التنفيذ — أي refactor يكسره\n[Fact]\npublic async Task Calls_helpers_in_order()\n{\n    var sut = new OrderService(store, notifier, tax, validator, mapper, logger);\n    await sut.PlaceAsync(request);\n\n    Received.InOrder(async () =>\n    {\n        validator.Validate(request);\n        mapper.Map(request);\n        tax.Apply(Arg.Any<Order>());\n        await store.SaveAsync(Arg.Any<Order>());\n        await notifier.NotifyAsync(Arg.Any<Order>());\n        logger.LogInfo(Arg.Any<string>());\n    });\n}\n\n// ✓ صامد: بيتحقق من الأثر — التعديل الداخلي الحر مسموح\n[Fact]\npublic async Task Invalid_request_is_rejected_before_anything_is_saved()\n{\n    var store = new InMemoryOrderStore();\n    var sut = new OrderPlacementService(store, new RecordingNotifier(), new EgyptTaxPolicy());\n\n    var act = () => sut.PlaceAsync(AnOrder.Default().WithSubTotal(-5m).Build());\n\n    await act.Should().ThrowAsync<ValidationException>();\n    store.Saved.Should().BeEmpty();\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "AutoFixture: لما الإعداد نفسه يطول",
+      "md": "\n`AutoFixture` بيولّد كائنات ببيانات معقولة تلقائيًا، و`AutoNSubstitute` بيملأ التبعيات بـsubstitutes:\n```csharp\nvar fixture = new Fixture().Customize(new AutoNSubstituteCustomization());\nvar sut = fixture.Create<OrderPlacementService>();     // التبعيات اتحلّت تلقائيًا\nvar order = fixture.Build<Order>().With(o => o.Total, 0m).Create();\n```\nمفيد للاختبارات اللي الإعداد فيها بيغطي على الفكرة. **احذر**: لو الكائنات المولّدة غامضة،\nالاختبار بقى صعب القراءة — للـDomain الحساس استخدم builders صريحة زي `AnOrder`.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أفرّق بين Fake وStub وMock وأختار الأنسب لكل تبعية.",
+        "أكتب fakes صغيرة قابلة لإعادة الاستخدام في كل الاختبارات.",
+        "أستخدم NSubstitute للتحقق من تفاعل مهم فقط، مع `Arg.Is` محددة.",
+        "أتجنب الـMocking لـDbContext وللأنواع الخارجية وأميّز الاختبار الهش."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "عندك `TimeProvider` في خدمة بت حساب تاريخ الاستحقاق. أفضل بديل في الاختبار؟",
+          "options": [
+            "Mock بـNSubstitute مع `Received()`",
+            "Fake/Stub: `FixedClock` يرجع تاريخًا ثابتًا",
+            "`DateTime.UtcNow` مع تسامح ±2 ثانية",
+            "تعطيل الاختبار وقت نهاية اليوم"
+          ],
+          "answer": 1,
+          "explain": "تاريخ ثابت = اختبار deterministic. التسامح الزمني مصدر flakiness كلاسيكي، والـMock هنا مبالغة لأن المطلوب قيمة مش تفاعل."
+        },
+        {
+          "q": "ليه ما تعملش `Substitute.For<DbSet<Order>>()`؟",
+          "options": [
+            "DbSet sealed",
+            "سلوك EF الداخلي (tracking/translation/transactions) معقد والـmock هيدي نتائج كاذبة",
+            "NSubstitute لا يدعم async",
+            "أداء سيئ"
+          ],
+          "answer": 1,
+          "explain": "الاختبار هينجح بينما الاستعلام الحقيقي يفشل. استخدم SQLite أو Testcontainers (درس قادم) لاختبارات EF."
+        },
+        {
+          "q": "أنهي تأكيد يعتبر «اختبار تفاعل» مشروع؟",
+          "options": [
+            "`await notifier.Received(1).NotifyAsync(Arg.Is<Order>(o => o.Id == id))`",
+            "`mapper.Received(1).Map(request)`",
+            "`logger.Received(3).LogInfo(Arg.Any<string>())`",
+            "`service.Received(1).PrivateHelper()`"
+          ],
+          "answer": 0,
+          "explain": "إرسال الإشعار أثر خارجي له قيمة عمل (والعدد مهم: إشعار مكرر = باج). التفاصيل الداخلية (mapper/logger بعدد) بتقفل التصميم."
+        },
+        {
+          "q": "خدمة بتستخدم SDK خارجي (مثال: مكتبة بوابة دفع). إزاي تختبرها؟",
+          "options": [
+            "Mock الـSDK مباشرة",
+            "لفّه في interface بتاعك (Anti-Corruption Layer) واختبر كودك مع Fake له",
+            "ما تختبرهاش — مسؤولية المزوّد",
+            "اختبار E2E فقط"
+          ],
+          "answer": 1,
+          "explain": "الـwrapper بيحميك من تغييرات المزوّد وبيديك نقطة عزل قابلة للاختبار. والقاعدة: «ما تعملش mock لحاجة إنت ما تملكهاش»."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "طقم Fakes لمشروعك",
+          "md": "اكتب Fakes لكل تبعيات خدمة واحدة عندك (store، notifier، clock، logger إن لزم) واستبدل كل الـmocks الحالية بيها في اختبارات الخدمة دي.",
+          "criteria": [
+            "Fake واحد على الأقل بيسمح بمحاكاة الفشل (flag أو queue)",
+            "كل الاختبارات نجحت بدون أي `Substitute.For<DbContext>`",
+            "حجم الكود في كل اختبار قلّ (قِس الأسطر قبل/بعد)",
+            "مفيش تأكيد على ترتيب نداءات داخلية"
+          ],
+          "hint": "لو الـFake كبر عن ~40 سطر، غالبًا الـinterface عام جدًا — قسّمه (ISP)."
+        },
+        {
+          "id": "t2",
+          "title": "اختبار idempotency",
+          "md": "اكتب اختبارًا ينفّذ نفس العملية مرتين ويتأكد إن الأثر حصل مرة واحدة (دفع، إشعار، إنشاء مورد) — باستخدام `Received(1)` أو عدّاد في الـFake.",
+          "criteria": [
+            "الاختبار يفشل لو شلت فحص التكرار من الكود",
+            "الاسم يوضح السلوك (`Does_not_charge_twice_for_same_order`)",
+            "وثّقت في الملاحظات مفتاح الـidempotency المستخدم"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "NSubstitute documentation",
+          "url": "https://nsubstitute.github.io/"
+        },
+        {
+          "label": "Unit testing best practices (.NET)",
+          "url": "https://learn.microsoft.com/dotnet/core/testing/unit-testing-best-practices"
+        },
+        {
+          "label": "AutoFixture",
+          "url": "https://github.com/AutoFixture/AutoFixture"
+        },
+        {
+          "label": "Shouldly",
+          "url": "https://docs.shouldly.io/"
+        }
+      ]
+    }
+  ]
+}

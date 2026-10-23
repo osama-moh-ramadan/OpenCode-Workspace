@@ -1,0 +1,3582 @@
+{
+  "meta": {
+    "title": "مسار .NET: من بعد EF Core لحد الوظيفة",
+    "titleEn": "The .NET Track: From Post-EF Core to Hired",
+    "tagline": "مسار عملي مبني على رودماب .NET الحديث — دروس، مهام كود، اختبارات ذاتية، ومشاريع مرحلة، بدون تسجيل دخول، والتقدّم محفوظ على جهازك.",
+    "target": ".NET 10 (LTS) · C# 14 · EF Core 10 · ASP.NET Core 10 · Aspire 13",
+    "updatedAt": "2026-10-23",
+    "version": "1.0.0",
+    "entryPoint": "بعد ما تكون خلصت: C# → OOP → LINQ → ASP.NET Core Web API → Entity Framework Core",
+    "prerequisites": [
+      "C# والأساسيات (types، collections، LINQ، async/await بشكل مبدئي)",
+      "بناء Web API بسيط بـASP.NET Core (controllers أو minimal APIs)",
+      "EF Core: DbContext، Migrations، العلاقات، واستعلامات LINQ",
+      "Git وأساسيات سطر الأوامر"
+    ],
+    "sources": [
+      {
+        "label": "roadmap.sh — .NET",
+        "url": "https://roadmap.sh/dotnet"
+      },
+      {
+        "label": ".NET Developer Roadmap 2026 (milanm)",
+        "url": "https://github.com/milanm/DotNet-Developer-Roadmap"
+      },
+      {
+        "label": "ASP.NET Core Developer Roadmap",
+        "url": "https://github.com/MoienTajik/AspNetCore-Developer-Roadmap"
+      },
+      {
+        "label": "Microsoft Learn — .NET architecture guides",
+        "url": "https://learn.microsoft.com/dotnet/architecture/"
+      },
+      {
+        "label": "What's new in .NET 10 (Microsoft)",
+        "url": "https://learn.microsoft.com/dotnet/core/whats-new/dotnet-10/overview"
+      },
+      {
+        "label": "Azure Architecture Center — patterns",
+        "url": "https://learn.microsoft.com/azure/architecture/patterns/"
+      }
+    ],
+    "stats": {
+      "stages": 10,
+      "modules": 36,
+      "lessons": 134,
+      "minutes": 6665,
+      "hours": 111.1,
+      "authoredLessons": 134,
+      "capstones": 10
+    },
+    "kinds": {
+      "lesson": "درس: شرح + كود + نقاط تحقق",
+      "lab": "تمرين عملي موقوت أو معمل",
+      "quiz": "بنك أسئلة واختبار ذاتي",
+      "capstone": "مشروع المرحلة: يُقيَّم بمعايير قبول"
+    }
+  },
+  "stages": [
+    {
+      "id": "s1",
+      "index": 1,
+      "title": "الكود المحترف والاختبار",
+      "titleEn": "Professional Code Quality & Testing",
+      "summary": "أول محطة بعد EF Core: تحوّل الكود اللي «شغال» لكود فريق إنتاجي — مبادئ، تحقق، أخطاء، لوجنج، واختبارات حقيقية.",
+      "outcome": "تقدر تبني Web API منظم، مُتحقَّق من مدخلاته، بيشرح أخطاءه بـProblemDetails، ومغطى باختبارات Unit + Integration بتشتغل على قاعدة بيانات حقيقية في Container.",
+      "level": "متوسط",
+      "weeks": "3-4 أسابيع",
+      "modules": [
+        {
+          "id": "s1-m1",
+          "title": "هندسة الكود اليومي",
+          "titleEn": "Everyday Code Engineering",
+          "summary": "الحاجات اللي بتفرق بين Junior وMid في أول Code Review: SOLID عمليًا، DI lifetimes، Options، Validation، الأخطاء، واللوجنج.",
+          "lessons": [
+            {
+              "id": "s1-m1-l1",
+              "title": "SOLID عمليًا مش نظريًا",
+              "titleEn": "SOLID in Practice, Not in Slides",
+              "summary": "إزاي المبادئ الخمسة بتبان في كود ASP.NET Core الحقيقي، وإمتى تطبيقها بيضر.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكسر كود Service مسؤولة عن كل حاجة وتعيد توزيع مسؤولياتها",
+                "تستخدم Dependency Inversion عشان تختبر Logic من غير قاعدة بيانات",
+                "تتعرف على over-engineering وإمتى تقف"
+              ],
+              "resources": [
+                {
+                  "label": "Microsoft: Architectural principles",
+                  "url": "https://learn.microsoft.com/dotnet/architecture/"
+                },
+                {
+                  "label": "Refactoring Guru",
+                  "url": "https://refactoring.guru/design-patterns"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m1-l2",
+              "title": "دورة حياة الـDI والـScoped trap",
+              "titleEn": "DI Lifetimes and the Captive Dependency Trap",
+              "summary": "Singleton/Scoped/Transient في ASP.NET Core، وإزاي Singleton يمسك Scoped فيبوظ كل حاجة.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تختار الـlifetime الصح لكل خدمة وتبررها",
+                "تكتشف captive dependency قبل ما تكسر Request",
+                "تستخدم keyed services وFactory patterns"
+              ],
+              "resources": [
+                {
+                  "label": "Dependency injection in ASP.NET Core",
+                  "url": "https://learn.microsoft.com/aspnet/core/fundamentals/dependency-injection"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m1-l3",
+              "title": "الإعدادات والـOptions Pattern والأسرار",
+              "titleEn": "Configuration, Options Pattern and Secrets",
+              "summary": "appsettings، المتغيرات البيئية، User Secrets، IOptions/IOptionsSnapshot/IOptionsMonitor، وإزاي تمنع magic strings.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تبني Strongly-typed settings لكل بيئة",
+                "تخزن الأسرار بره الكود وSource Control",
+                "تفرق بين IOptions وIOptionsSnapshot ومتى تحتاج reload"
+              ],
+              "resources": [
+                {
+                  "label": "Options pattern",
+                  "url": "https://learn.microsoft.com/dotnet/core/extensions/options"
+                },
+                {
+                  "label": "Safe storage of app secrets",
+                  "url": "https://learn.microsoft.com/aspnet/core/security/app-secrets"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m1-l4",
+              "title": "التحقق من المدخلات: FluentValidation",
+              "titleEn": "Input Validation with FluentValidation",
+              "summary": "التحقق في Minimal APIs وControllers، قواعد قابلة للقراءة، ورسائل أخطاء تصلح للواجهة.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب Validators مفصولة عن الـDomain",
+                "ترجع 400 بإجابة موحّدة ومفهومة",
+                "تتحقق من المدخلات في الـMinimal API في .NET 10"
+              ],
+              "resources": [
+                {
+                  "label": "FluentValidation docs",
+                  "url": "https://docs.fluentvalidation.net/"
+                },
+                {
+                  "label": "Custom validation in Minimal APIs",
+                  "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m1-l5",
+              "title": "معالجة الأخطاء وProblemDetails",
+              "titleEn": "Error Handling and ProblemDetails (RFC 9457)",
+              "summary": "Exception middleware، ExceptionHandler، تحويل الاستثناءات لاستجابات موحّدة، وإزاي ما تسرّبش stack trace للعميل.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تبني Error pipeline واحد لكل الـAPI",
+                "تفرق بين أخطاء العميل (4xx) وأخطاء السيرفر (5xx)",
+                "تستخدم ProblemDetails وValidationProblemDetails"
+              ],
+              "resources": [
+                {
+                  "label": "Handle errors in ASP.NET Core web APIs",
+                  "url": "https://learn.microsoft.com/aspnet/core/web-api/handle-errors"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m1-l6",
+              "title": "اللوجنج المهيكل مع Serilog",
+              "titleEn": "Structured Logging with Serilog",
+              "summary": "ليه Log templates أهم من string interpolation، Sinks، Enrichers، وCorrelationId عبر الطلبات.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب Logs قابلة للبحث مش نص مطبوع",
+                "تربط كل سجلات الطلب الواحد بـCorrelationId",
+                "تتحكم في مستويات اللوجنج لكل بيئة"
+              ],
+              "resources": [
+                {
+                  "label": "Logging in .NET",
+                  "url": "https://learn.microsoft.com/dotnet/core/extensions/logging"
+                },
+                {
+                  "label": "Serilog",
+                  "url": "https://serilog.net/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m1-l7",
+              "title": "C# الحديث اللي لازم يبقى عادة",
+              "titleEn": "Modern C# Habits (records, pattern matching, nullability)",
+              "summary": "records، nullable reference types، pattern matching، collection expressions، وfield keyword في C# 14.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تستخدم records للـDTOs والقيم",
+                "تتخلص من NullReferenceException بالـnullable annotations",
+                "تكتب pattern matching بدل سلاسل if"
+              ],
+              "resources": [
+                {
+                  "label": "What's new in C# 14",
+                  "url": "https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-14"
+                },
+                {
+                  "label": "Records",
+                  "url": "https://learn.microsoft.com/dotnet/csharp/fundamentals/types/records"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 7,
+          "minutes": 195
+        },
+        {
+          "id": "s1-m2",
+          "title": "الاختبار الحقيقي",
+          "titleEn": "Real Testing",
+          "summary": "من xUnit v3 وMicrosoft.Testing.Platform لحد Testcontainers: اختبارات بتديك ثقة فعلية وقت النشر.",
+          "lessons": [
+            {
+              "id": "s1-m2-l1",
+              "title": "خريطة الاختبارات: Unit وIntegration وContract",
+              "titleEn": "The Test Map: Unit, Integration, Contract",
+              "summary": "إيه اللي يُختبر على كل مستوى، وإزاي توزّع مجهودك على الهرم من غير ما تغرق.",
+              "minutes": 20,
+              "kind": "lesson",
+              "objectives": [
+                "تصنّف كل اختبار عندك على المستوى الصح",
+                "تحدد نسبة معقولة لكل نوع في مشروعك",
+                "تفهم تكلفة كل مستوى وسرعته"
+              ],
+              "resources": [
+                {
+                  "label": "Testing in .NET",
+                  "url": "https://learn.microsoft.com/dotnet/core/testing/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m2-l2",
+              "title": "xUnit v3 وMicrosoft.Testing.Platform",
+              "titleEn": "xUnit v3 and Microsoft.Testing.Platform",
+              "summary": "الفروق عن VSTest، الـfixtures، الـtraits، وتشغيل الاختبارات من CLI وCI.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تنشئ مشروع اختبارات بـxUnit v3",
+                "تستخدم IClassFixture/ICollectionFixture لمشاركة الإعداد",
+                "تشغّل الاختبارات بـdotnet test مع Microsoft.Testing.Platform"
+              ],
+              "resources": [
+                {
+                  "label": "xUnit.net",
+                  "url": "https://xunit.net/"
+                },
+                {
+                  "label": "Microsoft.Testing.Platform",
+                  "url": "https://learn.microsoft.com/dotnet/core/testing/unit-testing-platform"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m2-l3",
+              "title": "الـMocking بدون مبالغة (NSubstitute)",
+              "titleEn": "Mocking Without Overdoing It (NSubstitute)",
+              "summary": "إمتى تعمل Substitute وإمتى تستخدم كائن حقيقي بسيط، وإزاي الاختبار المفرط في الـMocking بيكذب عليك.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تعزل التبعيات الخارجية فقط",
+                "تكتب Assertions على السلوك مش على التفاصيل الداخلية",
+                "تكتشف الاختبار الهش (brittle) وتصلحه"
+              ],
+              "resources": [
+                {
+                  "label": "NSubstitute",
+                  "url": "https://nsubstitute.github.io/"
+                },
+                {
+                  "label": "Shouldly",
+                  "url": "https://docs.shouldly.io/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m2-l4",
+              "title": "اختبار الـAPI بـWebApplicationFactory",
+              "titleEn": "Integration Testing with WebApplicationFactory",
+              "summary": "تشغيل الـpipeline الحقيقي (routing، auth، validation، serialization) داخل الاختبار.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تبني Test harness للـAPI بتاعك",
+                "تبدّل التبعيات الحقيقية ببديل مناسب للاختبار",
+                "تختبر سيناريوهات فشل مش سيناريوهات النجاح بس"
+              ],
+              "resources": [
+                {
+                  "label": "Integration tests in ASP.NET Core",
+                  "url": "https://learn.microsoft.com/aspnet/core/test/integration-tests"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m2-l5",
+              "title": "Testcontainers: قاعدة بيانات حقيقية في الاختبار",
+              "titleEn": "Testcontainers: a Real Database in Your Tests",
+              "summary": "ليه InMemory provider بيكذب، وإزاي تشغّل SQL Server/PostgreSQL/Redis في Container داخل الاختبارات.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تشغّل Postgres/SQL Server في اختبارتك بـTestcontainers",
+                "تدير Migrations وSeed Data في الاختبار",
+                "تحافظ على سرعة الاختبارات مع عزل كل اختبار"
+              ],
+              "resources": [
+                {
+                  "label": "Testcontainers",
+                  "url": "https://testcontainers.com/"
+                },
+                {
+                  "label": "EF Core testing",
+                  "url": "https://learn.microsoft.com/ef/core/testing/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s1-m2-l6",
+              "title": "بيانات الاختبار والتغطية",
+              "titleEn": "Test Data, Fixtures and Coverage",
+              "summary": "Bogus/AutoFixture للبيانات الوهمية، الـgolden files، وتغطية مقاسة بدون عبادة النسبة.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تولّد بيانات اختبار واقعية",
+                "تقيس التغطية وتفهم أرقامها بصدق",
+                "تحدد الأهداف المهمة للتغطية مش الرقم"
+              ],
+              "resources": [
+                {
+                  "label": "Bogus",
+                  "url": "https://github.com/bchavez/Bogus"
+                },
+                {
+                  "label": "AutoFixture",
+                  "url": "https://github.com/AutoFixture/AutoFixture"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 6,
+          "minutes": 175
+        },
+        {
+          "id": "s1-m3",
+          "title": "مشروع المرحلة 1",
+          "titleEn": "Stage 1 Capstone",
+          "summary": "تطبيق عملي يجمع هندسة الكود والاختبار في مشروع واحد يُقيَّم.",
+          "lessons": [
+            {
+              "id": "s1-m3-l1",
+              "title": "Capstone: من CRUD فوضوي إلى API مُختبَر",
+              "titleEn": "Capstone: From Messy CRUD to a Tested API",
+              "summary": "خد Web API بسيط (أو بتاع شغلك) وحوّله لمشروع إنتاجي: طبقات، validation، ProblemDetails، Serilog، و75%+ تغطية على الـLogic.",
+              "minutes": 240,
+              "kind": "capstone",
+              "objectives": [
+                "تعيد هيكلة مشروع موجود بدون كسر سلوكه",
+                "تضيف طبقة اختبارات Unit + Integration تشتغل في CI",
+                "توثّق قراراتك في ADRs قصيرة"
+              ],
+              "resources": [
+                {
+                  "label": "Testing in .NET",
+                  "url": "https://learn.microsoft.com/dotnet/core/testing/"
+                },
+                {
+                  "label": "ASP.NET Core web API",
+                  "url": "https://learn.microsoft.com/aspnet/core/web-api/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 240
+        }
+      ],
+      "lessonCount": 14,
+      "minutes": 610,
+      "hours": 10.2
+    },
+    {
+      "id": "s2",
+      "index": 2,
+      "title": "ASP.NET Core المتقدم وAPIs إنتاجية",
+      "titleEn": "Advanced ASP.NET Core & Production APIs",
+      "summary": "كل ما يحوّل الـAPI من «يشتغل على جهازي» إلى خدمة موثّقة، مؤمَّنة، محدودة المعدل، وصحية التشغيل.",
+      "outcome": "تنشر API بـOpenAPI/Scalar، JWT + Policies، Rate Limiting، Caching، Health Checks، وBackground services.",
+      "level": "متوسط → متقدم",
+      "weeks": "4 أسابيع",
+      "modules": [
+        {
+          "id": "s2-m1",
+          "title": "تصميم الـAPI الحديث",
+          "titleEn": "Modern API Design",
+          "summary": "Minimal APIs في .NET 10، التوثيق، الإصدارات، الترقيم (pagination)، والاستجابات الموحّدة.",
+          "lessons": [
+            {
+              "id": "s2-m1-l1",
+              "title": "Minimal APIs مقابل Controllers: اختيار مبرر",
+              "titleEn": "Minimal APIs vs Controllers: a Justified Choice",
+              "summary": "إمتى تختار كل واحد، وإزاي Minimal APIs في .NET 10 بقت تدعم Validation وJSON Patch.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تبني Endpoints بـMinimal APIs مع Endpoint Filters",
+                "تنظم الكود بـExtension methods لكل Feature",
+                "تقرر بين Minimal APIs وControllers بمعايير واضحة"
+              ],
+              "resources": [
+                {
+                  "label": "Minimal APIs overview",
+                  "url": "https://learn.microsoft.com/aspnet/core/fundamentals/minimal-apis"
+                },
+                {
+                  "label": "What's new in ASP.NET Core 10",
+                  "url": "https://learn.microsoft.com/aspnet/core/what-is-new/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m1-l2",
+              "title": "OpenAPI 3.1 وScalar: توثيق يعيش مع الكود",
+              "titleEn": "OpenAPI 3.1 and Scalar: Docs That Live With the Code",
+              "summary": "توليد المواصفة، تحسين الوصف بالـAttributes، وواجهة Scalar بدل Swagger UI.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تولّد OpenAPI document من مشروعك",
+                "تكتب أوصاف وأمثلة للاستجابات",
+                "تعرض الواجهة التفاعلية للمستهلكين"
+              ],
+              "resources": [
+                {
+                  "label": "OpenAPI in ASP.NET Core",
+                  "url": "https://learn.microsoft.com/aspnet/core/web-api/openapi/"
+                },
+                {
+                  "label": "Scalar",
+                  "url": "https://github.com/scalar/scalar"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m1-l3",
+              "title": "الإصدارات والترقيم والفرز والفلترة",
+              "titleEn": "Versioning, Pagination, Sorting and Filtering",
+              "summary": "إزاي تغيّر الـAPI من غير ما تكسر العملاء، وتصميم قوائم مقسّمة بأداء ثابت.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ API versioning بدون كسر",
+                "تبني Cursor pagination أسرع من Offset",
+                "تصمم Filter/Sort contract موحّد"
+              ],
+              "resources": [
+                {
+                  "label": "Versioning guidance",
+                  "url": "https://learn.microsoft.com/aspnet/core/web-api/"
+                },
+                {
+                  "label": "Pagination patterns",
+                  "url": "https://learn.microsoft.com/dotnet/architecture/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m1-l4",
+              "title": "الـMiddleware وEndpoint Filters",
+              "titleEn": "Middleware and Endpoint Filters",
+              "summary": "الفرق بينهم، ترتيب الـpipeline، وبناء Cross-cutting concerns (توقيت، tenant، audit).",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب Middleware مخصص بأداء مقبول",
+                "تستخدم Endpoint Filters للـcross-cutting",
+                "تفهم ترتيب الـpipeline وأثره على الأخطاء"
+              ],
+              "resources": [
+                {
+                  "label": "ASP.NET Core middleware",
+                  "url": "https://learn.microsoft.com/aspnet/core/fundamentals/middleware/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m1-l5",
+              "title": "الـRate Limiting والحماية من الإساءة",
+              "titleEn": "Rate Limiting and Abuse Protection",
+              "summary": "Fixed/Sliding window وToken bucket وConcurrency limiters، وإزاي تحمي خدمة من عميل شره.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تطبق Rate limiting على Endpoints حساسة",
+                "ترجع 429 مع Retry-After صحيح",
+                "تفرق بين الحد على المستخدم والحد على الـIP"
+              ],
+              "resources": [
+                {
+                  "label": "Rate limiting middleware",
+                  "url": "https://learn.microsoft.com/aspnet/core/performance/rate-limit"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m1-l6",
+              "title": "الـCaching في ASP.NET Core",
+              "titleEn": "Caching: Memory, Output and Distributed",
+              "summary": "IMemoryCache، Output Caching، IDistributedCache، وTag-based invalidation.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تختار طبقة الكاش المناسبة لكل حالة",
+                "تضبط إبطال الكاش بشكل صحيح",
+                "تقيس الأثر الفعلي للكاش على زمن الاستجابة"
+              ],
+              "resources": [
+                {
+                  "label": "Caching in ASP.NET Core",
+                  "url": "https://learn.microsoft.com/aspnet/core/performance/caching/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 6,
+          "minutes": 180
+        },
+        {
+          "id": "s2-m2",
+          "title": "المصادقة والتفويض",
+          "titleEn": "Authentication & Authorization",
+          "summary": "من JWT وRefresh tokens إلى Identity وOIDC وPolicies — وأمان الـAPI في 2026.",
+          "lessons": [
+            {
+              "id": "s2-m2-l1",
+              "title": "المصادقة مقابل التفويض: المفاهيم قبل الكود",
+              "titleEn": "AuthN vs AuthZ: Concepts Before Code",
+              "summary": "Claims، Principals، Schemes، Policies، Roles — والمفردات اللي بتلخبط في المقابلات.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تشرح الفرق بين المصادقة والتفويض بمثال من كودك",
+                "تقرأ ClaimsPrincipal وتستخدمها صح",
+                "تصمم Policy بدل Role-checks المتناثرة"
+              ],
+              "resources": [
+                {
+                  "label": "Overview of ASP.NET Core authentication",
+                  "url": "https://learn.microsoft.com/aspnet/core/security/authentication/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m2-l2",
+              "title": "JWT Access + Refresh tokens بشكل سليم",
+              "titleEn": "JWT Access + Refresh Tokens Done Right",
+              "summary": "إصدار التوكنات، انتهاء الصلاحية، التدوير (rotation)، الإبطال، وأخطاء شائعة بتسبب اختراقات.",
+              "minutes": 40,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ إصدار وتحقق JWT",
+                "تبني Refresh token rotation مع كشف إعادة الاستخدام",
+                "تخزن المفاتيح بشكل آمن وتدوّرها"
+              ],
+              "resources": [
+                {
+                  "label": "JWT Bearer authentication",
+                  "url": "https://learn.microsoft.com/aspnet/core/security/authentication/jwt"
+                },
+                {
+                  "label": "OWASP Top 10",
+                  "url": "https://owasp.org/www-project-top-ten/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m2-l3",
+              "title": "ASP.NET Core Identity في المشاريع الحقيقية",
+              "titleEn": "ASP.NET Core Identity in Real Projects",
+              "summary": "تخزين المستخدمين، الأدوار، 2FA، إعادة تعيين كلمة السر، وتخصيص Identity بدون كسر الترقية.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تدمج Identity مع EF Core وAPI",
+                "تفعّل 2FA وlockout policies",
+                "تفصل بين Identity والـDomain layer"
+              ],
+              "resources": [
+                {
+                  "label": "ASP.NET Core Identity",
+                  "url": "https://learn.microsoft.com/aspnet/core/security/authentication/identity"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m2-l4",
+              "title": "OpenID Connect وExternal providers",
+              "titleEn": "OpenID Connect and External Providers",
+              "summary": "تسجيل الدخول بـGoogle/Microsoft/Entra ID، الـflows الصحيحة، وPKCE لتطبيقات العميل.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تضيف Login خارجي لمشروعك",
+                "تختار الـflow الصحيح حسب نوع العميل",
+                "تتعامل مع refresh وإلغاء الربط"
+              ],
+              "resources": [
+                {
+                  "label": "OAuth/OIDC in ASP.NET Core",
+                  "url": "https://learn.microsoft.com/aspnet/core/security/authentication/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m2-l5",
+              "title": "تأمين الـAPI: رؤوس، CORS، أسرار، OWASP",
+              "titleEn": "API Hardening: Headers, CORS, Secrets, OWASP",
+              "summary": "قائمة فحص أمنية عملية قبل النشر، وأهم ثغرات الـAPI في 2026.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تضبط Security headers وCORS بشكل مقصود",
+                "تدير الأسرار عبر Key Vault/User Secrets",
+                "تنفّذ قائمة فحص OWASP API Top 10"
+              ],
+              "resources": [
+                {
+                  "label": "OWASP API Security",
+                  "url": "https://owasp.org/www-project-api-security/"
+                },
+                {
+                  "label": "Azure Key Vault",
+                  "url": "https://learn.microsoft.com/azure/key-vault/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 165
+        },
+        {
+          "id": "s2-m3",
+          "title": "الوقت الحقيقي والمهام الخلفية",
+          "titleEn": "Realtime & Background Work",
+          "summary": "SignalR، Worker services، الجدولة، وHealth checks — أي اللي بيشتغل لما مفيش مستخدم بيطلب.",
+          "lessons": [
+            {
+              "id": "s2-m3-l1",
+              "title": "SignalR: تحديثات فورية للواجهة",
+              "titleEn": "SignalR: Realtime Updates",
+              "summary": "Hubs، transports، المجموعات، وإعادة الاتصال، ومتى تستخدم Server-Sent Events بدلها.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تبني Hub يبعت تحديثات لمجموعة مستخدمين",
+                "تتعامل مع إعادة الاتصال والأخطاء",
+                "تختار بين SignalR وSSE (الجديد في .NET 10)"
+              ],
+              "resources": [
+                {
+                  "label": "SignalR overview",
+                  "url": "https://learn.microsoft.com/aspnet/core/signalr/introduction"
+                },
+                {
+                  "label": "Server-Sent Events in .NET 10",
+                  "url": "https://learn.microsoft.com/aspnet/core/what-is-new/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m3-l2",
+              "title": "BackgroundService وIHostedService",
+              "titleEn": "BackgroundService and IHostedService",
+              "summary": "مهام دورية، Scope داخل مهمة خلفية، أخطاء صامتة، والإلغاء النظيف.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب Background service لا تسرّب Scope",
+                "تتعامل مع StoppingToken والأخطاء",
+                "تقرر بين Hosted service وQueue worker"
+              ],
+              "resources": [
+                {
+                  "label": "Background tasks with hosted services",
+                  "url": "https://learn.microsoft.com/aspnet/core/fundamentals/host/hosted-services"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m3-l3",
+              "title": "الجدولة: Hangfire مقابل Quartz مقابل MediatR jobs",
+              "titleEn": "Scheduling: Hangfire vs Quartz vs Native",
+              "summary": "مقارنة عملية لجدولة المهام، والمراقبة، وإعادة المحاولة.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تختار أداة جدولة بحسب الاحتياج",
+                "تنفّذ Cron jobs قابلة للمراقبة",
+                "تتعامل مع المهام المكررة والـidempotency"
+              ],
+              "resources": [
+                {
+                  "label": "Quartz.NET",
+                  "url": "https://www.quartz-scheduler.net/"
+                },
+                {
+                  "label": "Hangfire",
+                  "url": "https://www.hangfire.io/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s2-m3-l4",
+              "title": "Health Checks وReadiness",
+              "titleEn": "Health Checks and Readiness",
+              "summary": "فحوصات قاعدة البيانات والتبعيات، ونشرها لـload balancer وKubernetes probes.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تضيف Health checks لتبعياتك",
+                "تفرق بين Liveness وReadiness",
+                "تعرض حالة الخدمة بشكل آمن داخليًا"
+              ],
+              "resources": [
+                {
+                  "label": "Health checks in ASP.NET Core",
+                  "url": "https://learn.microsoft.com/aspnet/core/health-checks/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 4,
+          "minutes": 115
+        },
+        {
+          "id": "s2-m4",
+          "title": "مشروع المرحلة 2",
+          "titleEn": "Stage 2 Capstone",
+          "summary": "API جاهز للإنتاج بكل ما سبق.",
+          "lessons": [
+            {
+              "id": "s2-m4-l1",
+              "title": "Capstone: API إنتاجي موثّق ومؤمَّن",
+              "titleEn": "Capstone: A Documented, Secured Production API",
+              "summary": "خدمة كاملة: JWT + Refresh، Policies، Rate limiting، Output caching، SignalR notifications، Background worker، Health checks، Scalar docs، واختبارات Integration.",
+              "minutes": 300,
+              "kind": "capstone",
+              "objectives": [
+                "تنفّذ كل عناصر القائمة في مشروع واحد متماسك",
+                "توثّق القرارات الأمنية والمعمارية",
+                "تقيس الأداء قبل وبعد الكاش"
+              ],
+              "resources": [
+                {
+                  "label": "ASP.NET Core web API",
+                  "url": "https://learn.microsoft.com/aspnet/core/web-api/"
+                },
+                {
+                  "label": "Security overview",
+                  "url": "https://learn.microsoft.com/aspnet/core/security/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 300
+        }
+      ],
+      "lessonCount": 16,
+      "minutes": 760,
+      "hours": 12.7
+    },
+    {
+      "id": "s3",
+      "index": 3,
+      "title": "البيانات والأداء",
+      "titleEn": "Data & Performance",
+      "summary": "بعد ما الـAPI بيشتغل: يبقى سريع. SQL حقيقي، EF Core متقدّم، Redis، NoSQL، وقياس بدل التخمين.",
+      "outcome": "تخفض زمن استجابة خدمة بعشرة أضعاف بأدلة قياس، وتفهم الـSQL اللي يولّده EF Core وتصلحه.",
+      "level": "متقدم",
+      "weeks": "4 أسابيع",
+      "modules": [
+        {
+          "id": "s3-m1",
+          "title": "SQL اللي لازم تعرفه من غير ORM",
+          "titleEn": "SQL You Must Know Without an ORM",
+          "summary": "الفهارس، خطط التنفيذ، العزل، والأقفال — عشان تعرف ليه الاستعلام بطيء.",
+          "lessons": [
+            {
+              "id": "s3-m1-l1",
+              "title": "الفهارس وخطط التنفيذ",
+              "titleEn": "Indexes and Execution Plans",
+              "summary": "أنواع الفهارس في SQL Server/PostgreSQL، قراءة خطة التنفيذ، واكتشاف الـscan القاتل.",
+              "minutes": 40,
+              "kind": "lesson",
+              "objectives": [
+                "تقرأ Execution plan وتستنتج سبب البطء",
+                "تختار الفهرس الصح (Clustered/Nonclustered/Composite)",
+                "تكتشف الفهارس غير المستخدمة والزائدة"
+              ],
+              "resources": [
+                {
+                  "label": "PostgreSQL: Using indexes",
+                  "url": "https://www.postgresql.org/docs/current/indexes.html"
+                },
+                {
+                  "label": "SQL Server query performance",
+                  "url": "https://learn.microsoft.com/sql/relational-databases/performance/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s3-m1-l2",
+              "title": "المعاملات ومستويات العزل والـLocking",
+              "titleEn": "Transactions, Isolation Levels and Locking",
+              "summary": "Read Committed مقابل Repeatable Read مقابل Serializable، والـDeadlocks وإزاي تمنعها.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تختار مستوى العزل المناسب لكل عملية",
+                "تشخّص Deadlock من الـtrace",
+                "تصمم معاملات قصيرة تقلل التعارض"
+              ],
+              "resources": [
+                {
+                  "label": "EF Core transactions",
+                  "url": "https://learn.microsoft.com/ef/core/saving/transactions/"
+                },
+                {
+                  "label": "PostgreSQL transaction isolation",
+                  "url": "https://www.postgresql.org/docs/current/transaction-iso.html"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s3-m1-l3",
+              "title": "Dapper: لما تحتاج سرعة SQL الخام",
+              "titleEn": "Dapper: When You Need Raw SQL Speed",
+              "summary": "Micro-ORM، الـmapping، الـparameterization، وإزاي تستخدمه جنب EF Core في نفس المشروع.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب استعلامات Dapper بأمان ضد SQL injection",
+                "تحدد الحالات اللي يستحق فيها Dapper",
+                "تشارك Connection/Transaction بين EF وDapper"
+              ],
+              "resources": [
+                {
+                  "label": "Dapper",
+                  "url": "https://github.com/DapperLib/Dapper"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 3,
+          "minutes": 105
+        },
+        {
+          "id": "s3-m2",
+          "title": "EF Core متقدم",
+          "titleEn": "Advanced EF Core",
+          "summary": "الأداء والتعبير في EF Core 10: projections، ExecuteUpdate، Named query filters، Complex types.",
+          "lessons": [
+            {
+              "id": "s3-m2-l1",
+              "title": "أداء الاستعلامات: N+1 وProjections وAsNoTracking",
+              "titleEn": "Query Performance: N+1, Projections, AsNoTracking",
+              "summary": "أشهر أسباب البطء في تطبيقات EF Core وإزاي تكتشفها من الـlogs.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تقضي على N+1 بـInclude أو projection",
+                "تستخدم AsNoTracking في مسارات القراءة",
+                "تقيس أثر كل تغيير بالأرقام"
+              ],
+              "resources": [
+                {
+                  "label": "EF Core performance",
+                  "url": "https://learn.microsoft.com/ef/core/performance/performance-tuning"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s3-m2-l2",
+              "title": "EF Core 10: Complex types وNamed query filters وLeftJoin",
+              "titleEn": "EF Core 10: Complex Types, Named Query Filters, LeftJoin",
+              "summary": "الجديد في EF Core 10 وإزاي يقلل الكود ويحسّن الترجمة للـSQL.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تنمذج بياناتك بـComplex types بدل الجداول الزائدة",
+                "تستخدم Named query filters للـsoft-delete وmulti-tenancy",
+                "تكتب LeftJoin/RightJoin الجديدة"
+              ],
+              "resources": [
+                {
+                  "label": "What's new in EF Core 10",
+                  "url": "https://learn.microsoft.com/ef/core/what-is-new/ef-core-10.0/whats-new"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s3-m2-l3",
+              "title": "الكتابات السريعة: ExecuteUpdate وBulk operations",
+              "titleEn": "Fast Writes: ExecuteUpdate, ExecuteDelete and Bulk Ops",
+              "summary": "تحديث/حذف مباشر في قاعدة البيانات بدون تحميل الكيانات، وحدود كل أسلوب.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ تحديثات جماعية آمنة",
+                "تتعامل مع Concurrency tokens",
+                "تختار بين EF bulk ومكتبات خارجية"
+              ],
+              "resources": [
+                {
+                  "label": "ExecuteUpdate/ExecuteDelete",
+                  "url": "https://learn.microsoft.com/ef/core/saving/execute-insert-update-delete"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s3-m2-l4",
+              "title": "Migrations في فرق حقيقية وCI/CD",
+              "titleEn": "Migrations in Real Teams and CI/CD",
+              "summary": "استراتيجيات الترحيل الآمن، الترحيلات التوسعية مقابل التدميرية، والتطبيق في النشر.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب Migration لا يوقف النظام (expand/contract)",
+                "تدير تعارضات الـMigrations بين المطورين",
+                "تنشر الـMigrations بأمان من الـpipeline"
+              ],
+              "resources": [
+                {
+                  "label": "EF Core migrations",
+                  "url": "https://learn.microsoft.com/ef/core/managing-schemas/migrations/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 4,
+          "minutes": 130
+        },
+        {
+          "id": "s3-m3",
+          "title": "الكاش والتخزين البديل والقياس",
+          "titleEn": "Caching, Alternate Stores and Measurement",
+          "summary": "Redis، MongoDB/Cosmos DB، البحث، ثم BenchmarkDotNet وk6 لإثبات التحسن.",
+          "lessons": [
+            {
+              "id": "s3-m3-l1",
+              "title": "Redis: كاش موزع، جلسات، طوابير خفيفة",
+              "titleEn": "Redis: Distributed Cache, Sessions, Light Queues",
+              "summary": "أنماط الكاش (cache-aside، write-through)، الإبطال، وأخطاء الكاش الشائعة.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ Cache-aside مع TTL وإبطال صحيح",
+                "تستخدم Redis للـdistributed locking بعناية",
+                "تقيس hit ratio وتفهم أثره"
+              ],
+              "resources": [
+                {
+                  "label": "Redis docs",
+                  "url": "https://redis.io/docs/latest/"
+                },
+                {
+                  "label": "Distributed caching in ASP.NET Core",
+                  "url": "https://learn.microsoft.com/aspnet/core/performance/caching/distributed"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s3-m3-l2",
+              "title": "NoSQL: MongoDB وCosmos DB وإمتى تستخدمهم",
+              "titleEn": "NoSQL: MongoDB and Cosmos DB, and When",
+              "summary": "نمذجة البيانات المستندية، الـpartitions، ومتى يكون NoSQL قرارًا خاطئًا.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تنمذج بيانات مستندية بدون تكرار مضر",
+                "تفهم Partition keys وأثرها على الأداء",
+                "تبرر اختيار SQL أو NoSQL في تصميمك"
+              ],
+              "resources": [
+                {
+                  "label": "Azure Cosmos DB",
+                  "url": "https://learn.microsoft.com/azure/cosmos-db/"
+                },
+                {
+                  "label": "MongoDB EF Core provider",
+                  "url": "https://learn.microsoft.com/ef/core/providers/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s3-m3-l3",
+              "title": "القياس: BenchmarkDotNet وk6 وProfiling",
+              "titleEn": "Measurement: BenchmarkDotNet, k6 and Profiling",
+              "summary": "من غير قياس إنت بتخمن: micro-benchmarks، اختبارات حمل، ومحللات الأداء.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تقيس كودًا حساسًا للأداء بطريقة صحيحة",
+                "تشغّل اختبار حمل على API وتحلل p95/p99",
+                "تستخدم dotnet-trace/dotnet-counts للتشخيص"
+              ],
+              "resources": [
+                {
+                  "label": "BenchmarkDotNet",
+                  "url": "https://benchmarkdotnet.org/"
+                },
+                {
+                  "label": "Diagnostic tools",
+                  "url": "https://learn.microsoft.com/dotnet/core/diagnostics/"
+                },
+                {
+                  "label": "k6",
+                  "url": "https://grafana.com/docs/k6/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s3-m3-l4",
+              "title": "async/await في العمق وSpan<T> وNativeAOT",
+              "titleEn": "async/await in Depth, Span<T> and NativeAOT",
+              "summary": "إزاي يشتغل async فعلًا، أخطاء الاستنزاف (starvation)، وتقليل التخصيصات بـSpan، ومتى NativeAOT مناسب.",
+              "minutes": 40,
+              "kind": "lesson",
+              "objectives": [
+                "تشرح state machine للـasync وإزاي الـthread pool بيتعامل معها",
+                "تتجنب .Result/.Wait() وdeadlocks",
+                "تقلل التخصيصات بـSpan/Memory في مسارات ساخنة"
+              ],
+              "resources": [
+                {
+                  "label": "Async guidance",
+                  "url": "https://learn.microsoft.com/dotnet/standard/asynchronous-programming-patterns/"
+                },
+                {
+                  "label": "Span<T>",
+                  "url": "https://learn.microsoft.com/dotnet/api/system.span-1"
+                },
+                {
+                  "label": "NativeAOT",
+                  "url": "https://learn.microsoft.com/dotnet/core/deploying/native-aot/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 4,
+          "minutes": 140
+        },
+        {
+          "id": "s3-m4",
+          "title": "مشروع المرحلة 3",
+          "titleEn": "Stage 3 Capstone",
+          "summary": "تحسين خدمة حقيقية بأهداف أداء مرقّمة.",
+          "lessons": [
+            {
+              "id": "s3-m4-l1",
+              "title": "Capstone: من 800ms إلى 80ms بدليل",
+              "titleEn": "Capstone: From 800ms to 80ms, With Evidence",
+              "summary": "خد خدمة بطيئة (أو ولّدها) وحسّنها بفهارس، projections، Redis، وضبط async — وقدّم تقرير قياس قبل/بعد مع k6.",
+              "minutes": 240,
+              "kind": "capstone",
+              "objectives": [
+                "تضع أهداف أداء رقمية (p95، throughput) قبل البدء",
+                "تنفّذ تحسينات متعددة الطبقات وتقيس كل واحدة",
+                "تكتب تقرير أداء يشرح الأثر والسبب"
+              ],
+              "resources": [
+                {
+                  "label": "EF Core performance",
+                  "url": "https://learn.microsoft.com/ef/core/performance/"
+                },
+                {
+                  "label": "k6",
+                  "url": "https://grafana.com/docs/k6/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 240
+        }
+      ],
+      "lessonCount": 12,
+      "minutes": 615,
+      "hours": 10.2
+    },
+    {
+      "id": "s4",
+      "index": 4,
+      "title": "المعمارية والأنماط",
+      "titleEn": "Architecture & Patterns",
+      "summary": "الفرق بين Mid وSenior: تفكير في أنظمة مش في ميزات. Clean Architecture، Modular Monolith، DDD، CQRS.",
+      "outcome": "تصمم نظامًا مقسّم الوحدات، تفصل الـDomain عن EF Core، وتبرر كل قرار معماري بـADR.",
+      "level": "متقدم",
+      "weeks": "3 أسابيع",
+      "modules": [
+        {
+          "id": "s4-m1",
+          "title": "هياكل المشاريع",
+          "titleEn": "Project Structures",
+          "summary": "Layered، Clean/Onion، Hexagonal، وVertical Slice — وإزاي تختار بدون تقليد أعمى.",
+          "lessons": [
+            {
+              "id": "s4-m1-l1",
+              "title": "Clean/Onion Architecture في مشروع حقيقي",
+              "titleEn": "Clean/Onion Architecture in a Real Project",
+              "summary": "اتجاه الاعتماديات، طبقة Domain لا تعرف EF Core، وApplication كـports.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تبني حلًا من 4 مشاريع باتجاه اعتماديات صحيح",
+                "تعزل الـDomain عن البنية التحتية",
+                "تتجنب تسريب الـDTOs للـDomain"
+              ],
+              "resources": [
+                {
+                  "label": ".NET architecture guides",
+                  "url": "https://learn.microsoft.com/dotnet/architecture/"
+                },
+                {
+                  "label": "Clean architecture sample",
+                  "url": "https://github.com/ardalis/CleanArchitecture"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s4-m1-l2",
+              "title": "Vertical Slice: بديل عملي للطبقات",
+              "titleEn": "Vertical Slice Architecture: a Pragmatic Alternative",
+              "summary": "تنظيم الكود حول الـfeatures مش حول الطبقات، وإمتى يناسب الفرق الصغيرة.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تنظّج مشروعًا حول features/slices",
+                "تقارن تكلفة التغيير بين الأسلوبين",
+                "تحدد متى تختار كل أسلوب"
+              ],
+              "resources": [
+                {
+                  "label": "Vertical slice architecture",
+                  "url": "https://learn.microsoft.com/dotnet/architecture/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s4-m1-l3",
+              "title": "Modular Monolith: الخيار الصحيح في أغلب الأحيان",
+              "titleEn": "Modular Monolith: the Right Default",
+              "summary": "حدود الوحدات، الاتصال بينها، وقواعد منع التحوّل لـBig Ball of Mud.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تقسّم تطبيقًا لوحدات بحدود صريحة",
+                "تفرض قيود الاعتماديات (اختبارات معمارية)",
+                "تبرر قرار Monolith مقابل Microservices"
+              ],
+              "resources": [
+                {
+                  "label": "Modular monolith guidance",
+                  "url": "https://learn.microsoft.com/dotnet/architecture/cloud-native/"
+                },
+                {
+                  "label": "NetArchTest",
+                  "url": "https://github.com/BenMorris/NetArchTest"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s4-m1-l4",
+              "title": "قرارات موثقة: ADRs وTrade-offs",
+              "titleEn": "Documented Decisions: ADRs and Trade-offs",
+              "summary": "إزاي تكتب قرارًا معماريًا يفهمه من بعدك، وتدافع عنه في Review.",
+              "minutes": 20,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب ADR مختصرًا ومفيدًا",
+                "تسجل البدائل المرفوضة وأسبابها",
+                "تحدّث القرارات مع تغير الظروف"
+              ],
+              "resources": [
+                {
+                  "label": "Architecture decision records",
+                  "url": "https://adr.github.io/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 4,
+          "minutes": 120
+        },
+        {
+          "id": "s4-m2",
+          "title": "DDD وCQRS",
+          "titleEn": "DDD Tactics and CQRS",
+          "summary": "Aggregates، Domain events، Value objects، ثم CQRS مع MediatR ونمط الـOutbox.",
+          "lessons": [
+            {
+              "id": "s4-m2-l1",
+              "title": "DDD التكتيكي: Aggregates وValue Objects وDomain Events",
+              "titleEn": "Tactical DDD: Aggregates, Value Objects, Domain Events",
+              "summary": "نمذجة قواعد العمل داخل الكيانات بدل تركها في الـControllers.",
+              "minutes": 40,
+              "kind": "lesson",
+              "objectives": [
+                "تحدد Aggregate boundaries صحيحة",
+                "تنقل قواعد العمل لداخل الـDomain",
+                "تصدر Domain events بدون ربطها بـEF Core"
+              ],
+              "resources": [
+                {
+                  "label": "Domain-Driven Design",
+                  "url": "https://learn.microsoft.com/dotnet/architecture/microservices/architect-microservice-container-applications/"
+                },
+                {
+                  "label": "DDD reference",
+                  "url": "https://learn.microsoft.com/dotnet/architecture/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s4-m2-l2",
+              "title": "CQRS مع MediatR: الفصل بين القراءة والكتابة",
+              "titleEn": "CQRS with MediatR: Separating Reads and Writes",
+              "summary": "Commands/Queries، الـpipeline behaviors (validation، logging، transactions)، ومتى CQRS مبالغة.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ CQRS بسيط بدون Event Sourcing",
+                "تبني Pipeline behaviors للـcross-cutting",
+                "تحدد متى لا تحتاج CQRS"
+              ],
+              "resources": [
+                {
+                  "label": "MediatR",
+                  "url": "https://github.com/jbogard/MediatR"
+                },
+                {
+                  "label": "CQRS pattern",
+                  "url": "https://learn.microsoft.com/azure/architecture/patterns/cqrs"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s4-m2-l3",
+              "title": "Outbox وInbox: موثوقية بلا فقدان رسائل",
+              "titleEn": "Outbox and Inbox: Reliable Messaging Without Lost Events",
+              "summary": "حفظ الأحداث في نفس معاملة قاعدة البيانات ونشرها لاحقًا، واستقبال idempotent.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ Outbox pattern مع EF Core",
+                "تضمن Idempotent consumption",
+                "تشرح مشاكل Dual write وتحلها"
+              ],
+              "resources": [
+                {
+                  "label": "Outbox pattern (MassTransit)",
+                  "url": "https://masstransit.io/documentation/outbox"
+                },
+                {
+                  "label": "Azure architecture patterns",
+                  "url": "https://learn.microsoft.com/azure/architecture/patterns/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s4-m2-l4",
+              "title": "Event Sourcing: افهمه قبل ما ترفضه أو تعشقه",
+              "titleEn": "Event Sourcing: Understand It Before You Love or Reject It",
+              "summary": "فكرة الحالة كمجموعة أحداث، الـprojections، والتكاليف التشغيلية.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تشرح Event Sourcing وميزاته وتكاليفه",
+                "تبني Projection بسيط",
+                "تقرر متى لا تستخدمه (وهذا الغالب)"
+              ],
+              "resources": [
+                {
+                  "label": "Event Sourcing pattern",
+                  "url": "https://learn.microsoft.com/azure/architecture/patterns/event-sourcing"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 4,
+          "minutes": 130
+        },
+        {
+          "id": "s4-m3",
+          "title": "مشروع المرحلة 4",
+          "titleEn": "Stage 4 Capstone",
+          "summary": "تصميم وتنفيذ نظام معماري متكامل.",
+          "lessons": [
+            {
+              "id": "s4-m3-l1",
+              "title": "Capstone: Modular Monolith بـCQRS وOutbox",
+              "titleEn": "Capstone: Modular Monolith with CQRS and Outbox",
+              "summary": "نظام حجز/طلبات مقسّم لوحدات، Domain غني، CQRS، Outbox، اختبارات معمارية تمنع تسريب الاعتماديات، وADRs لكل قرار.",
+              "minutes": 300,
+              "kind": "capstone",
+              "objectives": [
+                "تبني نظامًا بحدود وحدات مفروضة باختبارات",
+                "تنفّذ Domain events وOutbox",
+                "توثّق 5 قرارات معمارية بـADRs"
+              ],
+              "resources": [
+                {
+                  "label": ".NET architecture guides",
+                  "url": "https://learn.microsoft.com/dotnet/architecture/"
+                },
+                {
+                  "label": "Azure architecture center",
+                  "url": "https://learn.microsoft.com/azure/architecture/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 300
+        }
+      ],
+      "lessonCount": 9,
+      "minutes": 550,
+      "hours": 9.2
+    },
+    {
+      "id": "s5",
+      "index": 5,
+      "title": "الميكروسيرفيسز والمراسلة",
+      "titleEn": "Microservices & Messaging",
+      "summary": "لما النظام يكبر فعلًا: تقسيم، RabbitMQ/Kafka، MassTransit، gRPC، YARP، و.NET Aspire للتنسيق.",
+      "outcome": "تشغّل نظامًا من 3 خدمات تتواصل بالأحداث، مع Gateway وResilience ولوحة Aspire.",
+      "level": "متقدم",
+      "weeks": "4 أسابيع",
+      "modules": [
+        {
+          "id": "s5-m1",
+          "title": "التقسيم والاتصال",
+          "titleEn": "Decomposition & Communication",
+          "summary": "حدود الخدمات، gRPC، REST بين الخدمات، وAPI Gateway.",
+          "lessons": [
+            {
+              "id": "s5-m1-l1",
+              "title": "إمتى ميكروسيرفيسز وإمتى لأ",
+              "titleEn": "When Microservices — and When Not",
+              "summary": "مؤشرات الحاجة الحقيقية للتقسيم، وتكلفة التشغيل اللي بتظهر متأخر.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تقيّم نظامًا وتقرر إن كان يحتاج تقسيم",
+                "تحسب التكلفة التشغيلية مقابل الفائدة",
+                "تخطط لانتقال تدريجي من Monolith"
+              ],
+              "resources": [
+                {
+                  "label": "Microservices architecture",
+                  "url": "https://learn.microsoft.com/dotnet/architecture/cloud-native/microservices/"
+                },
+                {
+                  "label": "Azure: Microservices design patterns",
+                  "url": "https://learn.microsoft.com/azure/architecture/microservices/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m1-l2",
+              "title": "حدود الخدمات وتقسيم البيانات",
+              "titleEn": "Service Boundaries and Data Decomposition",
+              "summary": "Database-per-service، الـshared data problem، وطرق التكامل بدون اقتران.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تقسّم البيانات بين الخدمات بدون تكرار ضار",
+                "تتعامل مع الاتساق النهائي",
+                "تصمم Integration events بين الخدمات"
+              ],
+              "resources": [
+                {
+                  "label": "Data management in microservices",
+                  "url": "https://learn.microsoft.com/azure/architecture/microservices/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m1-l3",
+              "title": "gRPC للاتصال الداخلي",
+              "titleEn": "gRPC for Internal Communication",
+              "summary": "عقود Proto، الأداء مقابل REST، streaming، ومتى لا تستخدمه.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تبني خدمة gRPC بين خدمتين",
+                "تستخدم streaming للحالات المناسبة",
+                "تقارن gRPC بـREST من ناحية الأداء والتعقيد"
+              ],
+              "resources": [
+                {
+                  "label": "gRPC services in ASP.NET Core",
+                  "url": "https://learn.microsoft.com/aspnet/core/grpc/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m1-l4",
+              "title": "API Gateway بـYARP",
+              "titleEn": "API Gateway with YARP",
+              "summary": "توجيه، تجميع، مصادقة موحّدة، وBFF للواجهات المختلفة.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تبني Gateway بـYARP يوجّه لخدماتك",
+                "تنفّذ Backend-for-Frontend",
+                "تدير إعدادات التوجيه ديناميكيًا"
+              ],
+              "resources": [
+                {
+                  "label": "YARP",
+                  "url": "https://github.com/dotnet/yarp"
+                },
+                {
+                  "label": "Gateway Aggregation pattern",
+                  "url": "https://learn.microsoft.com/azure/architecture/patterns/gateway-aggregation"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 4,
+          "minutes": 125
+        },
+        {
+          "id": "s5-m2",
+          "title": "المراسلة والاعتمادية",
+          "titleEn": "Messaging & Resilience",
+          "summary": "RabbitMQ/Kafka/Service Bus مع MassTransit، أنماط Saga، وPolly للصمود.",
+          "lessons": [
+            {
+              "id": "s5-m2-l1",
+              "title": "RabbitMQ وMassTransit: أول حدث حقيقي",
+              "titleEn": "RabbitMQ and MassTransit: Your First Real Event",
+              "summary": "Exchanges، Queues، Routing keys، Consumers، وأخطاء التسليم.",
+              "minutes": 40,
+              "kind": "lesson",
+              "objectives": [
+                "تشغّل RabbitMQ في Docker وتنشر حدثًا",
+                "تبني Consumer بـMassTransit",
+                "تتعامل مع إعادة المحاولة والفشل النهائي (DLQ)"
+              ],
+              "resources": [
+                {
+                  "label": "RabbitMQ tutorials",
+                  "url": "https://www.rabbitmq.com/tutorials"
+                },
+                {
+                  "label": "MassTransit",
+                  "url": "https://masstransit.io/documentation"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m2-l2",
+              "title": "Kafka وAzure Service Bus: الفرق والاستخدام",
+              "titleEn": "Kafka and Azure Service Bus: Differences and Use",
+              "summary": "Event streaming مقابل Message broker، الـordering، والـpartitions.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تفرق بين نمطي المراسلة وتختار المناسب",
+                "تفهم الـpartitioning والـordering guarantees",
+                "تربط MassTransit بـService Bus"
+              ],
+              "resources": [
+                {
+                  "label": "Apache Kafka",
+                  "url": "https://kafka.apache.org/documentation/"
+                },
+                {
+                  "label": "Azure Service Bus",
+                  "url": "https://learn.microsoft.com/azure/service-bus-messaging/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m2-l3",
+              "title": "Sagas والاتساق النهائي",
+              "titleEn": "Sagas and Eventual Consistency",
+              "summary": "تنسيق عملية موزعة عبر خدمات، والتعويض عند الفشل.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ Saga بـMassTransit لعملية متعددة الخطوات",
+                "تصمم خطوات تعويضية",
+                "تشرح الاتساق النهائي لفريق غير تقني"
+              ],
+              "resources": [
+                {
+                  "label": "Saga pattern",
+                  "url": "https://learn.microsoft.com/azure/architecture/reference-architectures/microservices/saga"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m2-l4",
+              "title": "Polly وStandard Resilience: retries وcircuit breakers",
+              "titleEn": "Polly and Standard Resilience",
+              "summary": "Retry، Circuit breaker، Timeout، Bulkhead — وإعداد Microsoft.Extensions.Resilience.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تضيف Resilience pipeline لعميل HTTP",
+                "تضبط Circuit breaker بحدود صحيحة",
+                "تتجنب كوارث retry storms"
+              ],
+              "resources": [
+                {
+                  "label": "Polly docs",
+                  "url": "https://www.pollydocs.org/"
+                },
+                {
+                  "label": "Resilience in .NET",
+                  "url": "https://learn.microsoft.com/dotnet/core/resilience/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m2-l5",
+              "title": "Idempotency وإعادة المحاولة الآمنة",
+              "titleEn": "Idempotency and Safe Retries",
+              "summary": "مفاتيح idempotency، كشف التكرار، وضمان معالجة الرسالة مرة واحدة فعلًا.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ Idempotent consumer",
+                "تستخدم Inbox pattern لمنع التكرار",
+                "تصمم API يقبل Idempotency-Key"
+              ],
+              "resources": [
+                {
+                  "label": "Idempotent receiver",
+                  "url": "https://masstransit.io/documentation/consume-idempotent"
+                },
+                {
+                  "label": "Azure patterns",
+                  "url": "https://learn.microsoft.com/azure/architecture/patterns/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 160
+        },
+        {
+          "id": "s5-m3",
+          "title": "التنسيق مع .NET Aspire",
+          "titleEn": "Orchestration with .NET Aspire",
+          "summary": "AppHost، Service discovery، Integrations، ولوحة Aspire للمراقبة أثناء التطوير.",
+          "lessons": [
+            {
+              "id": "s5-m3-l1",
+              "title": ".NET Aspire: AppHost وService Discovery",
+              "titleEn": ".NET Aspire: AppHost and Service Discovery",
+              "summary": "تشغيل كل الخدمات محليًا بأمر واحد مع اكتشاف تلقائي.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تبني Aspire AppHost ينسّق خدماتك",
+                "تستخدم Service discovery بدل URLs ثابتة",
+                "تضيف Integrations جاهزة (Redis، Postgres، RabbitMQ)"
+              ],
+              "resources": [
+                {
+                  "label": ".NET Aspire",
+                  "url": "https://learn.microsoft.com/dotnet/aspire/"
+                },
+                {
+                  "label": "Aspire service discovery",
+                  "url": "https://learn.microsoft.com/dotnet/aspire/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m3-l2",
+              "title": "لوحة Aspire والتشخيص المحلي",
+              "titleEn": "Aspire Dashboard and Local Diagnostics",
+              "summary": "تتبع الطلبات عبر الخدمات، اللوجنج، والمقاييس أثناء التطوير.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تقرأ Distributed traces في اللوحة",
+                "تربط اللوجنج بالـtrace",
+                "تشخّص فشل في سلسلة خدمات"
+              ],
+              "resources": [
+                {
+                  "label": "Aspire dashboard",
+                  "url": "https://learn.microsoft.com/dotnet/aspire/fundamentals/dashboard/"
+                },
+                {
+                  "label": "OpenTelemetry in .NET",
+                  "url": "https://learn.microsoft.com/dotnet/core/diagnostics/observability-with-otel"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m3-l3",
+              "title": "اختبار الأنظمة الموزعة وContract tests",
+              "titleEn": "Testing Distributed Systems and Contract Tests",
+              "summary": "اختبار التكامل بين الخدمات، Pact/contract testing، وبيئات ephemeral.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب اختبارات تكامل بين خدمتين",
+                "تطبق Contract testing لمنع الكسر",
+                "تشغّل الاختبارات في CI مع Testcontainers"
+              ],
+              "resources": [
+                {
+                  "label": "Pact",
+                  "url": "https://docs.pact.io/"
+                },
+                {
+                  "label": "Testcontainers",
+                  "url": "https://testcontainers.com/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s5-m3-l4",
+              "title": "أنماط جاهزة: Cache-aside وCircuit breaker وBulkhead وThrottling",
+              "titleEn": "Cloud Design Patterns You Will Actually Use",
+              "summary": "جولة مركزة في أهم أنماط Azure Architecture Center مع تنفيذها في .NET.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تختار النمط المناسب لكل مشكلة",
+                "تنفّذ 3 أنماط في مشروعك",
+                "توثّق النمط المستخدم في ADR"
+              ],
+              "resources": [
+                {
+                  "label": "Azure Architecture patterns",
+                  "url": "https://learn.microsoft.com/azure/architecture/patterns/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 4,
+          "minutes": 120
+        },
+        {
+          "id": "s5-m4",
+          "title": "مشروع المرحلة 5",
+          "titleEn": "Stage 5 Capstone",
+          "summary": "نظام موزع صغير يعمل فعليًا على جهازك.",
+          "lessons": [
+            {
+              "id": "s5-m4-l1",
+              "title": "Capstone: 3 خدمات + RabbitMQ + Aspire",
+              "titleEn": "Capstone: 3 Services + RabbitMQ + Aspire",
+              "summary": "نظام طلبات: Orders API، Payments worker، Notifications service — تتواصل بالأحداث، مع Outbox، Polly، Gateway، ولوحة Aspire.",
+              "minutes": 360,
+              "kind": "capstone",
+              "objectives": [
+                "تشغّل النظام كاملًا بأمر واحد",
+                "تثبت عدم فقدان الأحداث عند فشل خدمة",
+                "توثّق مخطط النظام وتدفق الأحداث"
+              ],
+              "resources": [
+                {
+                  "label": ".NET Aspire",
+                  "url": "https://learn.microsoft.com/dotnet/aspire/"
+                },
+                {
+                  "label": "Microservices sample",
+                  "url": "https://github.com/dotnet-architecture/eShop"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 360
+        }
+      ],
+      "lessonCount": 14,
+      "minutes": 765,
+      "hours": 12.8
+    },
+    {
+      "id": "s6",
+      "index": 6,
+      "title": "الحاويات والسحابة وDevOps",
+      "titleEn": "Containers, Cloud & DevOps",
+      "summary": "الكود مش بيتسلّم على جهازك: Docker، Kubernetes، Azure، وCI/CD يوصله للمستخدم بأمان.",
+      "outcome": "تنشر نظامك الموزع على Azure من pipeline آلي، ببنية مكتوبة ككود وrollback مضمون.",
+      "level": "متقدم",
+      "weeks": "4 أسابيع",
+      "modules": [
+        {
+          "id": "s6-m1",
+          "title": "Docker والحوسبة المعزولة",
+          "titleEn": "Docker & Containerization",
+          "summary": "من Dockerfile لمشروع .NET إلى تشغيل النظام كله محليًا بأمر واحد.",
+          "lessons": [
+            {
+              "id": "s6-m1-l1",
+              "title": "Dockerfile لمشروع .NET: multi-stage وlayer caching",
+              "titleEn": "Dockerfile for .NET: Multi-stage Builds and Layer Caching",
+              "summary": "صورة صغيرة وسريعة البناء، وترتيب الطبقات عشان الكاش يشتغل.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب Dockerfile multi-stage لـAPI",
+                "ترتب الطبقات لتقليل زمن البناء",
+                "تشغّل الحاوية وتربطها بالشبكة المحلية"
+              ],
+              "resources": [
+                {
+                  "label": "Docker with .NET",
+                  "url": "https://learn.microsoft.com/dotnet/core/docker/"
+                },
+                {
+                  "label": "Docker docs",
+                  "url": "https://docs.docker.com/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m1-l2",
+              "title": "Docker Compose: نظامك كامل محليًا",
+              "titleEn": "Docker Compose: Your Whole System Locally",
+              "summary": "تشغيل API + قاعدة بيانات + Redis + RabbitMQ بأمر واحد، مع volumes وhealthchecks.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تبني compose file لكل تبعياتك",
+                "تستخدم healthchecks وdepends_on بشكل صحيح",
+                "تدير بيانات التطوير بـvolumes"
+              ],
+              "resources": [
+                {
+                  "label": "Compose",
+                  "url": "https://docs.docker.com/compose/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m1-l3",
+              "title": "تصغير الصورة وتأمينها",
+              "titleEn": "Slimming and Securing the Image",
+              "summary": "distroless/alpine/chiseled، مستخدم غير root، وفحص الثغرات في الصور.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تقلل حجم الصورة لأقل من 100MB",
+                "تشغّل الحاوية بمستخدم غير root",
+                "تفحص الصورة وتعالج الثغرات الحرجة"
+              ],
+              "resources": [
+                {
+                  "label": "Container deployment guidance",
+                  "url": "https://learn.microsoft.com/dotnet/core/deploying/"
+                },
+                {
+                  "label": "Trivy",
+                  "url": "https://trivy.dev/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m1-l4",
+              "title": "Kubernetes الأساسي: Pods وDeployments وServices وIngress",
+              "titleEn": "Kubernetes Essentials",
+              "summary": "المفردات اللي هتقابلها في أي إعلان شغل، وخريطة كيف يصل الطلب للحاوية.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تنشر تطبيقك على cluster محلي (kind/minikube)",
+                "تكتب manifests لـDeployment وService وIngress",
+                "تشرح مسار الطلب من المتصفح للحاوية"
+              ],
+              "resources": [
+                {
+                  "label": "Kubernetes concepts",
+                  "url": "https://kubernetes.io/docs/concepts/"
+                },
+                {
+                  "label": "Kubernetes with .NET",
+                  "url": "https://learn.microsoft.com/azure/aks/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m1-l5",
+              "title": "الإعدادات والأسرار والتوسع في Kubernetes",
+              "titleEn": "Config, Secrets and Autoscaling in Kubernetes",
+              "summary": "ConfigMaps، Secrets، liveness/readiness probes، وHPA.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تفصل الإعداد عن الصورة",
+                "تضبط probes تمنع توجيه الطلب لنسخة مش جاهزة",
+                "تفعّل autoscaling مبني على CPU/طلبات"
+              ],
+              "resources": [
+                {
+                  "label": "K8s configuration",
+                  "url": "https://kubernetes.io/docs/concepts/configuration/"
+                },
+                {
+                  "label": "Autoscaling",
+                  "url": "https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 150
+        },
+        {
+          "id": "s6-m2",
+          "title": "Azure: السحابة اللي بيطلبها سوق .NET",
+          "titleEn": "Azure: The Cloud the .NET Market Asks For",
+          "summary": "اختيار الخدمة الصح، الأسرار، البيانات، والتكلفة.",
+          "lessons": [
+            {
+              "id": "s6-m2-l1",
+              "title": "App Service مقابل Container Apps مقابل AKS",
+              "titleEn": "App Service vs Container Apps vs AKS",
+              "summary": "متى تستخدم كل واحد، وتكلفة التشغيل والتعقيد.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تختار خدمة الاستضافة المناسبة لمشروعك",
+                "تنشر API على Container Apps",
+                "تقارن التكلفة والتعقيد بين الخيارات"
+              ],
+              "resources": [
+                {
+                  "label": "Azure Container Apps",
+                  "url": "https://learn.microsoft.com/azure/container-apps/"
+                },
+                {
+                  "label": "Azure App Service",
+                  "url": "https://learn.microsoft.com/azure/app-service/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m2-l2",
+              "title": "Azure Functions والحوسبة بلا خوادم",
+              "titleEn": "Azure Functions and Serverless",
+              "summary": "Triggers، Bindings، Durable Functions، ومتى Serverless يوفر فعلًا.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تبني Function تعالج رسالة من Queue",
+                "تستخدم Durable Functions لتدفق عمل",
+                "تحسب تكلفة Serverless مقابل خدمة دائمة"
+              ],
+              "resources": [
+                {
+                  "label": "Azure Functions",
+                  "url": "https://learn.microsoft.com/azure/azure-functions/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m2-l3",
+              "title": "Key Vault وManaged Identity",
+              "titleEn": "Key Vault and Managed Identity",
+              "summary": "منع connection strings من الكود نهائيًا بهوية مُدارة.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تخزن الأسرار في Key Vault",
+                "تستخدم Managed Identity للوصول بدون كلمة سر",
+                "تربط ذلك بإعدادات التطبيق عبر Configuration"
+              ],
+              "resources": [
+                {
+                  "label": "Azure Key Vault",
+                  "url": "https://learn.microsoft.com/azure/key-vault/"
+                },
+                {
+                  "label": "Managed identities",
+                  "url": "https://learn.microsoft.com/azure/entra/identity/managed-identities-azure-resources/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m2-l4",
+              "title": "بيانات Azure: SQL Database وPostgreSQL Flexible Server وStorage",
+              "titleEn": "Azure Data: SQL Database, PostgreSQL Flexible Server, Storage",
+              "summary": "اختيار خدمة البيانات، المستويات (tiers)، النسخ الاحتياطي، وربطها بـEF Core.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تنشر قاعدة بيانات مُدارة وتربط تطبيقك بها",
+                "تضبط النسخ الاحتياطي وgeo-replication",
+                "تستخدم Blob Storage للملفات"
+              ],
+              "resources": [
+                {
+                  "label": "Azure SQL",
+                  "url": "https://learn.microsoft.com/azure/azure-sql/"
+                },
+                {
+                  "label": "Azure Storage",
+                  "url": "https://learn.microsoft.com/azure/storage/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m2-l5",
+              "title": "التكلفة: تحسب الفاتورة قبل ما تنشر",
+              "titleEn": "Cost: Estimate the Bill Before You Deploy",
+              "summary": "حاسبة التسعير، الطبقات المجانية، وتنبيهات الميزانية.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تقدّر تكلفة تشغيل مشروعك شهريًا",
+                "تستخدم Free tier وStudent credits بذكاء",
+                "تضبط تنبيهات ميزانية تمنع المفاجآت"
+              ],
+              "resources": [
+                {
+                  "label": "Azure pricing calculator",
+                  "url": "https://azure.microsoft.com/pricing/calculator/"
+                },
+                {
+                  "label": "Cost management",
+                  "url": "https://learn.microsoft.com/azure/cost-management-billing/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 145
+        },
+        {
+          "id": "s6-m3",
+          "title": "CI/CD والبنية ككود",
+          "titleEn": "CI/CD & Infrastructure as Code",
+          "summary": "من push إلى production بدون تدخل يدوي، وبجودة مفروضة آليًا.",
+          "lessons": [
+            {
+              "id": "s6-m3-l1",
+              "title": "GitHub Actions لمشروع .NET",
+              "titleEn": "GitHub Actions for .NET",
+              "summary": "build، test، publish artifacts، caching لـNuGet، وmatrix builds.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تبني workflow يشغّل الاختبارات على كل PR",
+                "تنشر Docker image لـregistry",
+                "تسرّع الـpipeline بـcaching"
+              ],
+              "resources": [
+                {
+                  "label": "GitHub Actions",
+                  "url": "https://docs.github.com/en/actions/"
+                },
+                {
+                  "label": "Build .NET apps",
+                  "url": "https://docs.github.com/en/actions/language-and-framework-guides/dotnet"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m3-l2",
+              "title": "الجودة المفروضة آليًا",
+              "titleEn": "Quality Gates in the Pipeline",
+              "summary": "coverage thresholds، dotnet format، analyzers، فحص الثغرات، وSBOM.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تضيف gates تفشل الـbuild عند انخفاض التغطية",
+                "تشغّل analyzers وتنسيق الكود في CI",
+                "تولّد SBOM وتفحص التبعيات"
+              ],
+              "resources": [
+                {
+                  "label": "SonarQube with .NET",
+                  "url": "https://docs.sonarsource.com/sonarqube/latest/"
+                },
+                {
+                  "label": "dotnet format",
+                  "url": "https://learn.microsoft.com/dotnet/core/additional-tools/sdk/format"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m3-l3",
+              "title": "النشر المستمر: Blue-Green وCanary",
+              "titleEn": "Continuous Deployment: Blue-Green and Canary",
+              "summary": "نشر بدون توقف، rollback سريع، وترحيل قاعدة البيانات بأمان.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ deployment slot في App Service/Container Apps",
+                "تدير migrations داخل CD بدون توقف",
+                "تنفّذ rollback في أقل من دقيقة"
+              ],
+              "resources": [
+                {
+                  "label": "Deployment slots",
+                  "url": "https://learn.microsoft.com/azure/app-service/deploy-staging-slots"
+                },
+                {
+                  "label": "Canary deployment",
+                  "url": "https://learn.microsoft.com/azure/architecture/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m3-l4",
+              "title": "Bicep وTerraform: البنية ككود",
+              "titleEn": "Bicep and Terraform: Infrastructure as Code",
+              "summary": "وصف البنية بملفات قابلة للمراجعة وإعادة الإنشاء.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب Bicep module لإنشاء خدماتك",
+                "تفهم state وأثره في Terraform",
+                "تنشئ بيئة مطابقة للأمر الواحد"
+              ],
+              "resources": [
+                {
+                  "label": "Bicep",
+                  "url": "https://learn.microsoft.com/azure/azure-resource-manager/bicep/"
+                },
+                {
+                  "label": "Terraform on Azure",
+                  "url": "https://learn.microsoft.com/azure/developer/terraform/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s6-m3-l5",
+              "title": "بيئات متعددة وموافقات",
+              "titleEn": "Multiple Environments and Approvals",
+              "summary": "dev/staging/prod، الأسرار لكل بيئة، وموافقات النشر.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تنشئ بيئات منفصلة بإعدادات مختلفة",
+                "تدير الأسرار لكل بيئة بأمان",
+                "تضيف approval gate قبل production"
+              ],
+              "resources": [
+                {
+                  "label": "Environments in GitHub Actions",
+                  "url": "https://docs.github.com/en/actions/deployment/environments"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 155
+        },
+        {
+          "id": "s6-m4",
+          "title": "مشروع المرحلة 6",
+          "titleEn": "Stage 6 Capstone",
+          "summary": "نظام المرحلة 5 منشور على السحابة من pipeline آلي.",
+          "lessons": [
+            {
+              "id": "s6-m4-l1",
+              "title": "Capstone: من الكود إلى Azure بضغطة merge",
+              "titleEn": "Capstone: From Code to Azure on Merge",
+              "summary": "خد نظام الخدمات من المرحلة 5 وانشره على Container Apps بـGitHub Actions وBicep، مع environments وhealth checks وrollback.",
+              "minutes": 360,
+              "kind": "capstone",
+              "objectives": [
+                "تنشر بنية كاملة بـIaC قابلة لإعادة الإنشاء",
+                "تبني pipeline يفشل عند انخفاض الجودة",
+                "تنفّذ rollback موثّقًا ومجرَّبًا"
+              ],
+              "resources": [
+                {
+                  "label": "Azure Container Apps",
+                  "url": "https://learn.microsoft.com/azure/container-apps/"
+                },
+                {
+                  "label": "GitHub Actions",
+                  "url": "https://docs.github.com/en/actions/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 360
+        }
+      ],
+      "lessonCount": 16,
+      "minutes": 810,
+      "hours": 13.5
+    },
+    {
+      "id": "s7",
+      "index": 7,
+      "title": "المراقبة والتشغيل والأمان",
+      "titleEn": "Observability & Production Security",
+      "summary": "بعد النشر: تعرف إيه اللي بيحصل، تصلّح بسرعة، وما تتسرقش.",
+      "outcome": "ترصد نظامًا موزعًا بـOpenTelemetry ولوحات وتنبيهات، وتطبّق قائمة أمان إنتاجية.",
+      "level": "متقدم",
+      "weeks": "3 أسابيع",
+      "modules": [
+        {
+          "id": "s7-m1",
+          "title": "المراقبة: Logs وMetrics وTraces",
+          "titleEn": "Observability: Logs, Metrics, Traces",
+          "summary": "من «مش عارف المشكلة فين» إلى «الخدمة دي هي السبب، في الساعة دي، في الطلب ده».",
+          "lessons": [
+            {
+              "id": "s7-m1-l1",
+              "title": "أعمدة المراقبة الثلاثة",
+              "titleEn": "The Three Pillars of Observability",
+              "summary": "الفرق بين اللوج والمقياس والتتبّع، وإمتى تستخدم كل واحد.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تصنّف كل إشارة عندك على العمود الصحيح",
+                "تحدد ما يجب قياسه لكل خدمة",
+                "تفهم تكلفة كل نوع من الإشارات"
+              ],
+              "resources": [
+                {
+                  "label": "Observability with OpenTelemetry",
+                  "url": "https://learn.microsoft.com/dotnet/core/diagnostics/observability-with-otel"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s7-m1-l2",
+              "title": "OpenTelemetry في .NET",
+              "titleEn": "OpenTelemetry in .NET",
+              "summary": "Instrumentation، Context propagation، Exporters لـOTLP/Jaeger/Prometheus.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تفعّل tracing عبر خدماتك",
+                "تنشر المقاييس لـPrometheus",
+                "تربط اللوجنج بالـtrace context"
+              ],
+              "resources": [
+                {
+                  "label": "OpenTelemetry",
+                  "url": "https://opentelemetry.io/docs/"
+                },
+                {
+                  "label": "OTel .NET",
+                  "url": "https://github.com/open-telemetry/opentelemetry-dotnet"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s7-m1-l3",
+              "title": "لوجنج مركزي قابل للبحث",
+              "titleEn": "Centralized, Searchable Logging",
+              "summary": "Serilog sinks إلى Seq/ELK/Loki، وCorrelationId، وحماية البيانات في اللوج.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تبني لوجنج مركزي تبحث فيه بثانية",
+                "تمنع تسريب بيانات حساسة للوج",
+                "تضبط مستويات اللوجنج ديناميكيًا"
+              ],
+              "resources": [
+                {
+                  "label": "Serilog",
+                  "url": "https://serilog.net/"
+                },
+                {
+                  "label": "Seq",
+                  "url": "https://datalust.co/seq"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s7-m1-l4",
+              "title": "Prometheus وGrafana: لوحات تشرح الحالة",
+              "titleEn": "Prometheus and Grafana: Dashboards That Explain State",
+              "summary": "مقاييس RED/USE، وبناء لوحة تشخيصية مفيدة.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تبني لوحة RED لخدمة",
+                "تكتب PromQL لاستخراج المؤشرات",
+                "تضيف لوحات للـruntime (.NET counters)"
+              ],
+              "resources": [
+                {
+                  "label": "Prometheus",
+                  "url": "https://prometheus.io/docs/"
+                },
+                {
+                  "label": "Grafana",
+                  "url": "https://grafana.com/docs/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s7-m1-l5",
+              "title": "SLOs والتنبيهات بدون ضجيج",
+              "titleEn": "SLOs and Alerting Without Noise",
+              "summary": "أهداف مستوى الخدمة، error budgets، وتنبيهات على الأعراض مش الأسباب.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تعرّف SLO واقعي لخدمة",
+                "تحسب error budget وتستخدمه في القرارات",
+                "تضبط تنبيهات تقلل الإرهاق"
+              ],
+              "resources": [
+                {
+                  "label": "Google SRE book",
+                  "url": "https://sre.google/sre-book/table-of-contents/"
+                },
+                {
+                  "label": "Health checks",
+                  "url": "https://learn.microsoft.com/aspnet/core/health-checks/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 155
+        },
+        {
+          "id": "s7-m2",
+          "title": "التشغيل والأمان الإنتاجي",
+          "titleEn": "Operations & Production Security",
+          "summary": "الحوادث، سلسلة التوريد، التهديدات، والبيانات الشخصية.",
+          "lessons": [
+            {
+              "id": "s7-m2-l1",
+              "title": "الحوادث: Runbooks وPostmortems",
+              "titleEn": "Incidents: Runbooks and Postmortems",
+              "summary": "إزاي تتصرف وقت العطل، وتكتب تقرير بلا لوم يستفيد منه الفريق.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب runbook لسيناريو عطل حقيقي",
+                "تدير incident بأدوار واضحة",
+                "تكتب blameless postmortem بإجراءات متابعة"
+              ],
+              "resources": [
+                {
+                  "label": "Google SRE: postmortems",
+                  "url": "https://sre.google/sre-book/postmortem-culture/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s7-m2-l2",
+              "title": "أمان سلسلة التوريد: SBOM والتوقيع والتبعيات",
+              "titleEn": "Supply Chain Security: SBOM, Signing, Dependencies",
+              "summary": "معرفة مكوناتك، وتحديثها، والتأكد من سلامة ما تنشره.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تولّد SBOM لمشروعك وتفحصه",
+                "تفعّل Dependabot/renovate للتحديثات",
+                "توقّع الصور وتمنع ما لم يُوقّع"
+              ],
+              "resources": [
+                {
+                  "label": "SBOM in .NET",
+                  "url": "https://learn.microsoft.com/dotnet/core/deploying/"
+                },
+                {
+                  "label": "Dependabot",
+                  "url": "https://docs.github.com/en/actions/security-for-your-repository"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s7-m2-l3",
+              "title": "قائمة فحص أمان إنتاجية",
+              "titleEn": "Production Security Hardening Checklist",
+              "summary": "رؤوس أمان، TLS، أقل صلاحيات، تدقيق، وخطة استجابة للاختراق.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ قائمة فحص OWASP قبل النشر",
+                "تضبط صلاحيات أقل للخدمات والهويات",
+                "تضيف Audit log للعمليات الحساسة"
+              ],
+              "resources": [
+                {
+                  "label": "OWASP Cheat Sheets",
+                  "url": "https://cheatsheetseries.owasp.org/"
+                },
+                {
+                  "label": "ASP.NET Core security",
+                  "url": "https://learn.microsoft.com/aspnet/core/security/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s7-m2-l4",
+              "title": "Threat Modeling مبسط (STRIDE)",
+              "titleEn": "Simplified Threat Modeling with STRIDE",
+              "summary": "تفكر كالمهاجم قبل ما يفكر فيك، وتوثّق التهديدات ومواجهتها.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "ترسم مخطط بيانات لنظامك",
+                "تطبق STRIDE وتحدد أهم 5 تهديدات",
+                "تربط كل تهديد بإجراء مضاد"
+              ],
+              "resources": [
+                {
+                  "label": "Threat modeling",
+                  "url": "https://learn.microsoft.com/azure/security/develop/threat-modeling"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s7-m2-l5",
+              "title": "البيانات الشخصية: تشفير وحذف وتدقيق",
+              "titleEn": "Personal Data: Encryption, Deletion, Auditing",
+              "summary": "متطلبات قانونية (GDPR وقانون حماية البيانات المصري 151/2020) وتأثيرها على التصميم.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تشفّر البيانات الحساسة في التخزين والنقل",
+                "تنفّذ حق الحذف/التصدير للمستخدم",
+                "توثّق أساس معالجة البيانات"
+              ],
+              "resources": [
+                {
+                  "label": "GDPR guidance for .NET",
+                  "url": "https://learn.microsoft.com/dotnet/standard/security/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 140
+        },
+        {
+          "id": "s7-m3",
+          "title": "مشروع المرحلة 7",
+          "titleEn": "Stage 7 Capstone",
+          "summary": "رصد كامل لنظام موزع مع خطة استجابة.",
+          "lessons": [
+            {
+              "id": "s7-m3-l1",
+              "title": "Capstone: رصد + تنبيهات + Runbook",
+              "titleEn": "Capstone: Observability + Alerts + Runbook",
+              "summary": "اربط نظام المرحلة 5 بـOpenTelemetry، وابنِ لوحة Grafana، وضبط تنبيهين مهمين، واكتب runbook لعطل حقيقي ونفّذه كتدريب.",
+              "minutes": 240,
+              "kind": "capstone",
+              "objectives": [
+                "تتبع طلبًا واحدًا عبر 3 خدمات",
+                "تبني لوحة تعرض SLO وحالة الخدمات",
+                "تنفّذ تدريب عطل باستخدام الـrunbook"
+              ],
+              "resources": [
+                {
+                  "label": "OpenTelemetry",
+                  "url": "https://opentelemetry.io/docs/"
+                },
+                {
+                  "label": "Grafana",
+                  "url": "https://grafana.com/docs/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 240
+        }
+      ],
+      "lessonCount": 11,
+      "minutes": 535,
+      "hours": 8.9
+    },
+    {
+      "id": "s8",
+      "index": 8,
+      "title": "الواجهة والتسليم الكامل",
+      "titleEn": "Frontend Enough & Full-Stack Delivery",
+      "summary": "إعلانات .NET كتير بتطلب «يفهم الواجهة»: الحد الأدنى المطلوب + مسار Blazor أو React.",
+      "outcome": "تسلّم تطبيقًا كاملًا من قاعدة البيانات للواجهة بمسار مصادقة سليم.",
+      "level": "متوسط",
+      "weeks": "3 أسابيع",
+      "modules": [
+        {
+          "id": "s8-m1",
+          "title": "الحد الأدنى من الواجهة لمطور Backend",
+          "titleEn": "The Minimum Frontend for a Backend Dev",
+          "summary": "HTTP من جهة العميل، JS/TS، CSS عمليًا، وحالات الواجهة.",
+          "lessons": [
+            {
+              "id": "s8-m1-l1",
+              "title": "JS/TS للمطور الخلفي",
+              "titleEn": "JS/TS for the Backend Developer",
+              "summary": "النموذج الذهني: event loop، modules، async، types — بمقارنة مباشرة مع C#.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تقرأ كود واجهة حديث وتفهمه",
+                "تستخدم fetch مع async/await",
+                "تكتب types بسيطة في TypeScript"
+              ],
+              "resources": [
+                {
+                  "label": "MDN JavaScript",
+                  "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript"
+                },
+                {
+                  "label": "TypeScript handbook",
+                  "url": "https://www.typescriptlang.org/docs/handbook/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s8-m1-l2",
+              "title": "استهلاك API من العميل: auth وأخطاء",
+              "titleEn": "Consuming Your API from a Client",
+              "summary": "تخزين التوكن بأمان، تجديد الصلاحية، ومعالجة الأخطاء وحالات التحميل.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تبني client يصادق بـJWT/refresh",
+                "تعالج 401/403/500 بشكل مفهوم للمستخدم",
+                "تتجنب تخزين التوكنات بشكل خطر"
+              ],
+              "resources": [
+                {
+                  "label": "OWASP: token storage",
+                  "url": "https://cheatsheetseries.owasp.org/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s8-m1-l3",
+              "title": "CSS عمليًا + Tailwind",
+              "titleEn": "Practical CSS + Tailwind",
+              "summary": "Flexbox/Grid، المتغيرات، والاستجابة — كفاية لبناء واجهة نظيفة.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تبني تخطيطات بـFlexbox وGrid",
+                "تستخدم design tokens (ألوان/مسافات)",
+                "تجعل الواجهة متجاوبة"
+              ],
+              "resources": [
+                {
+                  "label": "Tailwind CSS",
+                  "url": "https://tailwindcss.com/docs"
+                },
+                {
+                  "label": "MDN CSS",
+                  "url": "https://developer.mozilla.org/en-US/docs/Web/CSS"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s8-m1-l4",
+              "title": "حالات الواجهة: تحميل وخطأ وفراغ",
+              "titleEn": "UI States: Loading, Error, Empty",
+              "summary": "الفروق اللي بتخلي المنتج يبدو احترافيًا بدل مكسور.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ الحالات الأربع لأي قائمة",
+                "تستخدم optimistic UI بحذر",
+                "تجعل الوصول (a11y) مقبولًا"
+              ],
+              "resources": [
+                {
+                  "label": "Web accessibility",
+                  "url": "https://developer.mozilla.org/en-US/docs/Web/Accessibility"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 4,
+          "minutes": 115
+        },
+        {
+          "id": "s8-m2",
+          "title": "مسارك: Blazor أو React",
+          "titleEn": "Pick a Path: Blazor or React",
+          "summary": "Blazor لو عايز تفضل في C#، React لو عايز أوسع سوق للتوظيف.",
+          "lessons": [
+            {
+              "id": "s8-m2-l1",
+              "title": "Blazor: Server مقابل WebAssembly",
+              "titleEn": "Blazor: Server vs WebAssembly",
+              "summary": "فرق التشغيل والأداء وحجم التحميل، ومتى تختار كل نمط.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تبني تطبيق Blazor وتختار نمط الاستضافة",
+                "تفهم أثر SignalR في Blazor Server",
+                "تقيّم حجم WASM وأداء الإقلاع"
+              ],
+              "resources": [
+                {
+                  "label": "Blazor",
+                  "url": "https://learn.microsoft.com/aspnet/core/blazor/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s8-m2-l2",
+              "title": "مكونات Blazor والحالة",
+              "titleEn": "Blazor Components and State",
+              "summary": "Components، Parameters، Cascading values، وإدارة الحالة.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تبني مكونات قابلة لإعادة الاستخدام",
+                "تدير حالة مشتركة بين الصفحات",
+                "تربط المكوّن بـAPI مع حالات التحميل"
+              ],
+              "resources": [
+                {
+                  "label": "Blazor fundamentals",
+                  "url": "https://learn.microsoft.com/aspnet/core/blazor/fundamentals/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s8-m2-l3",
+              "title": "React أساسي لمطور .NET",
+              "titleEn": "React Basics for a .NET Developer",
+              "summary": "Components، props/state، hooks، وإدارة البيانات من API.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تبني واجهة React بـVite",
+                "تستخدم useEffect وuseState بشكل صحيح",
+                "تجلب البيانات وتعالج الحالات"
+              ],
+              "resources": [
+                {
+                  "label": "React docs",
+                  "url": "https://react.dev/learn"
+                },
+                {
+                  "label": "Vite",
+                  "url": "https://vite.dev/guide/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s8-m2-l4",
+              "title": "ربط React بـAPI: OIDC وRTK Query",
+              "titleEn": "Wiring React to Your API: OIDC and Data Fetching",
+              "summary": "مصادقة بـPKCE، وطبقة بيانات منظمة بدل fetch المتناثر.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ تسجيل دخول OIDC من SPA",
+                "تبني طبقة بيانات مع caching",
+                "تحمي المسارات حسب الصلاحيات"
+              ],
+              "resources": [
+                {
+                  "label": "OAuth for browser apps",
+                  "url": "https://oauth.net/2/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s8-m2-l5",
+              "title": "لمحة MAUI وAvalonia (اختياري)",
+              "titleEn": "MAUI and Avalonia at a Glance (Optional)",
+              "summary": "لو السوق عندك يطلب desktop/mobile: الفكرة والتكلفة ومتى تتعلمها.",
+              "minutes": 20,
+              "kind": "lesson",
+              "objectives": [
+                "تفهم ما يقدمه MAUI وAvalonia",
+                "تقرر إن كان يستحق وقتك الآن",
+                "تبني شاشة واحدة كنموذج"
+              ],
+              "resources": [
+                {
+                  "label": ".NET MAUI",
+                  "url": "https://learn.microsoft.com/dotnet/maui/"
+                },
+                {
+                  "label": "Avalonia",
+                  "url": "https://avaloniaui.net/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 150
+        },
+        {
+          "id": "s8-m3",
+          "title": "مشروع المرحلة 8",
+          "titleEn": "Stage 8 Capstone",
+          "summary": "تطبيق Full-stack واحد متكامل.",
+          "lessons": [
+            {
+              "id": "s8-m3-l1",
+              "title": "Capstone: Full-stack بمصادقة ومراقبة",
+              "titleEn": "Capstone: Full-Stack App with Auth and Observability",
+              "summary": "واجهة (Blazor أو React) + API من المرحلة 2 + قاعدة بيانات + JWT/OIDC + Health checks + tracing — منشور على Azure.",
+              "minutes": 360,
+              "kind": "capstone",
+              "objectives": [
+                "تسلّم تطبيقًا يعمل end-to-end",
+                "تنفّذ مصادقة آمنة من العميل للـAPI",
+                "تنشره وتراقبه"
+              ],
+              "resources": [
+                {
+                  "label": "Blazor",
+                  "url": "https://learn.microsoft.com/aspnet/core/blazor/"
+                },
+                {
+                  "label": "React",
+                  "url": "https://react.dev/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 360
+        }
+      ],
+      "lessonCount": 10,
+      "minutes": 625,
+      "hours": 10.4
+    },
+    {
+      "id": "s9",
+      "index": 9,
+      "title": "تصميم الأنظمة ومهارات السينيور",
+      "titleEn": "System Design & Senior Skills",
+      "summary": "الجزء اللي بيفرق في مقابلات Mid/Senior وفي الشغل اليومي: تفكير في أنظمة، خوارزميات كافية، ومهارات فريق.",
+      "outcome": "تحل مسألة تصميم نظام في 30 دقيقة بشكل منظم، وتجتاز جولة الخوارزميات، وتكتب قرارًا تقنيًا مقنعًا.",
+      "level": "متقدم",
+      "weeks": "4 أسابيع",
+      "modules": [
+        {
+          "id": "s9-m1",
+          "title": "تصميم الأنظمة",
+          "titleEn": "System Design",
+          "summary": "منفردًا: مفاهيم + 3 مسائل كلاسيكية + بيانات.",
+          "lessons": [
+            {
+              "id": "s9-m1-l1",
+              "title": "المفردات: التوسع، LB، الكاش، الطوابير، CAP",
+              "titleEn": "The Vocabulary: Scaling, LB, Caching, Queues, CAP",
+              "summary": "الأدوات اللي بتبني بيها أي تصميم، وتكاليف كل واحدة.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تشرح vertical/horizontal scaling",
+                "تختار استراتيجية كاش وطابور لمشكلة",
+                "تطبق CAP على قرار تخزين"
+              ],
+              "resources": [
+                {
+                  "label": "System Design Primer",
+                  "url": "https://github.com/donnemartin/system-design-primer"
+                },
+                {
+                  "label": "Azure architecture",
+                  "url": "https://learn.microsoft.com/azure/architecture/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m1-l2",
+              "title": "صمّم: مُقصّر روابط (URL shortener)",
+              "titleEn": "Design a URL Shortener",
+              "summary": "أشهر مسألة تصميم: توليد المعرفات، الكاش، والقراءة الثقيلة.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تحسب الأحجام ومعدلات الطلب",
+                "تصمم مخطط بيانات وفهارس",
+                "تضيف كاش وتوسع للقراءة"
+              ],
+              "resources": [
+                {
+                  "label": "System Design Primer",
+                  "url": "https://github.com/donnemartin/system-design-primer"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m1-l3",
+              "title": "صمّم: خدمة إشعارات",
+              "titleEn": "Design a Notification Service",
+              "summary": "طوابير، قوالب، إعادة محاولة، وتفضيلات المستخدم.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تصمم تدفق رسالة من الحدث للتسليم",
+                "تعالج الفشل وإعادة المحاولة وidempotency",
+                "تختار بين push/email/SMS providers"
+              ],
+              "resources": [
+                {
+                  "label": "Queue-Based Load Leveling",
+                  "url": "https://learn.microsoft.com/azure/architecture/patterns/queue-based-load-leveling"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m1-l4",
+              "title": "صمّم: Feed/خط زمني",
+              "titleEn": "Design a Feed / Timeline",
+              "summary": "Fan-out on write مقابل on read، والتخزين الهجين.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تقارن استراتيجيتي fan-out بتكاليفهما",
+                "تصمم تخزين وترقيم صفحات للـfeed",
+                "تتعامل مع المستخدمين ذوي المتابعين الضخمين"
+              ],
+              "resources": [
+                {
+                  "label": "Azure: CQRS",
+                  "url": "https://learn.microsoft.com/azure/architecture/patterns/cqrs"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m1-l5",
+              "title": "التقسيم والنسخ والاتساق",
+              "titleEn": "Sharding, Replication and Consistency",
+              "summary": "توزيع البيانات بدون فقدان القدرة على الاستعلام، وتأثير النسخ على القراءة.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تختار shard key وتبرره",
+                "تشرح replication lag وأثره",
+                "تصمم إعادة توازن بدون توقف"
+              ],
+              "resources": [
+                {
+                  "label": "Sharding pattern",
+                  "url": "https://learn.microsoft.com/azure/architecture/patterns/sharding"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 160
+        },
+        {
+          "id": "s9-m2",
+          "title": "الخوارزميات وهياكل البيانات للمقابلات",
+          "titleEn": "Algorithms & Data Structures for Interviews",
+          "summary": "مش عشان تبقى عالم — عشان تعدي الجولة.",
+          "lessons": [
+            {
+              "id": "s9-m2-l1",
+              "title": "التعقيد والمصفوفات والسلاسل والقواميس",
+              "titleEn": "Complexity, Arrays, Strings and Dictionaries",
+              "summary": "Big-O عمليًا، وأدوات C#: Span، Dictionary، Sorting.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تحسب تعقيد كود موجود",
+                "تستخدم Dictionary لتقليل التعقيد",
+                "تكتب حلًا بـSpan لتقليل التخصيص"
+              ],
+              "resources": [
+                {
+                  "label": "C# collections",
+                  "url": "https://learn.microsoft.com/dotnet/standard/collections/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m2-l2",
+              "title": "القوائم والمكدسات والطوابير والأشجار",
+              "titleEn": "Lists, Stacks, Queues and Trees",
+              "summary": "البنى الأساسية وتنفيذها بـC# وأشهر مسائلها.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تنفّذ Stack/Queue يدويًا",
+                "تجتاز شجرة (BFS/DFS) وتطبع النتائج",
+                "تحل 5 مسائل كلاسيكية"
+              ],
+              "resources": [
+                {
+                  "label": "Data structures in .NET",
+                  "url": "https://learn.microsoft.com/dotnet/standard/collections/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m2-l3",
+              "title": "الرسوم (Graphs) والمسارات",
+              "titleEn": "Graphs and Paths",
+              "summary": "تمثيل الرسم، البحث، وأقصر مسار — بالقدر المطلوب في مقابلات الويب.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تمثّل رسمًا بمصفوفة/قوائم تجاور",
+                "تنفّذ BFS وDFS على رسم",
+                "تحل مسألة مسار/مكوّنات متصلة"
+              ],
+              "resources": [
+                {
+                  "label": "Graph algorithms overview",
+                  "url": "https://en.wikipedia.org/wiki/Graph_traversal"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m2-l4",
+              "title": "الأنماط الشائعة: two pointers وsliding window وprefix sums",
+              "titleEn": "Common Patterns: Two Pointers, Sliding Window, Prefix Sums",
+              "summary": "التعرف على النمط يوفر عليك نصف الوقت في المقابلة.",
+              "minutes": 35,
+              "kind": "lesson",
+              "objectives": [
+                "تتعرف على النمط من صياغة المسألة",
+                "تنفّذ 3 أنماط بـC#",
+                "تحسّن حلًا ساذجًا إلى خطي"
+              ],
+              "resources": [
+                {
+                  "label": "Patterns for coding questions",
+                  "url": "https://github.com/donnemartin/system-design-primer"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m2-l5",
+              "title": "تمرين موقوت: 20 مسألة",
+              "titleEn": "Timed Drill: 20 Problems",
+              "summary": "تدريب مقاس بالوقت مع تسجيل الملاحظات والأخطاء المتكررة.",
+              "minutes": 40,
+              "kind": "lab",
+              "objectives": [
+                "تحل 20 مسألة ضمن قيود زمنية واقعية",
+                "تسجل أخطاءك المتكررة وتعالجها",
+                "تشرح حلك بصوت عالٍ كما في المقابلة"
+              ],
+              "resources": [
+                {
+                  "label": "LeetCode",
+                  "url": "https://leetcode.com/"
+                },
+                {
+                  "label": "HackerRank",
+                  "url": "https://www.hackerrank.com/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 170
+        },
+        {
+          "id": "s9-m3",
+          "title": "مهارات الفريق والتأثير",
+          "titleEn": "Team Skills & Influence",
+          "summary": "اللي بيخليك مطلوب في الفريق مش بس في الكود.",
+          "lessons": [
+            {
+              "id": "s9-m3-l1",
+              "title": "Code Review اللي يحسّن الكود والعلاقة",
+              "titleEn": "Code Review That Improves Code and Relationships",
+              "summary": "تعليقات على التصميم مش على الأذواق، وأسئلة بدل أحكام.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب تعليقات مراجعة مفيدة ومحترمة",
+                "تراجع PR كبير بطريقة منظمة",
+                "تتقبل المراجعة على كودك بدون دفاعية"
+              ],
+              "resources": [
+                {
+                  "label": "Google engineering practices: code review",
+                  "url": "https://google.github.io/eng-practices/review/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m3-l2",
+              "title": "Agile وScrum وKanban والتقدير",
+              "titleEn": "Agile, Scrum, Kanban and Estimation",
+              "summary": "الطقوس، التقدير بالنقاط، وإدارة العمل الجاري (WIP).",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تشارك في Sprint بشكل فعّال",
+                "تقدّر المهام بطريقة قابلة للدفاع",
+                "تحدد عنق الزجاجة في تدفق الفريق"
+              ],
+              "resources": [
+                {
+                  "label": "Atlassian Agile Coach",
+                  "url": "https://www.atlassian.com/agile"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m3-l3",
+              "title": "Git Workflows: trunk-based وPRs وconventional commits",
+              "titleEn": "Git Workflows: Trunk-based, PRs, Conventional Commits",
+              "summary": "فرق عمل حقيقية بتشتغل كده: تفريعات قصيرة، مراجعات، وإصدارات آلية.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تعمل بـfeature flags وtrunk-based development",
+                "تكتب commits مفيدة وقابلة للبحث",
+                "تحل تعارضات rebase بثقة"
+              ],
+              "resources": [
+                {
+                  "label": "Trunk-based development",
+                  "url": "https://trunkbaseddevelopment.com/"
+                },
+                {
+                  "label": "Conventional Commits",
+                  "url": "https://www.conventionalcommits.org/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m3-l4",
+              "title": "الكتابة التقنية: RFC وDesign Doc وADR",
+              "titleEn": "Technical Writing: RFC, Design Doc, ADR",
+              "summary": "إزاي تقنع فريقًا بقرار في صفحة واحدة.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب design doc من صفحة إلى صفحتين",
+                "تعرض البدائل والتكاليف بوضوح",
+                "تحوّل القرار إلى ADR مؤرشف"
+              ],
+              "resources": [
+                {
+                  "label": "Design docs at Google",
+                  "url": "https://www.industrialempathy.com/posts/design-docs-at-google/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s9-m3-l5",
+              "title": "التأثير بدون سلطة والـMentoring",
+              "titleEn": "Influence Without Authority and Mentoring",
+              "summary": "مهارات السينيور: ترفع من حولك وتقود التغيير بهدوء.",
+              "minutes": 20,
+              "kind": "lesson",
+              "objectives": [
+                "ترشد مطورًا أقل خبرة بخطة واضحة",
+                "تقود مبادرة تحسين بدون سلطة رسمية",
+                "تعرض عملك بشكل مفهوم للإدارة"
+              ],
+              "resources": [
+                {
+                  "label": "Microsoft Learn: soft skills",
+                  "url": "https://learn.microsoft.com/training/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 120
+        },
+        {
+          "id": "s9-m4",
+          "title": "مشروع المرحلة 9",
+          "titleEn": "Stage 9 Capstone",
+          "summary": "حزمة جاهزة لجولة السينيور في المقابلات.",
+          "lessons": [
+            {
+              "id": "s9-m4-l1",
+              "title": "Capstone: 3 تصميمات + 20 مسألة + مقابلة تجريبية",
+              "titleEn": "Capstone: 3 Design Docs + 20 Problems + a Mock Interview",
+              "summary": "اكتب تصميم URL shortener وNotification service وFeed كـdesign docs، حل 20 مسألة بـC# موقوتة، وسجّل مقابلة تجريبية وقيّم نفسك.",
+              "minutes": 300,
+              "kind": "capstone",
+              "objectives": [
+                "تنتج 3 تصميمات مكتوبة بمخططات وأرقام",
+                "تحل 20 مسألة ضمن وقت مقابلة واقعي",
+                "تقيّم أداءك في مقابلة تجريبية مسجّلة"
+              ],
+              "resources": [
+                {
+                  "label": "System Design Primer",
+                  "url": "https://github.com/donnemartin/system-design-primer"
+                },
+                {
+                  "label": "LeetCode",
+                  "url": "https://leetcode.com/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 300
+        }
+      ],
+      "lessonCount": 16,
+      "minutes": 750,
+      "hours": 12.5
+    },
+    {
+      "id": "s10",
+      "index": 10,
+      "title": "البورتفوليو والبحث عن وظيفة",
+      "titleEn": "Portfolio & Job Hunt",
+      "summary": "تحويل كل اللي فات إلى عرض عمل: مشاريع تُظهر المهارة، سيرة ذاتية تعبر الفلاتر، ومقابلات تنجح فيها.",
+      "outcome": "تقدّم على وظائف .NET بحزمة كاملة: 3 مشاريع منشورة، CV وLinkedIn محسّنين، واستعداد لمقابلات تقنية وسلوكية.",
+      "level": "عملي",
+      "weeks": "3-4 أسابيع",
+      "modules": [
+        {
+          "id": "s10-m1",
+          "title": "البورتفوليو اللي يتشاف",
+          "titleEn": "A Portfolio That Gets Seen",
+          "summary": "3 مشاريع تُثبت المهارة، وتوثيق يخليها تُفهم في دقيقتين.",
+          "lessons": [
+            {
+              "id": "s10-m1-l1",
+              "title": "3 مشاريع توظيف: إيه اللي يبهر وإيه اللي يُتجاهل",
+              "titleEn": "Three Hiring Projects: What Impresses and What Gets Ignored",
+              "summary": "اختيار المشاريع التي تُظهر المعمارية والاختبار والنشر، لا CRUD التعليمية.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تختار 3 مشاريع تغطي مهارات المراحل السابقة",
+                "تحدد عمقًا كافيًا لكل مشروع",
+                "تتجنب المشاريع المكررة المنتشرة"
+              ],
+              "resources": [
+                {
+                  "label": "eShop sample",
+                  "url": "https://github.com/dotnet-architecture/eShop"
+                },
+                {
+                  "label": "Awesome .NET",
+                  "url": "https://github.com/quozd/awesome-dotnet"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m1-l2",
+              "title": "README احترافي وتوثيق",
+              "titleEn": "A Professional README and Docs",
+              "summary": "أول 30 ثانية بتقرر: لقطات، معمارية، تشغيل بأمر واحد، وقرارات.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تكتب README يشرح المشروع في دقيقتين",
+                "تضيف مخطط معمارية ولقطات",
+                "تجعل التشغيل المحلي بأمر واحد"
+              ],
+              "resources": [
+                {
+                  "label": "Make a README",
+                  "url": "https://www.makeareadme.com/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m1-l3",
+              "title": "تنظيف GitHub وملفك الشخصي",
+              "titleEn": "Cleaning Up GitHub and Your Profile",
+              "summary": "تثبيت أفضل المستودعات، إزالة الفوضى، وإظهار النشاط.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تنظّم ملفك الشخصي وتثبت مشاريعك",
+                "تكتب commits وissues احترافية",
+                "تظهر مساهمات منتظمة لا متقطعة"
+              ],
+              "resources": [
+                {
+                  "label": "GitHub profile README",
+                  "url": "https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-github-profile"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m1-l4",
+              "title": "انشر مشاريعك live",
+              "titleEn": "Ship Your Projects Live",
+              "summary": "رابط شغال أقوى من أي كلام: Azure free tier، Container Apps، دومين.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تنشر مشروعًا على نطاق عام",
+                "تربط دومينًا وشهادة TLS",
+                "تضيف صفحة حالة/مراقبة للمشروع"
+              ],
+              "resources": [
+                {
+                  "label": "Azure free account",
+                  "url": "https://azure.microsoft.com/free/"
+                },
+                {
+                  "label": "Container Apps",
+                  "url": "https://learn.microsoft.com/azure/container-apps/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m1-l5",
+              "title": "المساهمة في Open Source: من أول issue لأول PR",
+              "titleEn": "Open Source: From First Issue to First PR",
+              "summary": "مسار عملي لدخول مشروع مفتوح المصدر بدون خوف.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تختار مشروعًا مناسبًا للمساهمة",
+                "تنفّذ أول PR مقبول",
+                "تتعامل مع مراجعة المشرفين"
+              ],
+              "resources": [
+                {
+                  "label": "Good first issues",
+                  "url": "https://github.com/dotnet/aspnetcore/labels/good%20first%20issue"
+                },
+                {
+                  "label": "First contributions",
+                  "url": "https://github.com/firstcontributions/first-contributions"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 5,
+          "minutes": 145
+        },
+        {
+          "id": "s10-m2",
+          "title": "السيرة الذاتية والحضور المهني",
+          "titleEn": "CV & Professional Presence",
+          "summary": "CV يعبر الـATS، LinkedIn يجذب الـrecruiters، وشبكة توصلك للفرص المخفية.",
+          "lessons": [
+            {
+              "id": "s10-m2-l1",
+              "title": "CV لمطور .NET: صفحة واحدة وإنجازات رقمية",
+              "titleEn": ".NET Developer CV: One Page, Quantified Achievements",
+              "summary": "صياغة الإنجاز، ترتيب المهارات، وما يجب حذفه نهائيًا.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تحوّل مهامك لإنجازات بأرقام",
+                "تبني CV يعبر فلاتر ATS",
+                "ترتب المهارات بما يناسب إعلان الوظيفة"
+              ],
+              "resources": [
+                {
+                  "label": "JSON Resume",
+                  "url": "https://jsonresume.org/"
+                },
+                {
+                  "label": "Reactive Resume",
+                  "url": "https://rxresu.me/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m2-l2",
+              "title": "LinkedIn ورسائل التواصل",
+              "titleEn": "LinkedIn and Outreach Messages",
+              "summary": "عنوان، About، خبرة، وكلمة مفتاحية — ورسائل قصيرة ترد.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تحسّن ملفك لظهور أفضل في البحث",
+                "تكتب رسالة تواصل قصيرة فعالة",
+                "تبني خطة متابعة بدون إزعاج"
+              ],
+              "resources": [
+                {
+                  "label": "LinkedIn",
+                  "url": "https://www.linkedin.com/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m2-l3",
+              "title": "الشهادات: AZ-204 وغيرها وإمتى تفيد",
+              "titleEn": "Certifications: AZ-204 and When They Help",
+              "summary": "قيمة الشهادة الحقيقية، وترتيب الأولويات حسب هدفك.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تقرر إن كانت الشهادة تستحق وقتك الآن",
+                "تخطط لمسار AZ-204 لو اخترته",
+                "تربط الشهادة بمشروع عملي"
+              ],
+              "resources": [
+                {
+                  "label": "Azure Developer Associate",
+                  "url": "https://learn.microsoft.com/credentials/certifications/azure-developer/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m2-l4",
+              "title": "المجتمعات والشبكات (مصر والمنطقة وRemote)",
+              "titleEn": "Communities and Networking (Egypt, MENA, Remote)",
+              "summary": "Meetups، Discord، مجموعات LinkedIn، والمؤتمرات — وأماكن إعلانات .NET.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تنضم لثلاثة مجتمعات نشطة",
+                "تحضر فعالية أو تتحدث في واحدة",
+                "تبني قائمة مصادر إعلانات .NET موثوقة"
+              ],
+              "resources": [
+                {
+                  "label": "Meetup",
+                  "url": "https://www.meetup.com/"
+                },
+                {
+                  "label": "r/dotnet",
+                  "url": "https://www.reddit.com/r/dotnet/"
+                },
+                {
+                  "label": "Wuzzuf",
+                  "url": "https://wuzzuf.net/"
+                },
+                {
+                  "label": "LinkedIn Jobs",
+                  "url": "https://www.linkedin.com/jobs/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 4,
+          "minutes": 110
+        },
+        {
+          "id": "s10-m3",
+          "title": "المقابلات والعروض",
+          "titleEn": "Interviews & Offers",
+          "summary": "من أول مكالمة للتفاوض على الراتب وأول 90 يوم.",
+          "lessons": [
+            {
+              "id": "s10-m3-l1",
+              "title": "مراحل مقابلة .NET النموذجية",
+              "titleEn": "The Typical .NET Interview Loop",
+              "summary": "فرز، تقني، تصميم نظام، سلوكي، ومهمة منزلية — وإزاي تستعد لكل واحدة.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تعرف ما يُتوقع في كل جولة",
+                "تستعد لكل نوع بأسلوبه",
+                "تدير طاقتك عبر يوم مقابلات طويل"
+              ],
+              "resources": [
+                {
+                  "label": "Interviewing guidance",
+                  "url": "https://www.interviewcake.com/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m3-l2",
+              "title": "بنك أسئلة .NET التقنية (60 سؤالًا)",
+              "titleEn": ".NET Technical Question Bank (60 Questions)",
+              "summary": "async/await، GC، DI، EF Core، ASP.NET pipeline، الـmiddleware، الاختبارات، والأمان — بإجابات نموذجية مختصرة.",
+              "minutes": 60,
+              "kind": "quiz",
+              "objectives": [
+                "تجيب عن 60 سؤالًا شائعًا بثقة",
+                "تربط كل إجابة بمثال من مشاريعك",
+                "تتعامل مع «لا أعرف» بشكل احترافي"
+              ],
+              "resources": [
+                {
+                  "label": "Interview questions on Learn",
+                  "url": "https://learn.microsoft.com/training/"
+                },
+                {
+                  "label": "r/dotnet discussions",
+                  "url": "https://www.reddit.com/r/dotnet/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m3-l3",
+              "title": "Live coding وTake-home",
+              "titleEn": "Live Coding and Take-Home Tasks",
+              "summary": "التفكير بصوت عالٍ، إدارة الوقت، وتقديم مهمة منزلية بمستوى إنتاجي.",
+              "minutes": 40,
+              "kind": "lesson",
+              "objectives": [
+                "تحل مسألة كود حي مع شرح منطقي",
+                "تسلّم take-home بجودة إنتاجية",
+                "تدير الوقت في جولة 60 دقيقة"
+              ],
+              "resources": [
+                {
+                  "label": "Pramp / mock interviews",
+                  "url": "https://www.pramp.com/"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m3-l4",
+              "title": "الجولة السلوكية بطريقة STAR",
+              "titleEn": "Behavioral Round with STAR",
+              "summary": "8 قصص تغطي الصراع والفشل والقيادة والتحسين.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تحضّر 8 قصص بصيغة STAR",
+                "تربط كل قصة بكفاءة يطلبها الإعلان",
+                "تجيب عن «أعظم فشل» بصدق ومكسب"
+              ],
+              "resources": [
+                {
+                  "label": "STAR method",
+                  "url": "https://www.themuse.com/advice/star-interview-method"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m3-l5",
+              "title": "العروض والتفاوض والرواتب",
+              "titleEn": "Offers, Negotiation and Salaries",
+              "summary": "قراءة العرض، التفاوض بمهنية، ومقارنة Remote بالخليج وأوروبا بالسوق المحلي.",
+              "minutes": 30,
+              "kind": "lesson",
+              "objectives": [
+                "تقيّم عرضًا كاملًا (الراتب + المزايا + النمو)",
+                "تفاوض على زيادة بدون إحراج",
+                "تقارن خيارات Remote والضرائب والتعاقد"
+              ],
+              "resources": [
+                {
+                  "label": "Levels.fyi",
+                  "url": "https://www.levels.fyi/"
+                },
+                {
+                  "label": "Glassdoor salaries",
+                  "url": "https://www.glassdoor.com/Salaries/index.htm"
+                }
+              ],
+              "hasContent": true
+            },
+            {
+              "id": "s10-m3-l6",
+              "title": "أول 90 يوم في الوظيفة",
+              "titleEn": "Your First 90 Days on the Job",
+              "summary": "خطة 30/60/90: تعلّم النظام، ابنِ الثقة، ثم أثّر.",
+              "minutes": 25,
+              "kind": "lesson",
+              "objectives": [
+                "تبني خطة 30/60/90 لنفسك",
+                "تحدد أول فوز سريع يمكنك تحقيقه",
+                "تبني علاقة مع مدير زملائك من الأسبوع الأول"
+              ],
+              "resources": [
+                {
+                  "label": "The First 90 Days (summary)",
+                  "url": "https://hbr.org/2009/07/transitions-that-shape-careers"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 6,
+          "minutes": 210
+        },
+        {
+          "id": "s10-m4",
+          "title": "مشروع المرحلة 10",
+          "titleEn": "Stage 10 Capstone",
+          "summary": "الحزمة الكاملة الجاهزة للتقديم.",
+          "lessons": [
+            {
+              "id": "s10-m4-l1",
+              "title": "Capstone: Job-Ready Kit",
+              "titleEn": "Capstone: Your Job-Ready Kit",
+              "summary": "CV نهائي + 3 مستودعات منشورة + 20 إجابة مسجلة على أسئلة تقنية وسلوكية + خطة تقديم على 100 وظيفة خلال 4 أسابيع.",
+              "minutes": 180,
+              "kind": "capstone",
+              "objectives": [
+                "تنتج حزمة تقديم كاملة وجاهزة",
+                "تنفّذ 20 مقابلة تجريبية مسجّلة وقيّمها",
+                "تبدأ التقديم فعليًا وتتابع النتائج في جدول"
+              ],
+              "resources": [
+                {
+                  "label": "Wuzzuf",
+                  "url": "https://wuzzuf.net/"
+                },
+                {
+                  "label": "LinkedIn Jobs",
+                  "url": "https://www.linkedin.com/jobs/"
+                },
+                {
+                  "label": "RemoteOK",
+                  "url": "https://remoteok.com/"
+                }
+              ],
+              "hasContent": true
+            }
+          ],
+          "lessonCount": 1,
+          "minutes": 180
+        }
+      ],
+      "lessonCount": 16,
+      "minutes": 645,
+      "hours": 10.8
+    }
+  ]
+}

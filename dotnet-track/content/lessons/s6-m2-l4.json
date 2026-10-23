@@ -1,0 +1,516 @@
+{
+  "id": "s6-m2-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "قاعدة البيانات هي أغلى بند في فاتورة مشروع صغير — وأصعب حاجة تغيّرها بعدين. في الدرس ده: **Azure SQL Database** (DTU مقابل vCore مقابل Serverless وليه DTU بيحبسك) · **PostgreSQL Flexible Server** (Burstable للتطوير، وStop/Start اللي بيوفرلك فلوس فعلًا) · **Blob Storage** للملفات · **Cosmos DB** وإمتى تستاهل · وقرارات النسخ الاحتياطي وHA والـIOPS والشبكة الخاصة. ومع كل اختيار: **رقم تقريبي وتاريخ**، لأن الأسعار بتتغير والحاسبة هي المصدر الوحيد الموثوق."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "DTU",
+          "def": "وحدة مجمّعة (CPU + ذاكرة + I/O) في Azure SQL Database: Basic/Standard/Premium. بسيطة، لكن **غير مؤهلة للـreservations أو Hybrid Benefit أو Savings Plans** — يعني محبوس في السعر الكامل."
+        },
+        {
+          "term": "vCore",
+          "def": "نموذج Azure SQL الحديث: تشتري vCores وتخزينًا منفصلًا (General Purpose / Business Critical / Hyperscale). مؤهل للـreservations والتوفير."
+        },
+        {
+          "term": "Serverless (SQL)",
+          "def": "vCore بفوترة للثانية مع **auto-pause** بعد خمول: توفير حقيقي لأحمال متقطعة — وثمنه زمن استئناف (ثوانٍ) عند أول طلب."
+        },
+        {
+          "term": "Flexible Server (PostgreSQL)",
+          "def": "PostgreSQL مُدار بثلاث طبقات حوسبة: **Burstable** (B-series، الأرخص، للتطوير/حمل خفيف) · **General Purpose** (Ddsv5) · **Memory Optimized** (Edsv5)."
+        },
+        {
+          "term": "Stop/Start",
+          "def": "في Flexible Server: إيقاف الخادم يوقف فوترة الحوسبة (التخزين يستمر) و**يعيد التشغيل تلقائيًا بعد 7 أيام** — مثالي لبيئات التطوير."
+        },
+        {
+          "term": "Zone-redundant HA",
+          "def": "نسخة احتياطية في منطقة توافر أخرى مع failover تلقائي — **بتضاعف تكلفة الحوسبة تقريبًا**. قرارك: هل التطبيق يتحمل دقائق توقف؟"
+        },
+        {
+          "term": "PITR",
+          "def": "نسخ احتياطي بنقطة زمنية (Point-In-Time Restore). ضمن حدود حجم البيانات مجاني؛ ما زاد يُحسب (تقريبيًا ~0.12 دولار/GB شهريًا LRS — تحقق)."
+        },
+        {
+          "term": "IOPS",
+          "def": "عدد عمليات الإدخال/الإخراج في الثانية. في Flexible Server فيه IOPS ضمن التخزين وإمكانية شراء إضافية؛ اختناق IOPS بيظهر كـlatency عالي رغم CPU منخفض."
+        },
+        {
+          "term": "Blob tiers + Lifecycle",
+          "def": "Hot (متكرر الوصول) · Cool · Archive (نادر، استرجاعه بطيء ومكلف). سياسة دورة حياة بتنقل الملفات تلقائيًا حسب العمر."
+        },
+        {
+          "term": "Cosmos DB RU/s",
+          "def": "وحدات الطلب/الثانية: سعة تشتريها (provisioned) أو autoscale. **partition key** هو أهم قرار تصميم — اختيار غلط = hot partition وأداء سيئ."
+        },
+        {
+          "term": "Private endpoint",
+          "def": "ربط الخدمة بشبكتك الافتراضية بعنوان خاص، فتُلغى الإتاحة العامة — أمان أفضل وتكلفة شبكة إضافية."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① خريطة الاختيار: أي خدمة لأي حاجة"
+    },
+    {
+      "type": "table",
+      "caption": "الأرقام **تقديرية بأكتوبر 2026 لمنطقة غرب أوروبا** — استخدم الحاسبة دائمًا قبل الالتزام",
+      "head": [
+        "الخدمة",
+        "نموذج الفوترة",
+        "الحد الأدنى التقريبي",
+        "إمتى تختارها",
+        "إمتى لا"
+      ],
+      "rows": [
+        [
+          "Azure SQL Database (DTU Basic/S0)",
+          "حزمة DTU شهرية",
+          "~5 دولار (Basic 5 DTU) · ~15 دولار (S0)",
+          "تجربة سريعة، قاعدة صغيرة جدًا، أو ترحيل من SQL Server بمقاس مألوف",
+          "إنتاج جاد: **بلا reservations ولا Hybrid Benefit** → سعر كامل للأبد"
+        ],
+        [
+          "Azure SQL Database (vCore General Purpose)",
+          "لكل vCore-hour + تخزين/GB + backup",
+          "vCore واحد ~180 دولار/شهر (تقديري) — قابل للتوفير بالحجز",
+          "إنتاج SQL Server مستقر، تحتاج تحكمًا في الحوسبة/التخزين وخصومات",
+          "مشروع شخصي بحمل خفيف (مكلف مقابل Burstable)"
+        ],
+        [
+          "Azure SQL Database **Serverless**",
+          "لكل ثانية vCore + auto-pause",
+          "منخفض جدًا مع الخمول (الحوسبة تتوقف)",
+          "حمل متقطع/غير متوقع (dev/staging، تطبيق بموجات)",
+          "latency حساس: الاستئناف بعد السكون يستغرق ثوانٍ"
+        ],
+        [
+          "**PostgreSQL Flexible Server (Burstable B1ms)**",
+          "حجم ثابت + تخزين/GB + backup",
+          "**~12–15 دولار/شهر** (1 vCore/2 GiB)",
+          "**الافتراضي لمشروع .NET شخصي/ناشئ** على PostgreSQL — أرخص بداية حقيقية",
+          "حمل إنتاجي مستمر (Burstable فيه حدود CPU credits)"
+        ],
+        [
+          "PostgreSQL Flexible (General Purpose D2ds/D4ds)",
+          "لكل vCore + تخزين + IOPS",
+          "عشرات إلى مئات الدولارات",
+          "إنتاج بحمل مستقر، تحتاج HA وread replicas",
+          "تطوير/تجربة (HA تضاعف التكلفة)"
+        ],
+        [
+          "Blob Storage",
+          "لكل GB حسب الطبقة + عمليات + egress",
+          "قروش لأول GBs؛ أول ~100 GB egress شهريًا مجاني",
+          "رفع ملفات المستخدمين: صور المنتجات، فواتير PDF، نسخ احتياطية، Data Protection keys",
+          "استعلامات علائقية أو معاملات"
+        ],
+        [
+          "Cosmos DB",
+          "RU/s (provisioned أو autoscale) + تخزين",
+          "منخفض مع autoscale/minimal؛ يرتفع بسرعة مع RU",
+          "حجم ضخم + latency منخفض عالميًا + نموذج بيانات وثائقي واضح",
+          "استعلامات علائقية معقدة/joins ومعاملات عبر كيانات (EF Core provider محدود)"
+        ],
+        [
+          "Azure Database for Redis (Managed)",
+          "لكل طبقة/حجم",
+          "عشرات الدولارات",
+          "cache/جلسات/طوابير خفيفة مُدارة",
+          "تطوير محلي (استخدم Redis في Docker/Compose — 6.1.2)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "توصية عملية لمشروع شخصي بميزانية محدودة",
+      "md": "**PostgreSQL Flexible Server بـBurstable B1ms (~12–15 دولار/شهر) + Blob Storage + Container Apps Consumption** = نظام كامل بعشرات الدولارات شهريًا، وأغلبه داخل المنح المجانية في الشهور الأولى. و**أوقف خادم التطوير** في الليل/الويكند (`az postgres flexible-server stop`) — لكن تذكر إنه **بيعيد التشغيل تلقائيًا بعد 7 أيام**، فجدول إيقاف أسبوعي أفضل من الاعتماد على الإيقاف اليدوي."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② Azure SQL Database: القرار اللي بيحبسك (DTU مقابل vCore)"
+    },
+    {
+      "type": "table",
+      "caption": "مقارنة نماذج الشراء في Azure SQL",
+      "head": [
+        "",
+        "DTU (Basic/Standard/Premium)",
+        "vCore Provisioned",
+        "vCore Serverless"
+      ],
+      "rows": [
+        [
+          "وحدة الفوترة",
+          "DTUs مجمّعة",
+          "vCores لكل ساعة",
+          "vCores لكل ثانية (+ auto-pause)"
+        ],
+        [
+          "التخزين",
+          "ضمن الطبقة",
+          "منفصل (لكل GB)",
+          "منفصل (لكل GB)"
+        ],
+        [
+          "**Reserved capacity**",
+          "**✗ غير مؤهل**",
+          "✓ (سنة/3 سنوات — يغطي الحوسبة فقط)",
+          "✗"
+        ],
+        [
+          "**Hybrid Benefit**",
+          "**✗**",
+          "✓ (لو عندك تراخيص SQL Server بـSoftware Assurance)",
+          "✗"
+        ],
+        [
+          "**Savings Plan for Databases** (من مارس 2026)",
+          "**✗**",
+          "✓",
+          "✓ (حتى ~35%)"
+        ],
+        [
+          "الحد الأدنى التقريبي",
+          "~5 دولار/شهر",
+          "مئات الدولارات (2 vCore GP)",
+          "~منخفض مع السكون"
+        ],
+        [
+          "المرونة",
+          "منخفضة (طبقات ثابتة)",
+          "عالية (غيّر vCores/التخزين)",
+          "الأعلى (يتوسع وينزل تلقائيًا)"
+        ],
+        [
+          "الأنسب",
+          "تجربة/قاعدة صغيرة جدًا",
+          "إنتاج مستقر ومعروف الحجم",
+          "أحمال متقطعة + dev/staging"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "التفاصيل اللي بتوقع الناس",
+      "md": "**① الـreservation يغطي الحوسبة فقط**: التخزين والنسخ الاحتياطي والشبكة والترخيص (لو مش Hybrid Benefit) بيفضلوا بسعر PAYG. **② الخادم مقابل القاعدة**: في Azure SQL انت بتدفع لكل **قاعدة بيانات** (أو elastic pool) — عشر قواعد صغيرة = عشر فواتير. الحل للمشروع الصغير: **قاعدة واحدة بمخططات (schemas)** أو **elastic pool** لو الأحمال متبادلة. **③ auto-pause في Serverless**: الاستئناف بيستغرق ثوانٍ، فلو أول طلب من مستخدم حقيقي، ده latency ملحوظ — خليه لـdev/staging. **④ النسخ الاحتياطي**: PITR ضمن حد حجم البيانات مجاني، والزيادة تُحسب؛ احتفظ بمدة احتفاظ قصيرة (7 أيام) لبيئات التطوير."
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "azure/50-data.sh — إنشاء وقواعد تشغيلية",
+      "filename": "azure/50-data.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\nLOC=westeurope; RG=rg-shop-dev; SUB=$(az account show --query id -o tsv)\n\n# ═══════════ المسار أ) PostgreSQL Flexible Server (الافتراضي لمشروع صغير) ═══════════\n# Burstable B1ms: أرخص بداية حقيقية. بدون HA للتطوير.\n# ⚠ إصدار PostgreSQL المدعوم بيتغير: تحقق بـ az postgres flexible-server list-skus\naz postgres flexible-server create \\\n  --resource-group \"$RG\" --name pg-shop-dev --location \"$LOC\" \\\n  --tier Burstable --sku-name Standard_B1ms \\\n  --storage-size 32 --backup-retention 7 \\\n  --version 17 \\\n  --public-access 0.0.0.0/0     # للتطوير فقط — للإنتاج: private endpoint/VNet\n# ⚠ تحقق من إصدار PostgreSQL المدعوم حاليًا:  az postgres flexible-server list-skus -l $LOC\n\n# توفير فعلي: أوقف خادم التطوير (الحوسبة تتوقف، التخزين يستمر)\naz postgres flexible-server stop  --name pg-shop-dev --resource-group \"$RG\"\naz postgres flexible-server start --name pg-shop-dev --resource-group \"$RG\"\n# ⚠ الخادم الموقوف يُعاد تشغيله تلقائيًا بعد 7 أيام → جدول أسبوعي (CI/Logic App/func timer)\n\n# مصادقة Entra ID بدل كلمة السر (الدرس 6.2.3):\naz postgres flexible-server ad-admin create --resource-group \"$RG\" \\\n  --server-name pg-shop-dev --display-name you@example.com --object-id \"$MY_OBJECT_ID\"\n# PgBouncer مدمج: فعّله لتقليل اتصالات EF Core الكثيرة\naz postgres flexible-server parameter set --resource-group \"$RG\" --server-name pg-shop-dev \\\n  --name pgbouncer.enabled --value true\n\n# ═══════════ المسار ب) Azure SQL Database ═══════════\naz sql server create --resource-group \"$RG\" --name sql-shop-dev --location \"$LOC\" \\\n  --admin-user sqladmin --admin-password \"$SQL_ADMIN_PASSWORD\"   # ثم عطّل الوصول بكلمة السر\naz sql server ad-admin create --resource-group \"$RG\" --server-name sql-shop-dev \\\n  --display-name orders-mi --object-id \"$APP_PRINCIPAL_ID\"\n\n# Serverless مع auto-pause (dev/staging):\naz sql db create --resource-group \"$RG\" --server sql-shop-dev --name shop \\\n  --edition GeneralPurpose --compute-model Serverless \\\n  --capacity 1 --min-capacity 0.5 --auto-pause-delay 60\n# auto-pause-delay بالدقائق؛ الاستئناف بعد السكون يستغرق ثوانٍ (لا تستخدمه لحساس latency)\n# vCore provisioned (إنتاج مستقر) — وبعدها اشتري reservation للحوسبة:\naz sql db create --resource-group \"$RG\" --server sql-shop-dev --name shop \\\n  --edition GeneralPurpose --compute-model Provisioned --capacity 2 --storage-size 100\n\n# قاعدة واحدة فقط للتجربة (DTU) — تذكر إنها غير مؤهلة لأي خصم:\naz sql db create --resource-group \"$RG\" --server sql-shop-dev --name shop-dtu \\\n  --service-objective Basic\n\n# ═══════════ التخزين: Storage account + container ═══════════\naz storage account create --resource-group \"$RG\" --name stshopdev \\\n  --location \"$LOC\" --sku Standard_LRS --kind StorageV2 \\\n  --min-tls-version TLS1_2 --allow-blob-public-access false --https-only true\naz storage container create --name product-images --account-name stshopdev --auth-mode login\n\n# سياسة دورة حياة: Cool بعد 30 يومًا، Archive بعد 180 (توفير تلقائي)\naz storage account management-policy create --account-name stshopdev --resource-group \"$RG\" \\\n  --policy '{\n    \"rules\": [{\n      \"name\": \"age-out\",\n      \"enabled\": true,\n      \"type\": \"Lifecycle\",\n      \"definition\": {\n        \"filters\": { \"blobTypes\": [\"blockBlob\"], \"prefixMatch\": [\"product-images/\"] },\n        \"actions\": {\n          \"baseBlob\": {\n            \"tierToCool\":    { \"daysAfterModificationGreaterThan\": 30 },\n            \"tierToArchive\": { \"daysAfterModificationGreaterThan\": 180 },\n            \"delete\":        { \"daysAfterModificationGreaterThan\": 730 }\n          }\n        }\n      }\n    }]\n  }'\n\n# ═══════════ الشبكة والأمان (للإنتاج) ═══════════\n# private endpoint = لا إتاحة عامة + تكلفة شبكة إضافية:\naz network private-endpoint create --name pe-pg-shop --resource-group \"$RG\" \\\n  --vnet-name vnet-shop --subnet snet-data \\\n  --private-connection-resource-id \"/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.DBforPostgreSQL/flexibleServers/pg-shop-prod\" \\\n  --group-id postgresqlServer --connection-name pg --manual-request false 2>/dev/null || \\\n  echo \"راجع أعلام الأمر في إصدارك: az network private-endpoint create --help\"\n\n# ═══════════ الفاتورة: وشوفها بنفسك (الدرس 6.2.5) ═══════════\naz consumption usage list --query \"[?contains(instanceName,'pg-shop')].{n:instanceName,cost:pretaxCost}\" -o table 2>/dev/null || \\\n  echo \"استخدم: Cost Management → Cost analysis في الـPortal (أدق وأوضح)\"\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "الاتصال بهوية Entra ID + حساب اتصالات الـpool",
+      "filename": "src/Orders.Api/Infrastructure/DataAccess.cs",
+      "code": "using Azure.Storage.Blobs;\nusing Azure.Storage.Blobs.Models;\nusing Azure.Storage.Sas;\nusing Microsoft.Data.SqlClient;   // يدعم Authentication=Active Directory Default مع Azure.Identity\nusing Microsoft.EntityFrameworkCore;\n\nnamespace Shop.Orders.Infrastructure;\n\npublic static class DataAccess\n{\n    /// <summary>\n    /// connection string بلا كلمة سر — الهوية المُدارة هي الاعتماد.\n    /// Server=sql-shop.database.windows.net;Database=shop;Authentication=Active Directory Default\n    /// </summary>\n    public static void ConfigureSql(IServiceCollection services, IConfiguration cfg)\n    {\n        var cs = cfg.GetConnectionString(\"Default\")\n                 ?? throw new InvalidOperationException(\"ConnectionStrings:Default مطلوب\");\n\n        services.AddDbContextPool<ShopDbContext>(o => o.UseSqlServer(cs, sql =>\n        {\n            sql.EnableRetryOnFailure(maxRetryCount: 3,\n                maxRetryDelay: TimeSpan.FromSeconds(4), errorNumbersToAdd: null);\n            sql.CommandTimeout(15);\n        }), poolSize: 8);      // ⚠ انظر حساب الـpool بالأسفل\n    }\n\n    /// <summary>\n    /// حساب اتصالات قاعدة البيانات — نفس منطق 6.1.5 لكنه هنا بالأرقام:\n    ///   maxReplicas × poolSize ≤ 0.8 × max_connections\n    /// PostgreSQL B1ms: max_connections صغيرة (حسب الذاكرة) → pool صغير جدًا.\n    /// </summary>\n    public static (int PoolSize, int MaxReplicas) PlanConnections(int maxConnections, int replicas)\n    {\n        var budget = (int)(maxConnections * 0.8);          // اترك 20% للإدارة والصيانة\n        var perReplica = Math.Max(2, budget / Math.Max(1, replicas));\n        return (perReplica, replicas);\n    }\n\n    /// <summary>تحميل/رفع ملف في Blob بهوية (بلا SAS وبلا مفتاح حساب).</summary>\n    public static async Task UploadProductImageAsync(\n        BlobContainerClient container, string productId, Stream data, CancellationToken ct)\n    {\n        BlobClient blob = container.GetBlobClient($\"product-images/{productId}.jpg\");\n        await blob.UploadAsync(data, new BlobUploadOptions\n        {\n            // طبقة Cool للصور القديمة تُدار بسياسة دورة الحياة، لا يدويًا\n            HttpHeaders = { ContentType = \"image/jpeg\" },\n        }, cancellationToken: ct);\n    }\n\n    /// <summary>\n    /// رابط قراءة مؤقت: استخدم SAS **فقط** لما العميل خارج Azure ومحتاج وصولًا مباشرًا.\n    /// البديل الأفضل: وكيل في تطبيقك يقرأ بالهوية ويبعت البايتات (تدفقًا).\n    /// </summary>\n    // ⚠ GenerateSasUri يتطلب عميلًا مبنيًا بمفتاح الحساب (shared key)، لا بهوية مُدارة.\n    //   لو تطبيقك بالهوية فقط: اقرأ بالبديل (وكيل تدفقي) أو أصدر SAS من خدمة متخصصة.\n    public static Uri CreateReadSas(BlobClient blob, TimeSpan ttl) =>\n        blob.GenerateSasUri(BlobSasPermissions.Read, DateTimeOffset.UtcNow.Add(ttl));\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ قرارات التشغيل: HA · النسخ الاحتياطي · الشبكة · الترحيل"
+    },
+    {
+      "type": "table",
+      "caption": "قرارات لازم تتحسم بدري (تغييرها لاحقًا مكلف)",
+      "head": [
+        "القرار",
+        "الخيارات",
+        "التكلفة التقريبية",
+        "التوصية لمشروع صغير"
+      ],
+      "rows": [
+        [
+          "HA (توافر عالي)",
+          "بدون · Zone-redundant (PostgreSQL) · Business Critical (SQL)",
+          "**~2× الحوسبة** للـzone-redundant",
+          "بدون HA في dev/staging · وHA في الإنتاج فقط لو توقف دقائق = خسارة حقيقية"
+        ],
+        [
+          "مدة الاحتفاظ بالنسخ",
+          "7 · 14 · 35 يومًا",
+          "زيادة التخزين فوق الحد المجاني تُحسب",
+          "7 أيام للتطوير · 30–35 للإنتاج (مع اختبار استرجاع فعلي مرة كل ربع سنة)"
+        ],
+        [
+          "الشبكة",
+          "عام مع جدار ناري · VNet + private endpoint",
+          "private endpoint + معالجة بيانات إضافية",
+          "dev: عام مع تقييد IP · prod: private endpoint + تعطيل الوصول العام"
+        ],
+        [
+          "المصادقة",
+          "كلمة سر · Entra ID (هوية مُدارة)",
+          "بلا تكلفة إضافية",
+          "**Entra ID دائمًا** — يلغي سرًا كاملًا من النظام (6.2.3)"
+        ],
+        [
+          "تخزين الملفات",
+          "داخل القاعدة (BLOB) · Blob Storage",
+          "Blob أرخص بكثير ويسهل توزيعه بـCDN",
+          "Blob Storage + سياسة دورة حياة + CDN للصور العامة"
+        ],
+        [
+          "عدد القواعد",
+          "قاعدة لكل خدمة · قاعدة واحدة بمخططات · elastic pool",
+          "كل قاعدة = فاتورة حوسبة مستقلة",
+          "قاعدة واحدة بمخططات (modular monolith — 4.2) حتى يثبت العكس"
+        ],
+        [
+          "IOPS",
+          "ضمن التخزين · إضافي",
+          "الإضافي يُحسب لكل IOPS",
+          "ابدأ بالضمني، وقِس (3.1.1) قبل الشراء — الاختناق الحقيقي غالبًا استعلامات لا IOPS"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "ثلاثة أخطاء بتكلّف فلوس فعلًا",
+      "md": "**① HA على بيئة تطوير**: مضاعفة الحوسبة مقابل لا شيء. **② قواعد بيانات متعددة مبكرًا**: كل قاعدة بفاتورة حوسبة مستقلة، وانت لسه في modular monolith. **③ نسيان الموارد بعد التجربة**: خادم PostgreSQL أو SQL Database أو Container App environment بيفضل شغالًا وبيتفوتر — **احذف مجموعة الموارد كاملة** بعد كل تجربة (`az group delete -n rg-experiment --no-wait`). والأهم: **Azure ما بيوقفش الموارد تلقائيًا عند تجاوز الميزانية** — فيه تنبيهات بس (6.2.5)."
+    },
+    {
+      "type": "steps",
+      "title": "④ خطوات نقل قاعدة بيانات محلية إلى Azure",
+      "items": [
+        {
+          "title": "1) قِس قبل ما تشتري",
+          "md": "من درس 3.1.1 و5.4: حجم البيانات · عدد الاستعلامات/ثانية · أبطأ 5 استعلامات · حجم اتصال الـpool الفعلي. الأرقام دي هي اللي بتحدد SKU، مش التخمين.",
+          "code": "SELECT pg_size_pretty(pg_database_size(current_database()));\nSELECT query, calls, mean_exec_time FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 5;"
+        },
+        {
+          "title": "2) اختار الخدمة والطبقة بحساب",
+          "md": "PostgreSQL → Flexible Burstable (dev) ثم General Purpose (prod). SQL Server → Serverless (dev) ثم vCore GP مع reservation (prod). وثّق القرار في ADR مع الأرقام والتاريخ.",
+          "code": "az postgres flexible-server list-skus --location westeurope --output table"
+        },
+        {
+          "title": "3) صدّر البيانات",
+          "md": "PostgreSQL: `pg_dump` بصيغة مخصصة. SQL Server: bacpac عبر Azure Data Studio أو `sqlpackage`. الملفات الكبيرة → ارفعها لـBlob أولًا ثم استوردها.",
+          "code": "pg_dump -Fc -h localhost -U shop -d shop -f shop.dump\n# أو: sqlpackage /a:Export /sf:shop.bacpac /tsn:localhost /tdn:shop"
+        },
+        {
+          "title": "4) أنشئ الهدف بمصادقة Entra ID",
+          "md": "أنشئ الخادم/القاعدة، أضف admin Entra ID، أسند الهوية المُدارة، واختبر الاتصال من بيئة النشر (لا من جهازك) — عشان تتأكد من قواعد الشبكة.",
+          "code": "az postgres flexible-server ad-admin create -g rg-shop-prod -s pg-shop-prod --display-name deploy-mi --object-id $PRINCIPAL_ID"
+        },
+        {
+          "title": "5) استورد وتحقق من العدد والقيود",
+          "md": "استورد، ثم قارن: عدد الصفوف لكل جدول · الفهارس · الـconstraints · التسلسلات (sequences) · وخطط الصلاحيات. الترحيل الناقص بيبان بعد أسابيع مش فورًا.",
+          "code": "psql \"$PROD_DSN\" -c '\\dt+' -c 'SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY n_live_tup DESC LIMIT 10;'"
+        },
+        {
+          "title": "6) شغّل migrations EF Core في CI (نمط 6.1.2)",
+          "md": "بنفس مبدأ job الـmigrations one-shot: `dotnet ef database update` في pipeline قبل نشر النسخة الجديدة، وبفحص سابق (3.5) للتوسيع/التضييق.",
+          "code": "dotnet ef database update --project src/Orders.Infrastructure --startup-project src/Orders.Api --connection \"$PROD_DSN\""
+        },
+        {
+          "title": "7) بدّل الحركة وتحقق ثم احذف القديم",
+          "md": "نافذة توقف قصيرة أو نسخ مزدوج للكتابة (حسب حجمك). تحقق من p95 وأخطاء الاتصال (2.3.4)، واحتفظ بالمصدر القديم 7 أيام قبل الحذف.",
+          "code": "kubectl -n shop set env deploy/orders ConnectionStrings__Default=\"$NEW_DSN\" && kubectl -n shop rollout status deploy/orders"
+        }
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أعرف إن DTU **غير مؤهل** للـreservations/Hybrid Benefit/Savings Plans، وده سبب كافي لتجنبه في الإنتاج.",
+        "أقدر أختار بين SQL Serverless وvCore provisioned وPostgreSQL Burstable حسب نمط الحمل (متقطع/مستقر/تطوير).",
+        "عارف إن **PostgreSQL Flexible Burstable B1ms** هو أرخص بداية حقيقية (~12–15 دولار/شهر تقديريًا).",
+        "أستخدم Stop/Start لخادم التطوير، وعارف حد **إعادة التشغيل التلقائي بعد 7 أيام**.",
+        "أقدر أتصل بهوية Entra ID (بلا كلمة سر) في SQL وأفعّل مصادقة Entra في PostgreSQL.",
+        "أحسب اتصالات الـpool مقابل `max_connections` وعدد النسخ (0.8 × الحد).",
+        "أعرف خيارات Blob (طبقات + دورة حياة + SAS مقابل وكيل) ومتى Cosmos DB يستاهل فعلًا.",
+        "أقدر أرحّل قاعدة محلية إلى Azure بسبع خطوات مع تحقق من الأعداد والقيود."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على الاختيار والتكلفة والتشغيل.",
+      "questions": [
+        {
+          "q": "مشروع .NET شخصي على PostgreSQL، حمل خفيف، ميزانية محدودة. البداية الصح؟",
+          "options": [
+            "Azure SQL Business Critical",
+            "PostgreSQL Flexible Server بـ**Burstable B1ms** (~12–15 دولار/شهر) بلا HA",
+            "Cosmos DB بـautoscale",
+            "SQL Database vCore 2 cores"
+          ],
+          "answer": 1,
+          "explain": "Burstable هو الأرخص فعليًا للبداية، وبلا HA (اللي بيضاعف الحوسبة). ارفعه لـGeneral Purpose لما يثبت الحمل — التغيير سهل نسبيًا مقارنة بنقل قاعدة بين خدمات مختلفة."
+        },
+        {
+          "q": "ليه DTU اختيار سيئ لإنتاج جاد؟",
+          "options": [
+            "بطيء",
+            "**غير مؤهل للـreserved capacity ولا Hybrid Benefit ولا Savings Plans** — تدفع السعر الكامل للأبد ومرونته محدودة",
+            "لا يدعم التخزين",
+            "لا يدعم النسخ الاحتياطي"
+          ],
+          "answer": 1,
+          "explain": "DTU مناسبة لتجربة سريعة أو قاعدة صغيرة جدًا. للإنتاج: vCore (provisioned مع reservation) أو Serverless (مع Savings Plan for Databases للأحمال المتقطعة)."
+        },
+        {
+          "q": "SQL Serverless مع auto-pause. إيه الثمن؟",
+          "options": [
+            "لا يوجد ثمن",
+            "زمن استئناف (ثوانٍ) عند أول طلب بعد السكون → latency ملحوظ للمستخدم الأول",
+            "فقدان بيانات",
+            "عدم دعم النسخ الاحتياطي"
+          ],
+          "answer": 1,
+          "explain": "التوفير حقيقي للأحمال المتقطعة وبيئات dev/staging. للإنتاج الحساس للـlatency: عطل auto-pause أو استخدم provisioned مع min capacity."
+        },
+        {
+          "q": "أوقفت خادم PostgreSQL Flexible للتطوير. إيه اللي لازم تعرفه؟",
+          "options": [
+            "هيفضل موقوف للأبد",
+            "**يُعاد تشغيله تلقائيًا بعد 7 أيام** (والتخزين بيتفوتر طول الوقت) — فجدول إيقاف دوري أفضل",
+            "البيانات بتتمسح",
+            "الحوسبة بتستمر في الفوترة"
+          ],
+          "answer": 1,
+          "explain": "الإيقاف يوقف فوترة الحوسبة فقط، والخزنة تستمر. الاعتماد على الإيقاف اليدوي بيفشل؛ استخدم وظيفة مجدولة (6.2.2) أو CI schedule."
+        },
+        {
+          "q": "10 نسخ من التطبيق، و`max_connections` = 100. إيه حجم الـpool الآمن لكل نسخة؟",
+          "options": [
+            "10",
+            "**8** (0.8 × 100 = 80 ميزانية ÷ 10 نسخ = 8 لكل نسخة)",
+            "20",
+            "100"
+          ],
+          "answer": 1,
+          "explain": "القاعدة من 6.1.5: `maxReplicas × pool ≤ 0.8 × max_connections`. تجاوزها بيسبب رفض اتصالات تحت التوسع — وهي مشكلة بتظهر في الذروة فقط (أصعب وقت)."
+        },
+        {
+          "q": "الصور بتتراكم في Blob Storage. إزاي تقلل التكلفة من غير كود؟",
+          "options": [
+            "احذفها يدويًا",
+            "**سياسة دورة حياة**: Cool بعد 30 يومًا، Archive بعد 180، حذف بعد 730",
+            "انقلها لقاعدة البيانات",
+            "غيّر المنطقة"
+          ],
+          "answer": 1,
+          "explain": "الطبقات الأرخص (Cool/Archive) مقابل latency استرجاع أعلى. سياسة دورة الحياة بتنفذ ده تلقائيًا حسب عمر الملف — وانتبه إن Archive استرجاعه بطيء ومكلف فاحسب نمط الوصول أولًا."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "اختيار موثّق بالأرقام + ترحيل فعلي.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: قرار قاعدة بيانات موثّق بالأرقام (ADR + جدول تكلفة)",
+          "md": "**السياق:** تطبيقك (من مشروع المرحلة 5) محتاج قاعدة بيانات على Azure. الحمل المتوقع: 20 مستخدمًا نشطًا، ~500 طلب/ساعة في الذروة، بيانات ~2 GB تنمو 200 MB شهريًا.\n\n**المطلوب:**\n1. `docs/adr/0015-azure-data-store.md`: القرار · السياق · **3 بدائل مقيّمة بالأرقام** (PostgreSQL Flexible Burstable / SQL Serverless / SQL vCore GP) · العواقب · إشارة المراجعة.\n2. `docs/azure-data-cost.md`: جدول تكلفة شهري تقديري لكل بديل من [الحاسبة](https://azure.microsoft.com/en-us/pricing/calculator/) — **مع ذكر التاريخ والمنطقة** وتفصيل البنود (حوسبة · تخزين · نسخ احتياطي · شبكة) + ذكر أي خصم ممكن (Savings Plan for Databases / reserved capacity) ولأي بديل ينطبق.\n3. حساب اتصالات الـpool: من `max_connections` للطبقة المختارة × عدد النسخ المتوقع (1 و5) — واكتب النتيجة في الكود كـcomment وفي الوثيقة.\n4. قرار HA والنسخ الاحتياطي والشبكة (dev مقابل prod) في جدول واحد بتبرير لكل خلية.\n5. **خطة إيقاف التوفير**: كم ساعة/أسبوع هيشتغل خادم التطوير، وإيه الآلية (وظيفة مجدولة/CI schedule) — واحسب التوفير الشهري التقريبي.\n6. فقرة «إمتى نعيد التقييم»: مؤشرات (p95 latency · CPU credits · حجم البيانات · عدد المستخدمين) وعتبات رقمية.",
+          "criteria": [
+            "ADR فيه 3 بدائل مقيّمة **بأرقام من الحاسبة** مع التاريخ والمنطقة (مش «تقريبًا رخيص»).",
+            "قرار صريح مرتبط بنمط الحمل (20 مستخدمًا/500 طلب ساعة/2 GB) — مش تفضيل شخصي.",
+            "جدول التكلفة مفصّل البنود ويشمل النسخ الاحتياطي والشبكة (البنود المنسية).",
+            "ذكر دقيق لما ينطبق عليه خصم: **Savings Plan for Databases** (من مارس 2026) و**reserved capacity** — وأن DTU غير مؤهل لأيٍّ منهما.",
+            "حساب الـpool بالأرقام لحالة نسخة واحدة و5 نسخ مع القاعدة `≤ 0.8 × max_connections`.",
+            "جدول قرارات HA/نسخ/شبكة لـdev وprod بتبرير لكل خلية.",
+            "خطة إيقاف بخسارة صفرية (آلية + توفير شهري تقديري) مع ذكر حد الـ7 أيام.",
+            "فقرة إعادة تقييم بعتبات رقمية (مثال: لو p95 > 300ms أو CPU credits نفدت → ارفع الطبقة)."
+          ],
+          "hint": "في الحاسبة: اختار «Azure Database for PostgreSQL Flexible Server» → Burstable → B1ms → 32 GB storage → backup 7 days → غرب أوروبا. وسجّل الرقم. كرّر لـ«Azure SQL Database» مع Serverless (min 0.5 vCore، max 2، auto-pause بعد 60 دقيقة) — هتلاقي الفرق كبير في السيناريو الخفيف. ولـBurstable راجع مفهوم CPU credits: الحمل المستمر بيستهلكها وبعدها الأداء بيتقلص.",
+          "solution": "النتيجة المتوقعة: **PostgreSQL Flexible Burstable B1ms** يفوز للحمل ده (~12–15 دولار + تخزين/نسخ)، لأن SQL Serverless رغم السكون بيحسب لكل ثانية vCore والاستئناف بيأثر على أول طلب، وvCore GP مبالغ فيه (مئات الدولارات). القرار مع HA=لا للتطوير ونعم للإنتاج لو توقف دقائق = خسارة، والنسخ 7 أيام dev / 30 يومًا prod، والشبكة عامة مقيدة بـIP للتطوير وprivate endpoint للإنتاج، والمصادقة Entra ID في الحالتين. الـpool: لو `max_connections` ≈ 50 (B1ms حسب الذاكرة — تحقق بالأمر `SHOW max_connections`) فـ0.8 × 50 = 40؛ نسخة واحدة → pool ≤ 40 (ولكن اختر 8–10 للسلامة)؛ 5 نسخ → 8 لكل نسخة. خطة الإيقاف: تشغيل dev من 9ص إلى 7م في أيام العمل = ~50 ساعة/أسبوع بدل 168 → توفير ~70% من حوسبة التطوير. إعادة التقييم: CPU credits منخفضة باستمرار / p95 > 300ms / حجم > 20 GB / مستخدمون > 200 → ارفع لـGeneral Purpose D2ds_v5.",
+          "resources": [
+            "https://azure.microsoft.com/en-us/pricing/calculator/",
+            "https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-compute-storage",
+            "https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-backup-restore",
+            "https://learn.microsoft.com/en-us/azure/azure-sql/database/purchasing-models",
+            "https://learn.microsoft.com/en-us/azure/azure-sql/database/serverless-tier-overview",
+            "https://learn.microsoft.com/en-us/azure/cost-management-billing/savings-plan/"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: ارحّل قاعدة بياناتك المحلية إلى Azure وتحقق",
+          "md": "**السياق:** عندك قاعدة PostgreSQL (أو SQL) شغالة في Docker من المرحلة 6.1.2 ومحتاج تنقلها إلى Azure بأقل توقف.\n\n**المطلوب:**\n1. أنشئ الخادم بالطبقة المختارة في المهمة 1 + مصادقة Entra ID + (اختياري) private endpoint.\n2. صدّر (`pg_dump -Fc` أو `sqlpackage`) → ارفع لـBlob → استورد في الهدف.\n3. **تحقق بالعدد**: جدول يقارن `n_live_tup`/عدد الصفوف لكل جدول قبل وبعد، + قائمة الفهارس والـconstraints والتسلسلات.\n4. شغّل `dotnet ef database update` (أو migrations) في بيئة نشر مكررة لما عملته في 6.1.2.\n5. بدّل connection string للتطبيق (من Key Vault/الهوية — 6.2.3) واعمل rollout، ثم قِس: p50/p95 قبل وبعد + عدد أخطاء الاتصال.\n6. اكتب `docs/migration-report.md`: المدة الفعلية · حجم البيانات · الأخطاء اللي ظهرت وحلها · زمن التوقف · وخطة الرجوع (rollback).\n7. **اختبار الاسترجاع**: استرجع نسخة PITR إلى خادم مؤقت وتحقق من بيانات جدول واحد — ووثّق المدة (ده اللي بيثبت إن النسخ الاحتياطي حقيقي).",
+          "criteria": [
+            "الخادم منشور بمصادقة Entra ID وبلا كلمة سر في أي ملف (أو موثّق سبب وجودها مؤقتًا).",
+            "جدول مقارنة الصفوف قبل/بعد لكل جدول — **بدون فروق** (أو فروق مبررة).",
+            "الفهارس والـconstraints والتسلسلات متطابقة (مخرجات مُرفقة).",
+            "الاتصال من التطبيق تم من بيئة النشر (لا من جهازك) ونجح — دليل على صحة قواعد الشبكة.",
+            "قياس p50/p95 وأخطاء الاتصال قبل وبعد مع تفسير أي فرق (قرب المنطقة · حجم الطبقة · pool).",
+            "`docs/migration-report.md` بالأرقام الفعلية + أخطاء وحلولها + خطة رجوع قابلة للتنفيذ.",
+            "اختبار استرجاع PITR فعلي مع زمن الاسترجاع المكتوب (مش «النسخ الاحتياطي موجود»).",
+            "تنظيف: حذف الموارد المؤقتة وخادم الاسترجاع بعد الاختبار."
+          ],
+          "hint": "أسرع مسار للأخطاء: قواعد جدار الحماية (خادم Azure SQL بيحتاج `az sql server firewall-rule create` أو private endpoint)، وحجم الـpool مقابل `max_connections` الصغيرة في Burstable، و`search_path`/الصلاحيات لو استخدمت مستخدمًا مختلفًا عن المالك. وللاسترجاع: `az postgres flexible-server restore --name … --restore-point-in-time …` ينشئ خادمًا جديدًا — وده هو الاختبار الحقيقي.",
+          "solution": "الخطوات بالنتائج النموذجية: تصدير 2 GB يستغرق دقائق محلية، والرفع لـBlob يعتمد على سرعتك (غالبًا أطول خطوة)، والاستيراد على B1ms أبطأ من المتوقع (فكّر في إيقاف الـautovacuum مؤقتًا أو زيادة الطبقة أثناء الاستيراد ثم تخفيضها). الأخطاء الأشهر: (1) 403 من قاعدة البيانات → ناقص `ad-admin`/user من Entra (2) `too many connections` → قلّل pool أو ارفع الطبقة (3) latency أعلى من المحلي → طبيعي: الشبكة + حجم B1ms؛ تأكد إن الاستعلامات مفهرسة (3.1.1). التوقف الفعلي ممكن يبقى ~0 لو عملت نافذة قراءة فقط قصيرة + تحويل connection string. اختبار الاسترجاع: PITR لخادم مؤقت يستغرق من دقائق لعشرات الدقائق حسب الحجم — وثّق الرقم لأن ده هو RTO الحقيقي عندك. الرجوع: احتفظ بالخادم/الملف المصدر 7 أيام، والـrollback = إعادة connection string للقديم (من Key Vault بإصدار سابق).",
+          "resources": [
+            "https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/how-to-migrate-dump-restore",
+            "https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/how-to-restore-server-portal",
+            "https://learn.microsoft.com/en-us/azure/azure-sql/database/database-import",
+            "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blobs-introduction",
+            "https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "PostgreSQL Flexible Server: الحوسبة والتخزين",
+          "url": "https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-compute-storage"
+        },
+        {
+          "label": "PostgreSQL Flexible Server: التسعير",
+          "url": "https://azure.microsoft.com/en-us/pricing/details/postgresql/flexible-server/"
+        },
+        {
+          "label": "Azure SQL Database: نماذج الشراء (DTU/vCore)",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/purchasing-models"
+        },
+        {
+          "label": "SQL Database Serverless",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/serverless-tier-overview"
+        },
+        {
+          "label": "مصادقة Microsoft Entra مع Azure SQL",
+          "url": "https://learn.microsoft.com/en-us/azure/azure-sql/database/authentication-aad-configure"
+        },
+        {
+          "label": "Blob Storage: الطبقات ودورة الحياة",
+          "url": "https://learn.microsoft.com/en-us/azure/storage/blobs/lifecycle-management-overview"
+        },
+        {
+          "label": "اختيار متجر بيانات على Azure",
+          "url": "https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/data-store-overview"
+        },
+        {
+          "label": "Cosmos DB: اختيار partition key",
+          "url": "https://learn.microsoft.com/en-us/azure/cosmos-db/partitioning-overview"
+        },
+        {
+          "label": "حاسبة تسعير Azure",
+          "url": "https://azure.microsoft.com/en-us/pricing/calculator/"
+        }
+      ]
+    }
+  ]
+}

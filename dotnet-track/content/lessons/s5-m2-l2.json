@@ -1,0 +1,379 @@
+{
+  "id": "s5-m2-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\n«نستخدم Kafka لأنه أسرع» — جملة بتبان كتير وبتكون غلط في أغلب الحالات، لأن **Kafka مش وسيط رسائل**،\nده **سجل أحداث موزّع** (distributed log). الفرق جوهري: في RabbitMQ/Service Bus الرسالة بتُستهلك وتُحذف،\nفي Kafka الرسالة بتفضل في الـlog والمستهلك بيتتبع موقعه (offset) — وده بيديك إعادة تشغيل (replay) وترتيب لكل partition.\n\nالدرس ده بيعقد المقارنة صح: Kafka مقابل Azure Service Bus مقابل RabbitMQ،\nبنماذج البيانات والضمانات والتكلفة التشغيلية — وبيعلّمك **تجريد الناشر** عشان تغيير الوسيط يبقى إعدادات مش إعادة كتابة.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Topic / Partition",
+          "def": "في Kafka: الموضوع يُقسَّم لأقسام متوازية. **الترتيب مضمون داخل الـpartition فقط** — ومفتاح الرسالة يحدد القسم."
+        },
+        {
+          "term": "Offset",
+          "def": "موقع المستهلك في الـpartition. الالتزام به بعد المعالجة = أساس at-least-once."
+        },
+        {
+          "term": "Consumer Group",
+          "def": "مجموعة مستهلكين يتقاسمون الـpartitions (كل partition لمستهلك واحد داخل المجموعة). مجموعة مختلفة = قراءة مستقلة لكل البيانات."
+        },
+        {
+          "term": "Rebalance",
+          "def": "إعادة توزيع الـpartitions عند انضمام/خروج مستهلك — فترة توقف قصيرة، وأحد مصادر الألم."
+        },
+        {
+          "term": "Retention / Compaction",
+          "def": "حفظ الأحداث لمدة/حجم (retention) أو الاحتفاظ بآخر قيمة لكل مفتاح (log compaction)."
+        },
+        {
+          "term": "Idempotent Producer",
+          "def": "منع التكرار من الناشر نفسه (مع `acks=all`) — أساس exactly-once داخل Kafka."
+        },
+        {
+          "term": "Schema Registry",
+          "def": "مخزن مخططات (Avro/Protobuf/JSON Schema) مع قواعد توافق — يمنع كسر المستهلكين."
+        },
+        {
+          "term": "Queue / Topic-Subscription (Service Bus)",
+          "def": "طابور لمستقبل واحد، أو موضوع باشتراكات متعددة (كل اشتراك ينسخ الرسائل)."
+        },
+        {
+          "term": "Peek-Lock مقابل Receive-Delete",
+          "def": "في Service Bus: قفل الرسالة حتى التأكيد (آمن) مقابل حذفها فور الاستلام (بلا ضمان)."
+        },
+        {
+          "term": "Sessions",
+          "def": "ميزة Service Bus لترتيب صارم لكل مفتاح جلسة + معالجة حصرية — مفيدة لسلاسل عمليات."
+        },
+        {
+          "term": "Claim Check",
+          "def": "نمط: الحمولة الكبيرة في تخزين خارجي، والرسالة تحمل المرجع فقط."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) المقارنة الأساسية"
+    },
+    {
+      "type": "table",
+      "head": [
+        "المعيار",
+        "RabbitMQ",
+        "**Kafka**",
+        "Azure Service Bus"
+      ],
+      "rows": [
+        [
+          "النموذج",
+          "وسيط رسائل (queue/exchange)",
+          "**سجل أحداث موزّع (log)**",
+          "وسيط رسائل سحابي مُدار"
+        ],
+        [
+          "مصير الرسالة",
+          "تُحذف بعد التأكيد",
+          "**تبقى** حسب retention (تُعاد قراءتها)",
+          "تُحذف بعد التأكيد (مع dead-letter)"
+        ],
+        [
+          "إعادة التشغيل (replay)",
+          "✗",
+          "**✓ أساس التصميم**",
+          "✗ (إلا بنسخ احتياطي/تصدير)"
+        ],
+        [
+          "الترتيب",
+          "داخل قائمة بمستهلك واحد",
+          "**داخل partition (بحسب المفتاح)**",
+          "داخل queue أو session"
+        ],
+        [
+          "نمط الاستهلاك",
+          "push (من الوسيط)",
+          "**pull (المستهلك يتحكم)**",
+          "push/pull (processor)"
+        ],
+        [
+          "الإنتاجية",
+          "عشرات الآلاف/ث",
+          "**مئات الآلاف–ملايين/ث**",
+          "عشرات الآلاف/ث (بحسب الطبقة)"
+        ],
+        [
+          "الزمن (latency)",
+          "منخفض جدًا (ms)",
+          "منخفض–متوسط (يعتمد batch)",
+          "منخفض (ms–عشرات ms)"
+        ],
+        [
+          "التوجيه المرن",
+          "**✓ exchanges/bindings قوية**",
+          "△ (topic + header عبر كود)",
+          "✓ (filters SQL92 على الاشتراكات)"
+        ],
+        [
+          "request/response",
+          "✓ طبيعي",
+          "✗ غير مناسب",
+          "✓ (sessions/reply queue)"
+        ],
+        [
+          "معاملات",
+          "△ (publisher confirms)",
+          "**✓ معاملات Kafka (داخل Kafka)**",
+          "✓ (ضمن كيان/جلسة)"
+        ],
+        [
+          "الرسائل المؤجلة/المجدولة",
+          "△ (plugin/TTL+DLX)",
+          "✗ (يدوي)",
+          "**✓ مدمج** (ScheduledEnqueueTimeUtc)"
+        ],
+        [
+          "كشف التكرار",
+          "✗ (يدوي)",
+          "△ (idempotent producer)",
+          "**✓ مدمج** (DuplicateDetection)"
+        ],
+        [
+          "DLQ",
+          "✓ (DLX)",
+          "△ (topic مخصص)",
+          "✓ مدمج"
+        ],
+        [
+          "التشغيل الذاتي",
+          "سهل نسبيًا",
+          "**صعب** (partitions، KRaft/ZooKeeper، tuning)",
+          "✗ مُدار (بلا عمليات)"
+        ],
+        [
+          "التكلفة",
+          "منخفضة",
+          "متوسطة–عالية (قرص/عقد)",
+          "بحسب الرسائل/الطبقة"
+        ],
+        [
+          "أنسب حالة",
+          "أوامر، مهام، توجيه مرن، request/response",
+          "**event streaming، تدقيق، replay، تحليلات، CDC**",
+          "أنظمة Azure، مهام مجدولة، جلسات، بلا فرق تشغيل"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "قاعدة الاختيار في 3 أسئلة",
+      "md": "\n**① هل تحتاج إعادة تشغيل الأحداث (replay) أو بناء read models منها لاحقًا؟**\n   → نعم: **Kafka** (أو EventStoreDB لو event sourcing). لأ: كمّل.\n\n**② هل تحتاج توجيهًا مرنًا، أوامر مباشرة، request/response، أو رسائل مجدولة؟**\n   → نعم: **RabbitMQ** (توجيه/مرونة) أو **Service Bus** (مجدولة/جلسات/مُدار).\n\n**③ هل عندك فريق تشغيل يملك خبرة Kafka (أو ميزانية Confluent Cloud)؟**\n   → لأ: **لا تستخدم Kafka**. وسيط رسائل أبسط هيخدمك أحسن بسنة صيانة أقل.\n\n**الحالة الشائعة في الواقع:** RabbitMQ/Service Bus لرسائل التطبيق،\nوKafka (أو CDC من Postgres لـwarehouse) لتحليلات وتدفقات البيانات. **الاتنين مش بديلين.**\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) Kafka من .NET"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "تشغيل محلي + الحزم",
+      "code": "\n# Kafka بلا ZooKeeper (KRaft) للتطوير المحلي\ndocker run -d --name shop-kafka -p 9092:9092 \\\n  -e KAFKA_CFG_NODE_ID=1 -e KAFKA_CFG_PROCESS_ROLES=broker,controller \\\n  -e KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093 \\\n  -e KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \\\n  -e KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \\\n  -e KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER \\\n  -e KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=false \\\n  bitnami/kafka:3.9\n\ndocker run -d --name kafka-ui -p 8080:8080 \\\n  -e KAFKA_CLUSTERS_0_NAME=local -e KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092 \\\n  provectuslabs/kafka-ui:latest\n\ndotnet add src/Services/Orders package Confluent.Kafka\ndotnet add src/Services/Orders package Confluent.SchemaRegistry.Serdes.Protobuf   # لو تستخدم schema registry\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Infrastructure/Kafka/KafkaPublisher.cs",
+      "title": "ناشر: idempotent + acks=all + مفتاح للتقسيم",
+      "code": "\nusing Confluent.Kafka;\n\npublic sealed class KafkaPublisher : IEventPublisher, IAsyncDisposable\n{\n    private readonly IProducer<string, string> _producer;\n    private readonly ILogger<KafkaPublisher> _log;\n\n    public KafkaPublisher(IConfiguration config, ILogger<KafkaPublisher> log)\n    {\n        _log = log;\n        _producer = new ProducerBuilder<string, string>(new ProducerConfig\n        {\n            BootstrapServers = config[\"Kafka:BootstrapServers\"],\n\n            // ★ الموثوقية: كل النسخ تؤكد + منع تكرار من الناشر\n            Acks = Acks.All,\n            EnableIdempotence = true,                 // ✓ ترتيب + عدم تكرار داخل الناشر\n            MaxInFlightRequestsPerConnection = 5,      // الحد المسموح مع idempotence\n\n            // ✓ الإنتاجية: دفعات (مع زمن انتظار صغير)\n            LingerMs = 20,\n            BatchSize = 64 * 1024,\n            CompressionType = CompressionType.Lz4,\n\n            // ★ إعادة المحاولة للأخطاء العابرة فقط\n            MessageSendMaxRetries = 3,\n            RetryBackoffMs = 200,\n            RequestTimeoutMs = 10_000,\n\n            ClientId = $\"orders-{Environment.MachineName}\",\n            EnableDeliveryReports = true,\n        }).Build();\n    }\n\n    /// <summary>\n    /// ★ المفتاح = معرّف الـaggregate: يضمن إن كل أحداث نفس الكيان تروح لنفس الـpartition\n    /// وبالتالي **ترتيبها محفوظ**. بلا مفتاح → توزيع عشوائي → ترتيب مفقود.\n    /// </summary>\n    public async Task PublishAsync<TEvent>(string topic, string partitionKey, TEvent evt, CancellationToken ct)\n        where TEvent : IIntegrationEvent\n    {\n        var message = new Message<string, string>\n        {\n            Key = partitionKey,                                     // ← يحدد الـpartition\n            Value = JsonSerializer.Serialize(evt, AppJson.Options),\n            Headers = new Headers\n            {\n                { \"event-type\",   System.Text.Encoding.UTF8.GetBytes(typeof(TEvent).Name) },\n                { \"schema-version\", System.Text.Encoding.UTF8.GetBytes(evt.SchemaVersion.ToString()) },\n                { \"correlation-id\", System.Text.Encoding.UTF8.GetBytes(evt.CorrelationId?.ToString() ?? string.Empty) },\n                { \"occurred-at\",  System.Text.Encoding.UTF8.GetBytes(evt.OccurredAt.ToString(\"O\")) },\n            },\n        };\n\n        try\n        {\n            var result = await _producer.ProduceAsync(topic, message, ct);\n\n            _log.LogDebug(\"published {Event} to {Topic}[{Partition}]@{Offset}\",\n                typeof(TEvent).Name, result.TopicPartition, result.Partition.Value, result.Offset.Value);\n\n            KafkaMetrics.Published.Add(1, new(\"topic\", topic));\n        }\n        catch (ProduceException<string, string> ex)\n        {\n            KafkaMetrics.Errors.Add(1, new(\"topic\", topic), new(\"code\", ex.Error.Code.ToString()));\n\n            // ✗ لا تُعد المحاولة على أخطاء دائمة\n            if (ex.Error.Code is ErrorCode.MsgSizeTooLarge or ErrorCode.TopicAuthorizationFailed\n                                 or ErrorCode.InvalidRequiredAck)\n            {\n                _log.LogError(ex, \"permanent kafka error for {Topic}\", topic);\n                throw;\n            }\n\n            throw;      // الأخطاء العابرة تُعالج في طبقة المرونة (درس 5.2.4) أو الـoutbox\n        }\n    }\n\n    public ValueTask DisposeAsync()\n    {\n        _producer.Flush(TimeSpan.FromSeconds(5));      // ★ تأكيد إرسال كل ما في الـbuffer قبل الإغلاق\n        _producer.Dispose();\n        return ValueTask.CompletedTask;\n    }\n}\n\npublic static class KafkaMetrics\n{\n    private static readonly System.Diagnostics.Metrics.Meter Meter = new(\"Shop.Infrastructure.kafka\", \"1.0.0\");\n    public static readonly Counter<long> Published = Meter.CreateCounter<long>(\"kafka.published\");\n    public static readonly Counter<long> Errors = Meter.CreateCounter<long>(\"kafka.errors\");\n    public static readonly Counter<long> Consumed = Meter.CreateCounter<long>(\"kafka.consumed\");\n    public static readonly Histogram<double> Lag = Meter.CreateHistogram<double>(\"kafka.consumer.lag\", unit: \"messages\");\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Reporting/Infrastructure/Kafka/OrderEventConsumer.cs",
+      "title": "مستهلك: التزام offset **بعد** المعالجة + معالجة rebalance",
+      "code": "\npublic sealed class OrderEventConsumer(\n    IServiceScopeFactory scopes, IConfiguration config, ILogger<OrderEventConsumer> log) : BackgroundService\n{\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        var consumerConfig = new ConsumerConfig\n        {\n            BootstrapServers = config[\"Kafka:BootstrapServers\"],\n            GroupId = config[\"Kafka:GroupId\"] ?? \"reporting\",   // ★ مجموعة مختلفة = قراءة مستقلة\n            ClientId = $\"reporting-{Environment.MachineName}\",\n\n            // ✓ ابدأ من البداية لمجموعة جديدة (لأحداث قديمة) أو من الأحدث\n            AutoOffsetReset = AutoOffsetReset.Earliest,\n\n            // ★ الأهم: لا التزام تلقائي — نلتزم بعد نجاح المعالجة (at-least-once)\n            EnableAutoCommit = false,\n            EnableAutoOffsetStore = false,\n\n            SessionTimeoutMs = 30_000,\n            MaxPollIntervalMs = 300_000,          // ✓ لو المعالجة بطيئة، ارفعها (وإلا rebalance متكرر)\n            PartitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky,  // ✓ rebalance أقل إزعاجًا\n            FetchMinBytes = 1,\n            FetchWaitMaxMs = 500,\n        };\n\n        using var consumer = new ConsumerBuilder<string, string>(consumerConfig)\n            .SetPartitionsRevokedHandler((c, partitions) =>\n            {\n                // ★ عند سحب الـpartitions: التزم بما عولج (وإلا هيتكرر كتير)\n                try { c.Commit(); } catch (KafkaException ex) { log.LogWarning(ex, \"commit on revoke failed\"); }\n                log.LogInformation(\"partitions revoked: {Partitions}\", string.Join(\",\", partitions.Select(p => p.Partition.Value)));\n            })\n            .SetErrorHandler((_, error) =>\n            {\n                if (error.IsFatal) log.LogError(\"fatal kafka error: {Reason}\", error.Reason);\n                else log.LogWarning(\"kafka error: {Reason}\", error.Reason);\n            })\n            .Build();\n\n        consumer.Subscribe(config[\"Kafka:Topics:Orders\"] ?? \"shop.orders.events\");\n\n        while (!stoppingToken.IsCancellationRequested)\n        {\n            ConsumeResult<string, string> result;\n            try { result = consumer.Consume(TimeSpan.FromSeconds(1)); }\n            catch (ConsumeException ex)\n            {\n                log.LogError(ex, \"consume error ({Code})\", ex.Error.Code);\n                await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);\n                continue;\n            }\n\n            if (result is null) continue;\n\n            try\n            {\n                await using var scope = scopes.CreateAsyncScope();\n                var handler = scope.ServiceProvider.GetRequiredService<IOrderEventHandler>();\n                await handler.HandleAsync(result.Message.Headers, result.Message.Value, stoppingToken);\n\n                // ✓ الالتزام **بعد** النجاح فقط (وإلا فقد رسائل عند الانهيار)\n                consumer.StoreOffset(result);\n                consumer.Commit(result);\n                KafkaMetrics.Consumed.Add(1);\n            }\n            catch (PoisonMessageException ex)\n            {\n                // ★ رسالة لن تُعالج أبدًا → انقلها لموضوع DLQ والتزم (لا توقف الـpartition)\n                await PublishToDeadLetterAsync(result, ex, stoppingToken);\n                consumer.StoreOffset(result);\n                consumer.Commit(result);\n                log.LogError(ex, \"poison message sent to DLQ: {Key}@{Offset}\", result.Message.Key, result.Offset);\n            }\n            catch (Exception ex) when (ex is not OperationCanceledException)\n            {\n                log.LogError(ex, \"processing failed at {Offset}; will be redelivered\", result.Offset);\n                await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);   // backoff قبل إعادة القراءة\n            }\n        }\n\n        consumer.Close();          // ✓ يغادر المجموعة بشكل نظيف (يسرّع الـrebalance)\n    }\n\n    private Task PublishToDeadLetterAsync(ConsumeResult<string, string> r, Exception ex, CancellationToken ct) =>\n        Task.CompletedTask;        // نشر لموضوع shop.orders.events.dlq مع رؤوس الخطأ\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Azure Service Bus"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Infrastructure/ServiceBus/ServiceBusPublisherAndProcessor.cs",
+      "title": "الناشر + المعالج بـpeek-lock",
+      "code": "\nusing Azure.Messaging.ServiceBus;\n\n// ═══ ① التسجيل: client واحد (singleton) + sender لكل موضوع ═══\npublic static class ServiceBusRegistration\n{\n    public static IServiceCollection AddServiceBusMessaging(this IServiceCollection services, IConfiguration config)\n    {\n        services.AddSingleton(_ => new ServiceBusClient(\n            config[\"ServiceBus:ConnectionString\"],\n            new ServiceBusClientOptions\n            {\n                TransportType = ServiceBusTransportType.Amqp,           // ✓ AMQP (أفضل من HTTP)\n                RetryOptions = new ServiceBusRetryOptions\n                {\n                    Mode = ServiceBusRetryMode.Exponential,\n                    MaxRetries = 3,\n                    Delay = TimeSpan.FromSeconds(1),\n                    MaxDelay = TimeSpan.FromSeconds(15),\n                    TryTimeout = TimeSpan.FromSeconds(20),\n                },\n            }));\n\n        services.AddSingleton(sp => sp.GetRequiredService<ServiceBusClient>()\n            .CreateSender(\"shop-orders\"));                               // ✓ sender قابل لإعادة الاستخدام\n\n        services.AddHostedService<OrderEventProcessor>();\n        return services;\n    }\n}\n\n// ═══ ② النشر: دفعات + رسائل مجدولة + كشف تكرار ═══\npublic sealed class ServiceBusPublisher(ServiceBusSender sender, ILogger<ServiceBusPublisher> log) : IEventPublisher\n{\n    public async Task PublishAsync<TEvent>(string topic, string partitionKey, TEvent evt, CancellationToken ct)\n    {\n        var message = new ServiceBusMessage(JsonSerializer.Serialize(evt, AppJson.Options))\n        {\n            ContentType = \"application/json\",\n            Subject = typeof(TEvent).Name,                               // ← للفلترة في الاشتراكات\n            MessageId = evt.MessageId,                                   // ★ لكشف التكرار (مدمج في Service Bus)\n            CorrelationId = evt.CorrelationId?.ToString(),\n            PartitionKey = partitionKey,                                 // ✓ ترتيب لكل مفتاح (Premium)\n            TimeToLive = TimeSpan.FromHours(24),                         // ✓ لا رسائل للأبد\n            ScheduledEnqueueTime = evt.DelayUntil,                       // ★ جدولة مدمجة (ميزة مقابل Kafka)\n        };\n\n        message.ApplicationProperties[\"schema-version\"] = evt.SchemaVersion;\n\n        await sender.SendMessageAsync(message, ct);\n        log.LogDebug(\"sent {Type} to {Topic}\", typeof(TEvent).Name, topic);\n    }\n\n    /// <summary>دفعات: أقل round-trips وأعلى إنتاجية (احترم حد الحجم ~256KB/Tier).</summary>\n    public async Task PublishBatchAsync<TEvent>(string topic, IReadOnlyList<TEvent> events, CancellationToken ct)\n        where TEvent : IIntegrationEvent\n    {\n        var batch = await sender.CreateMessageBatchAsync(ct);\n        try\n        {\n            foreach (var evt in events)\n            {\n                var message = new ServiceBusMessage(JsonSerializer.Serialize(evt, AppJson.Options))\n                {\n                    Subject = typeof(TEvent).Name,\n                    MessageId = evt.MessageId,\n                    ContentType = \"application/json\",\n                };\n\n                if (!batch.TryAddMessage(message))            // ★ الدفعة امتلأت → أرسلها وابدأ جديدة\n                {\n                    await sender.SendMessagesAsync(batch, ct);\n                    await batch.DisposeAsync();\n                    batch = await sender.CreateMessageBatchAsync(ct);\n\n                    if (!batch.TryAddMessage(message))        // رسالة أكبر من حد الدفعة\n                        throw new InvalidOperationException($\"الرسالة {evt.MessageId} أكبر من حد حجم الدفعة\");\n                }\n            }\n            await sender.SendMessagesAsync(batch, ct);\n        }\n        finally { await batch.DisposeAsync(); }\n    }\n}\n\n// ═══ ③ المعالج: peek-lock + معالجة أخطاء + dead-letter ═══\npublic sealed class OrderEventProcessor(\n    ServiceBusClient client, IServiceScopeFactory scopes, ILogger<OrderEventProcessor> log) : BackgroundService\n{\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        var options = new ServiceBusProcessorOptions\n        {\n            MaxConcurrentCalls = 8,                        // ✓ حد التوازي (bulkhead)\n            MaxAutoLockRenewalDuration = TimeSpan.FromMinutes(5),   // ★ للمعالجة الطويلة\n            PrefetchCount = 20,                            // ✓ يقلل round-trips\n            ReceiveMode = ServiceBusReceiveMode.PeekLock,  // ★ لا ReceiveAndDelete للعمل الحرج\n            AutoCompleteMessages = false,                  // ✓ نتحكم في التأكيد بأنفسنا\n        };\n\n        await using var processor = client.CreateProcessor(\"shop-orders\", \"reporting-subscription\", options);\n\n        processor.ProcessMessageAsync += async args =>\n        {\n            try\n            {\n                await using var scope = scopes.CreateAsyncScope();\n                var handler = scope.ServiceProvider.GetRequiredService<IOrderEventHandler>();\n                await handler.HandleAsync(args.Message.Subject!, args.Message.Body.ToString(), args.CancellationToken);\n\n                await args.CompleteMessageAsync(args.Message, args.CancellationToken);   // ✓ ack بعد النجاح\n            }\n            catch (PoisonMessageException ex)\n            {\n                log.LogError(ex, \"dead-lettering {MessageId}\", args.Message.MessageId);\n                await args.DeadLetterMessageAsync(args.Message,\n                    deadLetterReason: \"PoisonMessage\", deadLetterErrorDescription: ex.Message,\n                    cancellationToken: args.CancellationToken);\n            }\n            catch (Exception ex)\n            {\n                log.LogError(ex, \"abandoning {MessageId} for redelivery\", args.Message.MessageId);\n                await args.AbandonMessageAsync(args.Message, cancellationToken: args.CancellationToken);\n                // ✓ Abandon = ترجع للقائمة فورًا؛ DeliveryCount بيزيد ولما يوصل MaxDeliveryCount → DLQ تلقائيًا\n            }\n        };\n\n        processor.ProcessErrorAsync += args =>\n        {\n            log.LogError(args.Exception, \"processor error: {Source}\", args.ErrorSource);\n            return Task.CompletedTask;\n        };\n\n        await processor.StartProcessingAsync(stoppingToken);\n        stoppingToken.Register(async () => await processor.StopProcessingAsync());\n        await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) التجريد: غيّر الوسيط بلا إعادة كتابة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Contracts/Messaging/IEventPublisher.cs",
+      "title": "منفذ محايد + اختيار التنفيذ بالإعدادات",
+      "code": "\n/// <summary>\n/// ★ منفذ واحد في Application/Contracts — الكود ما يعرفش الوسيط.\n/// تغيير الوسيط = تنفيذ جديد + سطر تسجيل (مش إعادة كتابة المستهلكين).\n/// </summary>\npublic interface IEventPublisher\n{\n    Task PublishAsync<TEvent>(string topic, string partitionKey, TEvent evt, CancellationToken ct)\n        where TEvent : IIntegrationEvent;\n}\n\n/// <summary>كل حدث يحمل ما تحتاجه أي وسيط: معرّف، إصدار، ارتباط، ووقت.</summary>\npublic interface IIntegrationEvent\n{\n    string MessageId { get; }\n    int SchemaVersion { get; }\n    Guid? CorrelationId { get; }\n    DateTimeOffset OccurredAt { get; }\n    DateTimeOffset? DelayUntil { get; }\n}\n\n// ── التسجيل بحسب الإعدادات (وحدات قابلة للتبديل) ──\npublic static class MessagingRegistration\n{\n    public static IServiceCollection AddMessaging(this IServiceCollection services, IConfiguration config)\n    {\n        var provider = config[\"Messaging:Provider\"]?.ToLowerInvariant() ?? \"inmemory\";\n\n        switch (provider)\n        {\n            case \"rabbitmq\":\n                services.AddOrderMessaging(config);          // MassTransit + RabbitMQ (الدرس 5.2.1)\n                break;\n\n            case \"kafka\":\n                services.AddSingleton<IEventPublisher, KafkaPublisher>();\n                break;\n\n            case \"servicebus\":\n                services.AddServiceBusMessaging(config);\n                break;\n\n            case \"outbox-only\":                            // ✓ للتطوير المحلي: outbox بلا وسيط\n                services.AddSingleton<IEventPublisher, NoopPublisher>();\n                break;\n\n            default:\n                services.AddSingleton<IEventPublisher, InMemoryPublisher>();   // للاختبارات\n                break;\n        }\n\n        services.AddHealthChecks().AddCheck<MessagingHealthCheck>(\"messaging\");\n        return services;\n    }\n}\n\n/// <summary>ناشر للتطوير/الاختبار: يسجل ولا يرسل (يمنع «يعمل عندي» الزائف).</summary>\npublic sealed class InMemoryPublisher(ILogger<InMemoryPublisher> log) : IEventPublisher\n{\n    public readonly List<(string Topic, string Type, string Payload)> Published = [];\n    public Task PublishAsync<TEvent>(string topic, string partitionKey, TEvent evt, CancellationToken ct)\n    {\n        Published.Add((topic, typeof(TEvent).Name, JsonSerializer.Serialize(evt)));\n        log.LogDebug(\"in-memory publish {Type} → {Topic}\", typeof(TEvent).Name, topic);\n        return Task.CompletedTask;\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "فخاخ بتوقع فرق في الأنظمة الموزعة",
+      "md": "\n- **«Kafka بيضمن الترتيب»** → الترتيب **داخل partition واحد** فقط. بلا مفتاح صحيح، أحداث نفس الطلب ممكن تتوزع.\n  واستهلاك بـconsumer group مع عدة مستهلكين = موازاة (الترتيب بين partitions غير مضمون).\n- **«offset يُلتزم تلقائيًا»** → مع `EnableAutoCommit=true` بتفقد رسائل لو انهرت بين الالتزام والمعالجة.\n  الالتزام **بعد** المعالجة (at-least-once) هو النمط الصحيح.\n- **معالجة بطيئة مع `MaxPollIntervalMs` افتراضي** → المستهلك يُطرد من المجموعة ويعمل rebalance لا نهائي.\n- **Rebalance متكرر** = توقف استهلاك. قلّل عدد الـpartitions غير الضروري، واستخدم `CooperativeSticky`،\n  وارفع `MaxPollIntervalMs` وقلّل `MaxPollRecords`.\n- **Auto-create topics في الإنتاج** → مواضيع بأسماء غلط تتعمل بصمت. عطّله (`auto.create.topics.enable=false`) وأنشئ المواضيع بـIaC.\n- **Service Bus بـ`ReceiveAndDelete`** لعمل حرج → فقد عند الانهيار. استخدم `PeekLock`.\n- **رسائل بلا TTL** → قوائم ومواضيع تمتلئ برسائل بلا قيمة.\n- **اختيار Kafka لـrequest/response** → نمط خاطئ (استخدم RabbitMQ/Service Bus أو gRPC).\n- **بلا Schema Registry** في Kafka → أول تغيير في شكل الرسالة يكسر المستهلكين بصمت.\n- **نسيان حجم الرسالة الأقصى** (Kafka ~1MB افتراضيًا، Service Bus 256KB/1MB بحسب الطبقة) → `MsgSizeTooLarge`.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أفرّق بين وسيط الرسائل وسجل الأحداث، وأختار الوسيط بثلاثة أسئلة (replay؟ توجيه/أوامر؟ خبرة تشغيلية؟).",
+        "أضبط Kafka بمفتاح تقسيم صحيح، `acks=all` + idempotent producer، والتزام offset بعد المعالجة.",
+        "أضبط Service Bus بـPeekLock وDLQ ومعالجة دفعات ورسائل مجدولة وكشف تكرار.",
+        "أجرّد النشر خلف `IEventPublisher` بحيث تغيير الوسيط إعدادات لا إعادة كتابة، وأتعامل مع حدود حجم الرسالة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "الفرق الجوهري بين Kafka وRabbitMQ؟",
+          "options": [
+            "السرعة فقط",
+            "Kafka سجل أحداث (الرسائل تبقى وتُعاد قراءتها بـoffsets) — RabbitMQ وسيط رسائل (تُستهلك وتُحذف)",
+            "اللغة",
+            "الدعم السحابي"
+          ],
+          "answer": 1,
+          "explain": "من الفرق ده بتيجي كل الفروق: replay وترتيب لكل partition وthroughput عالي في Kafka، مقابل توجيه مرن ورسائل مجدولة وrequest/response في وسيط الرسائل."
+        },
+        {
+          "q": "ليه مفتاح الرسالة في Kafka مهم؟",
+          "options": [
+            "للأمان",
+            "يحدد الـpartition → يضمن ترتيب أحداث نفس الكيان؛ بلا مفتاح (أو بمفتاح عشوائي) الترتيب يُفقد",
+            "للضغط",
+            "للتشفير"
+          ],
+          "answer": 1,
+          "explain": "استخدم معرّف الـaggregate (مثل OrderId) مفتاحًا، فتبقى كل أحداث الطلب في partition واحد وبترتيب."
+        },
+        {
+          "q": "`EnableAutoCommit=true` مع معالجة قد تفشل — النتيجة؟",
+          "options": [
+            "لا أثر",
+            "فقد رسائل: الـoffset يُلتزم قبل/بغض النظر عن نجاح المعالجة، فالانهيار يتخطى رسائل غير معالَجة",
+            "تكرار فقط",
+            "rebalance"
+          ],
+          "answer": 1,
+          "explain": "النمط الصحيح: `EnableAutoCommit=false` و`EnableAutoOffsetStore=false` + `Commit` بعد نجاح المعالجة (at-least-once)."
+        },
+        {
+          "q": "أنهي وسيط لرسائل مجدولة (تشغيل بعد 3 ساعات) وكشف تكرار مدمج؟",
+          "options": [
+            "Kafka",
+            "Azure Service Bus (`ScheduledEnqueueTime` + `DuplicateDetection`)",
+            "Redis Pub/Sub",
+            "gRPC"
+          ],
+          "answer": 1,
+          "explain": "في Kafka هتبني الجدولة بنفسك (موضوع تأخير + عامل)، وفي RabbitMQ تحتاج TTL+DLX أو plugin. Service Bus بيدعمها مدمجًا."
+        },
+        {
+          "q": "فريق صغير بلا خبرة تشغيل Kafka ومحتاج أوامر وrequest/response. القرار؟",
+          "options": [
+            "Kafka (أقوى)",
+            "RabbitMQ أو Service Bus — Kafka هنا تكلفة تشغيلية بلا فائدة مقابلة",
+            "بلا وسيط",
+            "EventStoreDB"
+          ],
+          "answer": 1,
+          "explain": "لو مش محتاج replay/streaming، وسيط الرسائل أبسط وأرخص تشغيليًا ويخدم الأنماط دي أحسن."
+        },
+        {
+          "q": "رسالة أكبر من حد الوسيط. الحل؟",
+          "options": [
+            "ارفع الحد للأبد",
+            "claim check: خزّن الحمولة في blob/object storage ومرّر المرجع + الحقول الأساسية في الرسالة",
+            "اقسمها عشوائيًا",
+            "احذف الحقول"
+          ],
+          "answer": 1,
+          "explain": "رفع الحد بيضغط ذاكرة الوسيط ويقلل الإنتاجية. الرسالة المثالية صغيرة (< 10KB) وتحمل ما يكفي للتوجيه."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "تجريد ناشر + وسيطان",
+          "md": "عرّف `IEventPublisher` في مشروع العقود، ونفّذه لوسيطَين (RabbitMQ عبر MassTransit + Kafka أو Service Bus)، مع اختيار بالإعدادات. انقل مسارًا موجودًا للتجريد وأثبت إن التبديل بلا تغيير في كود العمل.",
+          "criteria": [
+            "منفذ واحد في Contracts/Application (لا اعتماد على أنواع الوسيط في كود العمل)",
+            "تنفيذان حقيقيان + `InMemoryPublisher` للاختبارات + `NoopPublisher` للتطوير",
+            "اختبار يبدّل المزوّد بالإعدادات ويمر (نفس اختبارات المستهلك)",
+            "`IIntegrationEvent` يحمل MessageId/SchemaVersion/CorrelationId/OccurredAt",
+            "مفتاح تقسيم/توجيه موثق لكل نوع حدث (ولييه)",
+            "ADR يشرح الوسيط المختار ولماذا، وشروط الانتقال للآخر"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مستهلك Kafka أو Service Bus بسلوك فشل صحيح",
+          "md": "ابنِ مستهلكًا لإحداثات الطلبات (تقارير/بحث) بالتزام/تأكيد **بعد** المعالجة، DLQ للرسائل السامة، وقياس lag. اختبر: فشل عابر (إعادة تسليم)، رسالة سامة (DLQ)، وانهيار أثناء المعالجة (لا فقد).",
+          "criteria": [
+            "التزام/ack بعد النجاح فقط (اختبار انهيار محاكى → الرسالة تُعاد ولا تُفقد)",
+            "رسالة سامة → DLQ/موضوع dead-letter مع سبب محفوظ، والـpartition/القائمة تستمر",
+            "إعادة تسليم مكررة → idempotent (اختبار)",
+            "مقياس lag (Kafka) أو طول القائمة (Service Bus) منشور + حد إنذار موثق",
+            "إعدادات موثقة: `MaxPollIntervalMs`/`MaxConcurrentCalls` و`PrefetchCount` وليه القيم دي"
+          ],
+          "hint": "لمحاكاة الانهيار: اقتل العملية بين المعالجة والالتزام في اختبار يدوي (أو استخدم flag يرمي استثناء بعد المعالجة وقبل الالتزام) وتحقق إن الرسالة رجعت."
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Confluent Kafka .NET client",
+          "url": "https://docs.confluent.io/kafka-clients/dotnet/current/overview.html"
+        },
+        {
+          "label": "Apache Kafka documentation",
+          "url": "https://kafka.apache.org/documentation/"
+        },
+        {
+          "label": "Azure Service Bus documentation",
+          "url": "https://learn.microsoft.com/azure/service-bus-messaging/"
+        },
+        {
+          "label": "Azure.Messaging.ServiceBus",
+          "url": "https://learn.microsoft.com/dotnet/api/overview/azure/messaging.servicebus-readme"
+        },
+        {
+          "label": "Azure Architecture — Choose a messaging option",
+          "url": "https://learn.microsoft.com/azure/architecture/guide/technology-choices/messaging-overview"
+        },
+        {
+          "label": "RabbitMQ vs Kafka (concepts)",
+          "url": "https://www.rabbitmq.com/docs/streams"
+        },
+        {
+          "label": "Claim Check pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/claim-check"
+        }
+      ]
+    }
+  ]
+}

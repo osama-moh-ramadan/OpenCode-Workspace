@@ -1,0 +1,339 @@
+{
+  "id": "s9-m2-l5",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "الدرس ده **جلسة تدريب موقوتة، مش قراءة**. 40 دقيقة: 20 مسألة في **دفعتين** (10 × 15 دقيقة لكل دفعة مع مراجعة) — لأن المقابلة الحقيقية لا تعطيك وقتًا مفتوحًا.\n\nالعنوان الكبير: *التدريب على التسليم تحت ضغط* — اللي بتفتقده أكثر من المعرفة هو **إدارة الوقت** و**الكلام أثناء الحل**."
+    },
+    {
+      "type": "terms",
+      "title": "قواعد الجلسة",
+      "items": [
+        {
+          "term": "Timeboxing",
+          "def": "سقف زمني صارم لكل مسألة: 8 دقائق للمتوسط. إذا لم تنته، توقف — وسجّل السبب بدل الاستمرار."
+        },
+        {
+          "term": "Think aloud",
+          "def": "الكلام بصوت عالٍ أثناء الحل: المتطلب → النمط → التعقيد → الكود. المحاور يقيس التواصل لا الكود فقط."
+        },
+        {
+          "term": "Clarify first",
+          "def": "أسئلة قبل الكود: الحدود؟ الأرقام سالبة؟ هل نعدّل المكان؟ حجم المدخل؟ هذا يعطيك 1–2 دقيقة مجانية."
+        },
+        {
+          "term": "Brute force then optimize",
+          "def": "ابدأ بالحل الساذج على السبورة (يضمن وجود حل)، ثم حسّنه أمام المحاور — الطريقة الأكثر قبولًا."
+        },
+        {
+          "term": "Dry run",
+          "def": "تتبّع يدوي بمثال صغير قبل التشغيل — يكشف 80% من أخطاء الحدود."
+        },
+        {
+          "term": "Error log",
+          "def": "سجل أخطائك المتكررة (off-by-one · نسيان visited · شرط تقليص). استهدافه يضاعف تحسنك."
+        },
+        {
+          "term": "Spaced repetition",
+          "def": "أعد حل نفس المسألة بعد يوم وأسبوع — أسرع من حل مسائل جديدة دون تثبيت."
+        },
+        {
+          "term": "Pattern recall",
+          "def": "لكل مسألة: اكتب اسم النمط قبل الكود. لو لم تعرف النمط، فالمشكلة في التصنيف لا في التنفيذ."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① الدفعة A — 10 مسائل (15 دقيقة)"
+    },
+    {
+      "type": "table",
+      "caption": "احسب النتيجة: 1 نقطة للحل الصحيح، 0.5 إذا عرفت النمط بلا وقت كافٍ",
+      "head": [
+        "#",
+        "المسألة",
+        "النمط",
+        "الهدف الزمني"
+      ],
+      "rows": [
+        [
+          "1",
+          "أقصى عنصر في مصفوفة",
+          "مسح خطي",
+          "1 د"
+        ],
+        [
+          "2",
+          "هل السلسلة متناظرة (palindrome)؟",
+          "مؤشران طرفان",
+          "2 د"
+        ],
+        [
+          "3",
+          "عكس مصفوفة في المكان",
+          "مؤشران",
+          "2 د"
+        ],
+        [
+          "4",
+          "أقصى مجموع نطاق متصل",
+          "Kadane",
+          "5 د"
+        ],
+        [
+          "5",
+          "ثاني أكبر عنصر (بلا فرز)",
+          "مسح بحالتين",
+          "3 د"
+        ],
+        [
+          "6",
+          "أول عنصر غير مكرر في سلسلة",
+          "Dictionary + مسحين",
+          "5 د"
+        ],
+        [
+          "7",
+          "دمج مصفوفتين مرتّبتين",
+          "مؤشران",
+          "5 د"
+        ],
+        [
+          "8",
+          "إزالة التكرارات في المكان",
+          "مؤشران نفس الاتجاه",
+          "4 د"
+        ],
+        [
+          "9",
+          "أقصى فرق بين عنصرين (الأصغر قبل الأكبر)",
+          "مسح بحد أدنى",
+          "5 د"
+        ],
+        [
+          "10",
+          "تاريخان — عدد الأيام بينهما",
+          "DateTime + تحقق حدود",
+          "4 د"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Timed/SetA.cs — الحلول المرجعية للدفعة A",
+      "filename": "Algorithms/TimedSetA.cs",
+      "code": "public static class TimedSetA\n{\n    // 1) O(n)\n    public static int Max(int[] a)\n    {\n        if (a.Length == 0) throw new ArgumentException(\"فارغة\");\n        var m = a[0];\n        foreach (var x in a) if (x > m) m = x;\n        return m;\n    }\n\n    // 2) O(n) · O(1)\n    public static bool IsPalindrome(ReadOnlySpan<char> s)\n    {\n        int l = 0, r = s.Length - 1;\n        while (l < r) { if (s[l] != s[r]) return false; l++; r--; }\n        return true;\n    }\n\n    // 3) O(n) · O(1)\n    public static void ReverseInPlace(Span<int> a)\n    {\n        for (int i = 0, j = a.Length - 1; i < j; i++, j--)\n            (a[i], a[j]) = (a[j], a[i]);\n    }\n\n    // 4) Kadane — O(n)\n    public static int MaxSubArray(int[] a)\n    {\n        var best = a[0]; var cur = a[0];\n        for (var i = 1; i < a.Length; i++)\n        {\n            cur = Math.Max(a[i], cur + a[i]);\n            best = Math.Max(best, cur);\n        }\n        return best;\n    }\n\n    // 5) ثاني أكبر — O(n) · O(1) — انتبه للتكرارات\n    public static int? SecondLargest(int[] a)\n    {\n        if (a.Length < 2) return null;\n        int first = int.MinValue, second = int.MinValue;\n\n        foreach (var x in a)\n        {\n            if (x > first) { second = first; first = x; }\n            else if (x < first && x > second) second = x;   // ✅ التكرار يُتجاهل\n        }\n        return second == int.MinValue ? null : second;\n    }\n\n    // 6) أول عنصر غير مكرر — O(n)\n    public static int? FirstUnique(ReadOnlySpan<char> s)\n    {\n        Span<int> counts = stackalloc int[128];\n        foreach (var c in s) counts[c]++;\n\n        for (var i = 0; i < s.Length; i++)\n            if (counts[s[i]] == 1) return i;\n        return null;\n    }\n\n    // 7) دمج مرتّبتين — O(n+m) · O(n+m)\n    public static int[] MergeSorted(int[] a, int[] b)\n    {\n        var result = new int[a.Length + b.Length];\n        int i = 0, j = 0, k = 0;\n\n        while (i < a.Length && j < b.Length)\n            result[k++] = a[i] <= b[j] ? a[i++] : b[j++];\n\n        while (i < a.Length) result[k++] = a[i++];\n        while (j < b.Length) result[k++] = b[j++];\n        return result;\n    }\n\n    // 8) إزالة التكرارات — O(n) · O(1)\n    public static int RemoveDuplicates(Span<int> sorted)\n    {\n        if (sorted.Length == 0) return 0;\n        var w = 1;\n        for (var r = 1; r < sorted.Length; r++)\n            if (sorted[r] != sorted[w - 1]) sorted[w++] = sorted[r];\n        return w;\n    }\n\n    // 9) أقصى فرق (بيع ثم شراء) — O(n)\n    public static int MaxProfit(int[] prices)\n    {\n        var min = prices[0];\n        var best = 0;\n        foreach (var p in prices)\n        {\n            if (p < min) min = p;\n            else if (p - min > best) best = p - min;\n        }\n        return best;\n    }\n\n    // 10) فرق الأيام — انتبه للحدود والتوقيت\n    public static int DaysBetween(DateOnly from, DateOnly to) =>\n        Math.Abs(to.DayNumber - from.DayNumber);\n}"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "الدفعة A عالمية: 15 دقيقة واقعية؟",
+      "md": "المسائل 1–9 تُحل في ~10 دقائق لو الأنماط محفوظة. المسألة 10 سهلة لكن **شرطها هو التحقق**: تواريخ صالحة · `DateOnly` بدل `DateTime` (لا مشاكل توقيت) · الفرق قد يكون سالبًا.\n**أضف 2 دقيقة للقراءة والتحقق في كل مسألة** — هذا الواقع في المقابلة: 40% من الوقت يذهب للفهم لا للكتابة."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② الدفعة B — 10 مسائل (20 دقيقة)"
+    },
+    {
+      "type": "table",
+      "caption": "مستوى أعلى قليلًا — نفس الأنماط بتوليف",
+      "head": [
+        "#",
+        "المسألة",
+        "النمط",
+        "الهدف"
+      ],
+      "rows": [
+        [
+          "11",
+          "زوجان مجموعهما هدف في مصفوفة مرتّبة",
+          "مؤشران طرفان",
+          "3 د"
+        ],
+        [
+          "12",
+          "أطول سلسلة بلا تكرار",
+          "نافذة متغيرة",
+          "7 د"
+        ],
+        [
+          "13",
+          "أقصر نطاق مجموعه ≥ هدف (موجبة)",
+          "نافذة متغيرة",
+          "7 د"
+        ],
+        [
+          "14",
+          "عدّ النطاقات التي مجموعها k",
+          "prefix + Dictionary",
+          "8 د"
+        ],
+        [
+          "15",
+          "أقصى متوسط نافذة بحجم k",
+          "نافذة ثابتة",
+          "4 د"
+        ],
+        [
+          "16",
+          "أكبر عنصر في كل نافذة بحجم k",
+          "deque رتيبة",
+          "10 د"
+        ],
+        [
+          "17",
+          "قوسان صالحان؟",
+          "مكدس",
+          "4 د"
+        ],
+        [
+          "18",
+          "دمج نطاقات متداخلة",
+          "فرز + مؤشر",
+          "7 د"
+        ],
+        [
+          "19",
+          "دوران مصفوفة بمقدار k",
+          "عكس ثلاث مرات",
+          "6 د"
+        ],
+        [
+          "20",
+          "بحث في مصفوفة مدوّرة مرتّبة",
+          "بحث ثنائي معدّل",
+          "8 د"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Timed/SetB.cs — الحلول المرجعية للدفعة B (مختصرة)",
+      "filename": "Algorithms/TimedSetB.cs",
+      "code": "public static class TimedSetB\n{\n    // 11) مؤشران\n    public static (int, int)? PairSum(int[] sorted, int t)\n    {\n        int l = 0, r = sorted.Length - 1;\n        while (l < r)\n        {\n            var s = sorted[l] + sorted[r];\n            if (s == t) return (l, r);\n            if (s < t) l++; else r--;\n        }\n        return null;\n    }\n\n    // 12) نافذة متغيرة — O(n)\n    public static int LongestUnique(ReadOnlySpan<char> s)\n    {\n        Span<int> last = stackalloc int[128];\n        last.Fill(-1);\n        int l = 0, best = 0;\n        for (var r = 0; r < s.Length; r++)\n        {\n            if (last[s[r]] >= l) l = last[s[r]] + 1;\n            last[s[r]] = r;\n            best = Math.Max(best, r - l + 1);\n        }\n        return best;\n    }\n\n    // 13) أقصر نطاق مجموعه ≥ t\n    public static int MinLen(int[] a, int t)\n    {\n        int l = 0, sum = 0, best = int.MaxValue;\n        for (var r = 0; r < a.Length; r++)\n        {\n            sum += a[r];\n            while (sum >= t) { best = Math.Min(best, r - l + 1); sum -= a[l++]; }\n        }\n        return best == int.MaxValue ? 0 : best;\n    }\n\n    // 14) عدّ النطاقات\n    public static int CountSumK(int[] a, int k)\n    {\n        var seen = new Dictionary<long, int> { [0] = 1 };\n        long sum = 0; var count = 0;\n        foreach (var x in a)\n        {\n            sum += x;\n            if (seen.TryGetValue(sum - k, out var c)) count += c;\n            seen[sum] = seen.GetValueOrDefault(sum) + 1;\n        }\n        return count;\n    }\n\n    // 15) نافذة ثابتة\n    public static double MaxAvg(int[] a, int k)\n    {\n        double sum = 0;\n        for (var i = 0; i < k; i++) sum += a[i];\n        var best = sum;\n        for (var i = k; i < a.Length; i++)\n        {\n            sum += a[i] - a[i - k];\n            if (sum > best) best = sum;\n        }\n        return best / k;\n    }\n\n    // 16) deque رتيبة\n    public static int[] MaxInWindow(int[] a, int k)\n    {\n        var res = new int[a.Length - k + 1];\n        var dq = new LinkedList<int>();\n        for (var i = 0; i < a.Length; i++)\n        {\n            if (dq.First is { } f && f.Value <= i - k) dq.RemoveFirst();\n            while (dq.Last is { } l && a[l.Value] <= a[i]) dq.RemoveLast();\n            dq.AddLast(i);\n            if (i >= k - 1) res[i - k + 1] = a[dq.First!.Value];\n        }\n        return res;\n    }\n\n    // 17) أقواس\n    public static bool ValidBrackets(ReadOnlySpan<char> s)\n    {\n        Span<char> st = stackalloc char[Math.Min(s.Length, 512)];\n        var top = 0;\n        foreach (var c in s)\n        {\n            if (c is '(' or '[' or '{') { if (top == st.Length) return false; st[top++] = c; }\n            else if (c is ')' or ']' or '}')\n            {\n                if (top == 0) return false;\n                var open = st[--top];\n                if ((c == ')' && open != '(') || (c == ']' && open != '[') || (c == '}' && open != '{'))\n                    return false;\n            }\n        }\n        return top == 0;\n    }\n\n    // 18) دمج نطاقات\n    public static IReadOnlyList<(int, int)> Merge(IEnumerable<(int S, int E)> intervals)\n    {\n        var sorted = intervals.OrderBy(i => i.S).ThenBy(i => i.E).ToList();\n        var result = new List<(int, int)>();\n        foreach (var (s, e) in sorted)\n        {\n            if (result.Count > 0 && s <= result[^1].Item2)          // متداخل\n                result[^1] = (result[^1].Item1, Math.Max(result[^1].Item2, e));\n            else result.Add((s, e));\n        }\n        return result;\n    }\n\n    // 19) دوران بعكس ثلاث مرات — O(n) · O(1)\n    public static void Rotate(Span<int> a, int k)\n    {\n        if (a.Length == 0) return;\n        k %= a.Length;\n        if (k < 0) k += a.Length;\n        Reverse(a);                       // كل المصفوفة\n        Reverse(a[..k]);                  // الجزء الأول\n        Reverse(a[k..]);                  // الباقي\n\n        static void Reverse(Span<int> s)\n        {\n            for (int i = 0, j = s.Length - 1; i < j; i++, j--)\n                (s[i], s[j]) = (s[j], s[i]);\n        }\n    }\n\n    // 20) بحث ثنائي في مدوّرة — O(log n)\n    public static int SearchRotated(int[] a, int target)\n    {\n        int lo = 0, hi = a.Length - 1;\n        while (lo <= hi)\n        {\n            var mid = lo + ((hi - lo) >> 1);\n            if (a[mid] == target) return mid;\n\n            // أي نصف مرتّب؟\n            if (a[lo] <= a[mid])                                   // اليسار مرتّب\n            {\n                if (target >= a[lo] && target < a[mid]) hi = mid - 1;\n                else lo = mid + 1;\n            }\n            else                                                   // اليمين مرتّب\n            {\n                if (target > a[mid] && target <= a[hi]) lo = mid + 1;\n                else hi = mid - 1;\n            }\n        }\n        return -1;\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "مسألتان فيهما فخ حقيقي",
+      "md": "**#16 (deque):** إذا نسيت `<=` عند إزالة الخلف، ستحتفظ بعناصر مكافئة ويزداد الحجم — النتيجة صحيحة لكن الأداء ينحرف. وإذا نسيت إزالة الخلف **قبل** الإضافة، يخرج الأقصى القديم.\n**#20 (مدوّرة):** الخطأ الشائع هو `target >= a[lo]` بدل `>` أو نسيان المساواة على الطرف. اختبرها بـ`[4,5,6,7,0,1,2]` مع أهداف: 0 · 4 · 7 · 3 (غير موجود) · 9."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ بعد الجلسة: التقييم والسجل"
+    },
+    {
+      "type": "table",
+      "caption": "كيف تقيس نفسك (لا «حليت/ما حلتش»)",
+      "head": [
+        "المؤشر",
+        "كيف تقيسه",
+        "الهدف",
+        "إن لم تصل"
+      ],
+      "rows": [
+        [
+          "نسبة الحل الصحيح من أول محاولة",
+          "عدد المسائل بلا تشغيل",
+          "≥ 60%",
+          "راجع الأنماط لا الكود"
+        ],
+        [
+          "زمن الوصول للنمط",
+          "سجّل الوقت قبل الكتابة",
+          "≤ 60 ثانية",
+          "تمرين تصنيف: 30 مسألة في 10 دقائق"
+        ],
+        [
+          "أخطاء الحدود",
+          "عدّها في سجلك",
+          "≤ 2 لكل 10",
+          "dry run إلزامي بمثال صغير"
+        ],
+        [
+          "جودة الشرح",
+          "سجّل نفسك صوتيًا مرة",
+          "منظم: متطلب → نمط → تعقيد → كود → اختبار",
+          "تدرّب مع شخص/كاميرا"
+        ],
+        [
+          "الوقت الكلي",
+          "40 دقيقة",
+          "≥ 14 مسألة",
+          "قلّل زمن التفكير وابدأ بالحل الساذج"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "تمبلت سجل الأخطاء (استخدمه كل جلسة)",
+      "filename": "docs/error-log.txt",
+      "code": "\n| # | المسألة | النمط | الوقت | الخطأ | التصنيف | الإصلاح |\n|---|---------|-------|-------|-------|---------|---------|\n| 1 | أطول سلسلة بلا تكرار | نافذة | 9د   | نسيت r-l+1 | حدود | اصطلاح [l,r] موثّق |\n| 2 | عدّ النطاقات | prefix | 12د  | نسيت البادئة [0]=1 | حالة خاصة | قائمة تحقق |\n| 3 | أقصى في نافذة | deque | 15د  | أزلت الخلف بعد الإضافة | ترتيب | خطوات مكتوبة |\n\nتصنيفات الأخطاء: حدود · نمط خاطئ · حالة خاصة · ترتيب عمليات · تعقيد · لغة/API.\nكل أسبوع: أكثر تصنيف متكرر ⇒ درس واحد مركّز عليه.\n"
+    },
+    {
+      "type": "checkpoints",
+      "title": "هل أنت جاهز؟",
+      "items": [
+        "أنجزت 20 مسألة في ≤ 40 دقيقة (أو 14+ مع تسجيل أسباب التأخير).",
+        "حصلت على ≥ 60% صحيح من أول محاولة بدون تشغيل.",
+        "سجّلت النمط لكل مسألة قبل كتابة الكود.",
+        "أكثر من 13 مسألة بلا خطأ حدود واحد.",
+        "شرحت مسألتين بصوت عالٍ في دقيقتين لكل منهما.",
+        "عندك سجل أخطاء مكتوب بتصنيفات (لا «أخطاء عامة»).",
+        "تعرف 3 نقاط ضعف حقيقية وخصّصت لها تدريبًا الأسبوع القادم."
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "التسليم",
+      "intro": "جلسة موثّقة.",
+      "items": [
+        {
+          "id": "s9-m2-l5-t1",
+          "title": "سجّل جلسة 40 دقيقة كاملة",
+          "md": "نفّذ الجلستين (A وB) بمؤقت حقيقي، بدون إنترنت، وسجّل كل شيء في سجل الأخطاء، ثم قيّم نفسك بالجدول أعلاه.",
+          "criteria": [
+            "40 دقيقة موقّتة فعلًا (لقطة من المؤقّت أو الطابع الزمني).",
+            "أكواد 20 مسألة محفوظة (حتى غير المكتملة) في مستودع.",
+            "سجل أخطاء مُصنّف لكل مسألة أخفقت فيها.",
+            "تقييم مكتوب بأرقام: نسبة النجاح · زمن الوصول للنمط · عدد أخطاء الحدود.",
+            "تسجيل صوتي/فيديو لمسألتين بصوت عالٍ (2 دقيقة لكل واحدة).",
+            "خطة تدريب الأسبوع التالي: 3 مسائل مستهدفة بنوع الخطأ المتكرر."
+          ],
+          "hint": "لا تستخدم الإنترنت أو مساعد AI — الجلسة قياس لقدرتك الحالية. اختر 3 مسائل من الـ20 لإعادة حلها بعد 48 ساعة (spaced repetition). وإن لم تكمل 20، سجّل السبب بصراحة: هل كان نمطًا مفقودًا أم تنفيذًا بطيئًا أم قراءة سيئة للسؤال؟ — الجواب يحدد تدريبك.",
+          "solution": "النتيجة النموذجية لأول جلسة: 12–15 مسألة، ونسبة نجاح 50–65%. الأخطاء الأكثر شيوعًا: حدود (40%) ونمط خاطئ (25%). بعد 3 جلسات موثّقة تصبح 18 مسألة و≥75% — والتحسن الحقيقي يأتي من **تصنيف الأخطاء** لا من حل مسائل أكثر.",
+          "resources": [
+            "https://learn.microsoft.com/dotnet/api/system.diagnostics.stopwatch",
+            "https://learn.microsoft.com/dotnet/api/system.collections.generic.priorityqueue-2"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "مجموعات مسائل .NET/C#",
+          "url": "https://learn.microsoft.com/dotnet/csharp/"
+        },
+        {
+          "label": "Stopwatch (قياس الزمن)",
+          "url": "https://learn.microsoft.com/dotnet/api/system.diagnostics.stopwatch"
+        },
+        {
+          "label": "TimeProvider",
+          "url": "https://learn.microsoft.com/dotnet/api/system.timeprovider"
+        }
+      ]
+    }
+  ]
+}

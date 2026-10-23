@@ -1,0 +1,344 @@
+{
+  "id": "s9-m2-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "الرسوم (Graphs) هي **أكثر بنية تُسأل في المقابلات بعد المصفوفات**، وأكثرها ارتباطًا بالشغل الواقعي: تبعيات المشاريع · مسارات الطلبات في الميكروسيرفيسز · توصيات · اكتشاف دورات في خدمات · شبكات.\n\nالدرس: تمثيل (مصفوفة/قوائم تجاور) · BFS وDFS · أقصر مسار بلا أوزان · اكتشاف دورات · الترتيب الطوبولوجي — وكلها بـC# نظيفة."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات",
+      "items": [
+        {
+          "term": "Adjacency matrix",
+          "def": "مصفوفة n×n: `m[i][j] = 1` لو يوجد حرف. O(n²) ذاكرة، فحص الحرف O(1) — جيدة للرسوم الكثيفة."
+        },
+        {
+          "term": "Adjacency list",
+          "def": "لكل عقدة قائمة جيران: O(V+E) ذاكرة — الأفضل عمليًا (أغلب الرسوم متفرقة)."
+        },
+        {
+          "term": "BFS",
+          "def": "بحث بالعرض بطابور: يزور بالطبقات ⇒ **يعطي أقصر مسار بعدد الحواف** في رسم بلا أوزان. O(V+E)."
+        },
+        {
+          "term": "DFS",
+          "def": "بحث بالعمق بمكدس/عودية: يستكشف فرعًا كاملًا قبل غيره. O(V+E). مناسب للاتصال/الدورات/التوبولوجي."
+        },
+        {
+          "term": "Visited set",
+          "def": "مجموعة العقد المزارة — **بدونها** تدور في حلقة لا نهائية عند وجود دورة."
+        },
+        {
+          "term": "Connected components",
+          "def": "عدد المجموعات المترابطة = عدد مرات تشغيل BFS/DFS على عقد غير مزارة."
+        },
+        {
+          "term": "Topological sort",
+          "def": "ترتيب عقد DAG بحيث تأتي كل عقدة قبل تابعيها (Kahn بـin-degree أو DFS post-order). يفشل لو وُجدت دورة."
+        },
+        {
+          "term": "Cycle detection",
+          "def": "في رسم موجّه: DFS بحالة (مزار/في المسار) أو Kahn (لو بقي عقد ⇒ دورة). في غير موجّه: تتبّع الأب."
+        },
+        {
+          "term": "Dijkstra",
+          "def": "أقصر مسار بأوزان غير سالبة بـ`PriorityQueue`: O((V+E) log V)."
+        },
+        {
+          "term": "Union-Find (DSU)",
+          "def": "بنية للانتماء للمجموعات: `Find`/`Union` شبه O(1) بـpath compression — ممتازة لكشف الدورات/الاتصال."
+        },
+        {
+          "term": "Bipartite",
+          "def": "رسم يمكن تلوينه بلونين بحيث لا يتصل متشابهان — يُفحص بـBFS مع صبغ الطبقات."
+        },
+        {
+          "term": "Degrees",
+          "def": "in-degree (عدد الحواف الداخلة) وout-degree (الخارجة) — أساس Kahn والتحليل."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① التمثيل: القرار الأول"
+    },
+    {
+      "type": "table",
+      "caption": "كيف تخزّن الرسم",
+      "head": [
+        "المعيار",
+        "Matrix",
+        "List",
+        "الأفضل"
+      ],
+      "rows": [
+        [
+          "الذاكرة",
+          "O(V²)",
+          "O(V+E)",
+          "List إلا للكثيف"
+        ],
+        [
+          "فحص «هل يوجد حرف؟»",
+          "O(1)",
+          "O(degree)",
+          "Matrix"
+        ],
+        [
+          "المرور على كل الجيران",
+          "O(V) دائمًا",
+          "O(degree)",
+          "List"
+        ],
+        [
+          "V = 10,000 وE = 20,000",
+          "100M خلية ❌",
+          "سريع ✅",
+          "List"
+        ],
+        [
+          "V = 500 وكل شيء متصل",
+          "مقبول ✅",
+          "مقبول",
+          "أيهما"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Graphs/Graph.cs — قوائم تجاور + BFS + DFS + مكوّنات",
+      "filename": "Algorithms/Graph.cs",
+      "code": "using System.Collections.Generic;\n\n/// <summary>رسم بقوائم تجاور — O(V+E) ذاكرة، ويصلح لرسم عشوائي/كبير.</summary>\npublic sealed class Graph\n{\n    private readonly Dictionary<int, List<int>> _adj = new();\n    public bool Directed { get; }\n\n    public Graph(bool directed = false) => Directed = directed;\n\n    public void AddVertex(int v) => _adj.TryAdd(v, []);\n\n    public void AddEdge(int from, int to)\n    {\n        AddVertex(from);\n        AddVertex(to);\n        _adj[from].Add(to);\n        if (!Directed) _adj[to].Add(from);\n    }\n\n    public IReadOnlyList<int> Neighbors(int v) =>\n        _adj.TryGetValue(v, out var list) ? list : [];\n\n    public IEnumerable<int> Vertices => _adj.Keys;\n\n    // ── BFS: أقصر مسار بعدد الحواف ──────────────────────────────\n    /// <summary>يرجع المسار من start إلى target أو null. O(V+E).</summary>\n    public IReadOnlyList<int>? ShortestPath(int start, int target)\n    {\n        if (!_adj.ContainsKey(start)) return null;\n        if (start == target) return [start];\n\n        var visited = new HashSet<int> { start };\n        var parent = new Dictionary<int, int>();\n        var queue = new Queue<int>();\n        queue.Enqueue(start);\n\n        while (queue.Count > 0)\n        {\n            var v = queue.Dequeue();\n            foreach (var n in Neighbors(v))\n            {\n                if (!visited.Add(n)) continue;      // ✅ قبل الإضافة للطابور\n                parent[n] = v;\n\n                if (n == target) return BuildPath(parent, start, target);\n                queue.Enqueue(n);\n            }\n        }\n        return null;\n    }\n\n    private static List<int> BuildPath(Dictionary<int, int> parent, int start, int target)\n    {\n        var path = new List<int>();\n        for (var at = target; at != start; at = parent[at]) path.Add(at);\n        path.Add(start);\n        path.Reverse();\n        return path;\n    }\n\n    // ── DFS تكرارية (بلا stack overflow) ────────────────────────\n    public IReadOnlyList<int> DfsPreOrder(int start)\n    {\n        var result = new List<int>();\n        var visited = new HashSet<int>();\n        var stack = new Stack<int>();\n        stack.Push(start);\n\n        while (stack.Count > 0)\n        {\n            var v = stack.Pop();\n            if (!visited.Add(v)) continue;\n            result.Add(v);\n\n            // نضيف الجيران بترتيب معكوس حتى يُزار الأول أولًا\n            var neighbors = Neighbors(v);\n            for (var i = neighbors.Count - 1; i >= 0; i--)\n                if (!visited.Contains(neighbors[i])) stack.Push(neighbors[i]);\n        }\n        return result;\n    }\n\n    // ── المكوّنات المتصلة ───────────────────────────────────────\n    public int CountComponents()\n    {\n        var visited = new HashSet<int>();\n        var components = 0;\n\n        foreach (var v in Vertices)\n        {\n            if (visited.Contains(v)) continue;\n            components++;\n            var stack = new Stack<int>();\n            stack.Push(v);\n            while (stack.Count > 0)\n            {\n                var cur = stack.Pop();\n                if (!visited.Add(cur)) continue;\n                foreach (var n in Neighbors(cur))\n                    if (!visited.Contains(n)) stack.Push(n);\n            }\n        }\n        return components;\n    }\n\n    // ── كشف دورة في رسم موجّه (DFS بالألوان) ───────────────────\n    /// <summary>0=غير مزار · 1=في المسار الحالي · 2=انتهى</summary>\n    public bool HasCycle()\n    {\n        var color = new Dictionary<int, int>();\n        foreach (var v in Vertices)\n            if (Get(color, v) == 0 && VisitCycle(v, color)) return true;\n        return false;\n    }\n\n    private bool VisitCycle(int v, Dictionary<int, int> color)\n    {\n        color[v] = 1;\n        foreach (var n in Neighbors(v))\n        {\n            var c = Get(color, n);\n            if (c == 1) return true;                    // ✅ عودة للمسار الحالي = دورة\n            if (c == 0 && VisitCycle(n, color)) return true;\n        }\n        color[v] = 2;\n        return false;\n    }\n\n    private static int Get(Dictionary<int, int> d, int k) => d.TryGetValue(k, out var v) ? v : 0;\n}"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "5 أخطاء في BFS/DFS",
+      "md": "**① إضافة `visited` عند الخروج من الطابور لا عند الإضافة** → العقدة تُضاف عدة مرات فتنفجر الذاكرة (خصوصًا في BFS).\n**② نسيان `visited` تمامًا** → حلقة لا نهائية مع أي دورة.\n**③ BFS مع أوزان** → لا يعطي أقصر مسار وزني (استخدم Dijkstra).\n**④ عودية عميقة على 10⁶ عقدة** → `StackOverflow` (لا يُلتقط) — استخدم مكدسًا صريحًا.\n**⑤ إعادة إنشاء `List`/`HashSet` داخل حلقة** → تدهور من O(V+E) إلى أسوأ."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② التوبولوجي: الحالة الأكثر ارتباطًا بالشغل"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Graphs/TopologicalSort.cs — ترتيب المهام/المستأجرين + كشف دورة",
+      "filename": "Algorithms/TopologicalSort.cs",
+      "code": "/// <summary>\n/// ترتيب تبعيات (DAG): «ابدأ بما لا يعتمد على شيء».\n/// تطبيقات واقعية: ترتيب طلبات migrations · مهام build · وركفلوز · تبعيات DI.\n/// </summary>\npublic static class TopologicalSort\n{\n    /// <summary>Kahn: نبدأ بالعقد ذات in-degree = 0. يرجع null لو وُجدت دورة.</summary>\n    public static IReadOnlyList<int>? Kahn(IReadOnlyDictionary<int, List<int>> edges)\n    {\n        var inDegree = new Dictionary<int, int>();\n        foreach (var (from, tos) in edges)\n        {\n            inDegree.TryAdd(from, 0);\n            foreach (var to in tos)\n            {\n                inDegree.TryAdd(to, 0);\n                inDegree[to]++;\n            }\n        }\n\n        var ready = new Queue<int>(inDegree.Where(kv => kv.Value == 0).Select(kv => kv.Key));\n        var order = new List<int>(inDegree.Count);\n\n        while (ready.Count > 0)\n        {\n            var v = ready.Dequeue();\n            order.Add(v);\n            if (!edges.TryGetValue(v, out var tos)) continue;\n            foreach (var to in tos)\n                if (--inDegree[to] == 0) ready.Enqueue(to);\n        }\n\n        // ✅ لو لم تُرتَّب كل العقد ⇒ دورة موجودة\n        return order.Count == inDegree.Count ? order : null;\n    }\n\n    /// <summary>نفس النتيجة بأصغر رقم أولًا (حتمية) — مفيدة في الاختبارات والبناء المتكرر.</summary>\n    public static IReadOnlyList<int>? KahnStable(IReadOnlyDictionary<int, List<int>> edges)\n    {\n        var inDegree = new Dictionary<int, int>();\n        foreach (var (from, tos) in edges)\n        {\n            inDegree.TryAdd(from, 0);\n            foreach (var to in tos) { inDegree.TryAdd(to, 0); inDegree[to]++; }\n        }\n\n        var ready = new PriorityQueue<int, int>();\n        foreach (var kv in inDegree.Where(kv => kv.Value == 0)) ready.Enqueue(kv.Key, kv.Key);\n\n        var order = new List<int>();\n        while (ready.TryDequeue(out var v, out _))\n        {\n            order.Add(v);\n            if (!edges.TryGetValue(v, out var tos)) continue;\n            foreach (var to in tos)\n                if (--inDegree[to] == 0) ready.Enqueue(to, to);\n        }\n        return order.Count == inDegree.Count ? order : null;\n    }\n}\n\n/*\n مثال واقعي: اكتشاف دورة في تبعيات حقن الخدمات عند بدء التطبيق،\n أو في خط أنابيب CI: (build → test → package → deploy) بترتيب صحيح.\n*/"
+    },
+    {
+      "type": "table",
+      "caption": "BFS / DFS / Dijkstra / Topo — اختيار سريع",
+      "head": [
+        "المسألة",
+        "الخوارزمية",
+        "التعقيد"
+      ],
+      "rows": [
+        [
+          "أقصر مسار بلا أوزان",
+          "**BFS**",
+          "O(V+E)"
+        ],
+        [
+          "هل يوجد مسار؟/استكشاف كامل",
+          "DFS",
+          "O(V+E)"
+        ],
+        [
+          "أقصر مسار بأوزان موجبة",
+          "**Dijkstra** بـ`PriorityQueue`",
+          "O((V+E) log V)"
+        ],
+        [
+          "أوزان سالبة",
+          "Bellman-Ford",
+          "O(V·E)"
+        ],
+        [
+          "ترتيب تبعيات",
+          "**Kahn (Topo)**",
+          "O(V+E)"
+        ],
+        [
+          "دورة في رسم موجّه",
+          "DFS بالألوان أو Kahn",
+          "O(V+E)"
+        ],
+        [
+          "عدد المكوّنات",
+          "BFS/DFS من كل عقدة",
+          "O(V+E)"
+        ],
+        [
+          "مجموعات متصلة مع إضافات",
+          "Union-Find",
+          "≈O(1) لكل عملية"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Graphs/Dijkstra.cs — أقصر مسار بأوزان (شبكات/تكاليف)",
+      "filename": "Algorithms/Dijkstra.cs",
+      "code": "/// <summary>رسم موزون موجب — أوزان 0/سالبة غير مدعومة (استخدم Bellman-Ford).</summary>\npublic sealed class WeightedGraph\n{\n    private readonly Dictionary<string, List<(string To, int Weight)>> _adj = new();\n\n    public void AddEdge(string from, string to, int weight)\n    {\n        if (weight < 0) throw new ArgumentException(\"Dijkstra لا يدعم أوزانًا سالبة\", nameof(weight));\n        _adj.TryAdd(from, []);\n        _adj.TryAdd(to, []);\n        _adj[from].Add((to, weight));\n    }\n\n    /// <summary>يرجع المسافة والتكلفة لكل عقدة يمكن الوصول إليها.</summary>\n    public (Dictionary<string, int> Dist, Dictionary<string, string> Prev) Shortest(string source)\n    {\n        var dist = new Dictionary<string, int>(StringComparer.Ordinal) { [source] = 0 };\n        var prev = new Dictionary<string, string>(StringComparer.Ordinal);\n\n        // أولوية بالمسافة: الأقرب غير المنتهي أولًا\n        var queue = new PriorityQueue<string, int>();\n        queue.Enqueue(source, 0);\n        var done = new HashSet<string>(StringComparer.Ordinal);\n\n        while (queue.TryDequeue(out var v, out var d))\n        {\n            if (d > dist.GetValueOrDefault(v, int.MaxValue)) continue;   // نسخة قديمة\n            if (!done.Add(v)) continue;\n\n            foreach (var (to, w) in _adj.GetValueOrDefault(v, []))\n            {\n                var candidate = d + w;\n                if (candidate >= dist.GetValueOrDefault(to, int.MaxValue)) continue;\n                dist[to] = candidate;\n                prev[to] = v;\n                queue.Enqueue(to, candidate);      // إدخال جديد بأولوية أفضل\n            }\n        }\n        return (dist, prev);\n    }\n\n    public IReadOnlyList<string>? PathTo(IReadOnlyDictionary<string, string> prev, string target)\n    {\n        if (!prev.ContainsKey(target)) return null;\n        var path = new List<string> { target };\n        var at = target;\n        while (prev.TryGetValue(at, out var p)) { path.Add(p); at = p; }\n        path.Reverse();\n        return path;\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "متى تظهر الرسوم في شغل .NET الفعلي",
+      "md": "**①** ترتيب migrations متعددة قواعد البيانات · **②** تحليل تبعيات الخدمات (كشف دورة بين خدمتين تتبادلان الاستدعاء) · **③** سير عمل (workflow engine) · **④** صلاحيات متوارثة (graph of roles) · **⑤** توصيات (من شاهد X شاهد Y) · **⑥** فحص صلاحية DI عند بدء التشغيل.\nفي كلها: نفس الكود تقريبًا — BFS/DFS/Topo. اللي يتغير هو مصدر البيانات فقط."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "تختار قوائم تجاور للرسوم المتفرقة وتبرّر بـO(V+E).",
+        "تعلّم `visited` عند الإضافة للطابور لا عند الخروج.",
+        "تستخرج المسار بـ`parent` map وتعيد بناءه بترتيب صحيح.",
+        "تكتب DFS تكرارية وتشرح لماذا (StackOverflow).",
+        "تعدّ المكوّنات المتصلة وتشرح O(V+E).",
+        "تكشف دورة في رسم موجّه بثلاث حالات ألوان.",
+        "تنفّذ Kahn وترجع `null` عند وجود دورة.",
+        "تستخدم `PriorityQueue` في Dijkstra وتتجاهل النسخ القديمة (stale entries).",
+        "تعرف متى تحتاج Dijkstra بدل BFS."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "7 أسئلة.",
+      "questions": [
+        {
+          "q": "متجر 50,000 منتج و200,000 علاقة — أي تمثيل؟",
+          "options": [
+            "مصفوفة n×n",
+            "قوائم تجاور",
+            "Dictionary مفرد",
+            "شجرة"
+          ],
+          "answer": 1,
+          "explain": "المصفوفة تحتاج 2.5 مليار خلية (غير عملي). قوائم التجاور بـO(V+E) = 250 ألف إدخال — فرق هائل."
+        },
+        {
+          "q": "BFS يضمن أقصر مسار عندما:",
+          "options": [
+            "الرسم موزون",
+            "كل الحواف بنفس التكلفة (بلا أوزان)",
+            "الرسم موجّه فقط",
+            "دائمًا"
+          ],
+          "answer": 1,
+          "explain": "BFS يزور بالطبقات فالمسار الأول لهدف هو الأقل حواف. مع أوزان مختلفة، عدد الحواف لا يمثل التكلفة — تحتاج Dijkstra."
+        },
+        {
+          "q": "أين تُضاف العقدة إلى `visited` في BFS الصحيح؟",
+          "options": [
+            "عند خروجها من الطابور",
+            "قبل إضافتها للطابور",
+            "بعد زيارة كل جيرانها",
+            "لا تُضاف"
+          ],
+          "answer": 1,
+          "explain": "لو أضفتها عند الخروج، فقد تُضاف للطابور عشرات المرات قبل معالجتها (في رسم كثيف) ويمكن أن تخسر معنى الطبقات وتستهلك ذاكرة كبيرة."
+        },
+        {
+          "q": "Kahn يرجع ترتيبًا أقصر من عدد العقد. ماذا يعني؟",
+          "options": [
+            "خطأ في الكود",
+            "يوجد دورة — بعض العقد لا يصل in-degree فيها لصفر أبدًا",
+            "الرسم غير متصل",
+            "الرسم موجّه"
+          ],
+          "answer": 1,
+          "explain": "In-degree = 0 تعني «لا تبعية متبقية». في الدورة، كل عقدة فيها تبعية داخلية فلا تُحرَّر — وعدد المخرجات < عدد العقد يكشف ذلك."
+        },
+        {
+          "q": "ما فائدة `PriorityQueue` في Dijkstra؟",
+          "options": [
+            "ترتيب أبجدي",
+            "إخراج العقدة صاحبة أصغر مسافة مؤقتة أولًا — يضمن ألا تُحسَّن بعد التثبيت",
+            "تخزين الحواف",
+            "تقليل الذاكرة"
+          ],
+          "answer": 1,
+          "explain": "Dijkstra جشع: يثبّت أقرب عقدة. `PriorityQueue<string,int>` تعطي هذه بسهولة. ملاحظة: تحقّق من المسافة المخزنة قبل المعالجة لتجاهل الإدخالات القديمة."
+        },
+        {
+          "q": "لماذا DFS تكرارية أفضل من عودية على رسم كبير؟",
+          "options": [
+            "أسرع دائمًا",
+            "لأن العودية تستهلك مكدس الخيط ويمكن أن تنهار بـStackOverflow على 10⁶ عقدة",
+            "أقل ذاكرة",
+            "لا فرق"
+          ],
+          "answer": 1,
+          "explain": "مكدس الخيط محدود (~1MB) والانهيار لا يُلتقط. المكدس الصريح على الـheap يمكن أن ينمو بحد أكبر — وفي المقابلة يفضّل أن تذكر أن النسخة التكرارية أكثر أمانًا."
+        },
+        {
+          "q": "أي سؤال شعبي يُحل بـ«DFS ثلاثي الألوان»؟",
+          "options": [
+            "أقصر مسار",
+            "كشف دورة في رسم موجّه",
+            "ترتيب أبجدي",
+            "عدّ الحواف"
+          ],
+          "answer": 1,
+          "explain": "أبيض (غير مزار) / رمادي (في المسار الحالي) / أسود (منتهٍ). العودة إلى عقدة رمادية = دورة. في الرسم غير الموجّه يكفي تتبّع الأب لتجنّب اعتبار الحرف نفسه عودة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمة واحدة",
+      "intro": "رسم حقيقي من مجالك.",
+      "items": [
+        {
+          "id": "s9-m2-l3-t1",
+          "title": "مهمة: حلّل تبعيات الخدمات/المهام برسم",
+          "md": "ابنِ رسمًا من بيانات حقيقية (تبعيات مشاريع .sln · خدمات · مهام CI) ونفّذ: ترتيبًا طوبولوجيًا · كشف دورة · إيجاد مسار أقصر بين عقدتين · عدّ المكوّنات.",
+          "criteria": [
+            "مصدر البيانات حقيقي (ملف/API/قاعدة) — لا رسم مُختلق بالكامل.",
+            "`Kahn` يرجع ترتيبًا صحيحًا (تحقق آلي: كل حرف يظهر بعد أصله).",
+            "كشف الدورة يعطي **مسار الدورة** نفسه لا مجرد `true`.",
+            "BFS يعطي مسارًا ويعرضه (لا طولًا فقط).",
+            "عدّ المكوّنات + تقرير بالمكوّنات المنفصلة.",
+            "5 اختبارات: رسم بلا حواف · عقدة واحدة · دورة ذاتية · دورتان · رسم متصل تمامًا."
+          ],
+          "hint": "أسهل مصدر بيانات واقعي: اقرأ `*.csproj` و`ProjectReference` من الحل — ينتج رسمًا حقيقيًا للتبعيات. ولعرض الدورة، خلال DFS احتفظ بالمكدس الحالي؛ عند العودة لعقدة رمادية خذ الشريحة من موضعها حتى القمة.",
+          "solution": "النتيجة النموذجية: ترتيب بناء صحيح، وكشف دورة (لو وُجدت) مع الطباعة، وتقرير مكوّنات يكشف مشاريع معزولة. الأهم: تعديل التقرير ليصبح جزءًا من CI (`dotnet build` يفعلها بالفعل للمشاريع، لكن تحليل الخدمات لا) — وهنا القيمة الحقيقية.",
+          "resources": [
+            "https://learn.microsoft.com/dotnet/api/system.collections.generic.priorityqueue-2",
+            "https://learn.microsoft.com/dotnet/api/system.collections.generic.queue-1",
+            "https://learn.microsoft.com/dotnet/api/system.collections.generic.hashset-1"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "PriorityQueue (heap)",
+          "url": "https://learn.microsoft.com/dotnet/api/system.collections.generic.priorityqueue-2"
+        },
+        {
+          "label": "HashSet<T>",
+          "url": "https://learn.microsoft.com/dotnet/api/system.collections.generic.hashset-1"
+        },
+        {
+          "label": "Queue<T>",
+          "url": "https://learn.microsoft.com/dotnet/api/system.collections.generic.queue-1"
+        }
+      ]
+    }
+  ]
+}

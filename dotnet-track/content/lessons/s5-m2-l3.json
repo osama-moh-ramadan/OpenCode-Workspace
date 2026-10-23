@@ -1,0 +1,306 @@
+{
+  "id": "s5-m2-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nفي درس 5.1.2 كتبنا Saga يدويًا (منسّق + حالة محفوظة + تعويضات). الكود كان واضح، لكن فيه حاجات\nلازم تكتبها بنفسك: الحفظ والاستئناف بعد الانهيار، المهلات المجدولة، منع تكرار الانتقالات، والمراقبة.\n\n**MassTransit** بيديك كل ده كـ**state machine دائم**: حالات وأحداث وانتقالات معلنة، حفظ تلقائي في قاعدة البيانات،\nمهلات (schedules) بتعيش بعد إعادة التشغيل، واختبارات بـtest harness.\n\nالدرس ده: تصميم saga صحيح، تنفيذه بـMassTransit، حفظه في EF Core، التعويض والمهلات،\nو**المراقبة** (اللي أغلب الفرق بتنساه لحد ما يلاقي 400 saga عالق من شهر).\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Saga / Process Manager",
+          "def": "حالة طويلة العمر لعملية عمل عبر خدمات: خطوات، انتقالات، وتعويضات. Saga (مصطلح DDD) بلا حالة عمل؛ Process Manager بيحتفظ بحالة — عمليًا الاسمَين بيتستخدموا لنفس الحاجة."
+        },
+        {
+          "term": "State Machine",
+          "def": "تعريف معلن: حالات (`State`)، أحداث (`Event<T>`)، وانتقالات (`Initially`/`During`/`Finally`)."
+        },
+        {
+          "term": "CorrelationId",
+          "def": "المفتاح اللي بيربط كل الرسائل بنفس نسخة الـsaga (عادةً `OrderId`) — بيضمن idempotency تلقائيًا."
+        },
+        {
+          "term": "Compensating Event",
+          "def": "حدث/أمر يعكس أثر خطوة تمت (`ReleaseStock`, `RefundPayment`)."
+        },
+        {
+          "term": "Schedule / Timeout",
+          "def": "مهلة مجدولة محفوظة في القاعدة: لو خطوة ما ردّتتش خلال M دقائق → حدث مهلة يعوّض."
+        },
+        {
+          "term": "Saga Repository",
+          "def": "مكان حفظ الحالة (EF Core/Postgres، Redis، Marten…). بلا حفظ → الـsaga بيموت مع العملية."
+        },
+        {
+          "term": "Optimistic Concurrency (saga)",
+          "def": "نسختان من نفس الـsaga تعالجان حدثين في نفس اللحظة → تعارض يُحل بإعادة المحاولة."
+        },
+        {
+          "term": "Stuck Saga",
+          "def": "نسخة في حالة وسيطة من غير تقدم (مهلة مفقودة/مستهلك واقع) — أخطر مشكلة تشغيلية، وتحتاج إنذارًا."
+        },
+        {
+          "term": "Choreography",
+          "def": "بلا منسّق: كل خدمة تستمع وتنفذ وتنشر. التدفق مشتت — أصعب في التتبع والاختبار."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) صمّم العملية أولًا (قبل الكود)"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "filename": "docs/sagas/order-fulfillment.md",
+      "title": "رسم الحالات والانتقالات — الوثيقة اللي تمنع 80% من الأخطاء",
+      "code": "\n# Saga: تنفيذ الطلب (Order Fulfillment)\n\nCorrelationId = OrderId · المهلة الكلية = 15 دقيقة · التعويض = عكس الترتيب\n\n## الحالات\n  Pending            → ابتدائية (اتسجلت بعد OrderPlaced)\n  StockReserved      → المخزون محجوز (expires في 10 دقائق)\n  PaymentCaptured    → الدفع محصّل\n  Completed          → ★ نهائية (شحن مُجدول، طلب مؤكَّد)\n  StockReservationFailed → نهائية (لا تعويض لازم)\n  PaymentFailed      → نهائية بعد تعويض (تحرير الحجز)\n  Faulted / NeedsManual → نهائية (تعويض فشل → تدخل بشري)\n\n## الانتقالات\n  (start)            --OrderPlaced----------------------> Pending            [أنشئ + جدوله StockTimeout]\n  Pending            --StockReserved---------------------> StockReserved      [جدوله PaymentTimeout]\n  Pending            --StockReservationFailed------------> StockReservationFailed\n  Pending            --StockTimeoutExpired---------------> Pending            [أعد المحاولة مرة واحدة ثم فشل]\n  StockReserved      --PaymentCaptured-------------------> Completed          [أرسل ScheduleShipment]\n  StockReserved      --PaymentFailed---------------------> PaymentFailed      [أرسل ReleaseStock]\n  StockReserved      --PaymentTimeoutExpired-------------> PaymentFailed      [أرسل ReleaseStock]\n  PaymentFailed      --StockReleased---------------------> PaymentFailed (نهائية)\n  أي حالة            --CancelRequested-------------------> Compensating…      [عكس ما تم]\n\n## التعويضات (بالترتيب العكسي)\n  1. CancelShipment  (لو الشحنة جُدولت — idempotent: إلغاء غير موجود = نجاح)\n  2. RefundPayment   (لو الدفع تحصّل — الأهم: لا تحصيل بلا طلب)\n  3. ReleaseStock    (لو الحجز تم)\n\n## المهلات\n  StockTimeout   = 5 دقائق  (حجز المخزون ما ردّش)\n  PaymentTimeout = 10 دقائق (الدفع ما ردّش — يشمل بوابة خارجية بطيئة)\n  SagaTimeout    = 15 دقيقة (الحالة الكلية — آخر شبكة أمان → NeedsManual)\n\n## قواعد\n  • كل خطوة idempotent (إعادة التسليم/إعادة المحاولة لا تكرر الأثر)\n  • فشل التعويض ≠ فشل الـsaga: حالة NeedsManual + تنبيه حرج\n  • لا منطق عمل داخل الـsaga (تنسيق فقط؛ القواعد في الخدمات)\n  • كل الانتقالات تُسجَّل (audit) مع السبب والرسالة المسببة\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) العقود: أوامر وأحداث لكل خطوة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Contracts/Orders/Fulfillment.cs",
+      "title": "كل رسالة تحمل CorrelationId = OrderId",
+      "code": "\nnamespace Shop.Contracts.Orders;\n\n// ═══ مدخلات الـsaga ═══\npublic sealed record OrderPlaced(Guid OrderId, Guid CustomerId, decimal TotalMinorUnits, string Currency,\n                                 IReadOnlyList<StockLine> Lines, DateTimeOffset OccurredAt) : CorrelatedBy(Guid OrderId);\n\n// ═══ أوامر (Send) للخدمات ═══\npublic sealed record ReserveStock(Guid OrderId, IReadOnlyList<StockLine> Lines) : CorrelatedBy(Guid OrderId);\npublic sealed record CapturePayment(Guid OrderId, Guid CustomerId, decimal AmountMinorUnits, string Currency)\n    : CorrelatedBy(Guid OrderId);\npublic sealed record ScheduleShipment(Guid OrderId, Guid CustomerId) : CorrelatedBy(Guid OrderId);\n\n// ═══ تعويضات (Send) ═══\npublic sealed record ReleaseStock(Guid OrderId, Guid ReservationId) : CorrelatedBy(Guid OrderId);\npublic sealed record RefundPayment(Guid OrderId, Guid ChargeId, string Reason) : CorrelatedBy(Guid OrderId);\npublic sealed record CancelShipment(Guid OrderId, string Reason) : CorrelatedBy(Guid OrderId);\n\n// ═══ ردود (أحداث) من الخدمات ═══\npublic sealed record StockReserved(Guid OrderId, Guid ReservationId, DateTimeOffset ExpiresAt) : CorrelatedBy(Guid OrderId);\npublic sealed record StockReservationFailed(Guid OrderId, string Reason, IReadOnlyList<Guid> MissingProducts)\n    : CorrelatedBy(Guid OrderId);\npublic sealed record PaymentCaptured(Guid OrderId, Guid ChargeId) : CorrelatedBy(Guid OrderId);\npublic sealed record PaymentFailed(Guid OrderId, string Reason, bool Retryable) : CorrelatedBy(Guid OrderId);\npublic sealed record ShipmentScheduled(Guid OrderId, Guid ShipmentId, string Carrier) : CorrelatedBy(Guid OrderId);\npublic sealed record StockReleased(Guid OrderId) : CorrelatedBy(Guid OrderId);\npublic sealed record PaymentRefunded(Guid OrderId, Guid RefundId) : CorrelatedBy(Guid OrderId);\n\n// ═══ أحداث انتهاء (للمستهلكين الخارجيين: إشعارات، تقارير) ═══\npublic sealed record OrderFulfillmentCompleted(Guid OrderId, DateTimeOffset CompletedAt) : CorrelatedBy(Guid OrderId);\npublic sealed record OrderFulfillmentFailed(Guid OrderId, string Reason, string FailedStep, DateTimeOffset At)\n    : CorrelatedBy(Guid OrderId);\n\n/// <summary>كل الرسائل بتُربط بنفس المفتاح → نسخة saga واحدة لكل طلب (idempotency تلقائية).</summary>\npublic interface CorrelatedBy<out T> where T : notnull { T OrderId { get; } }\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) الـState Machine"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Sagas/OrderFulfillmentStateMachine.cs",
+      "title": "الحالات والانتقالات والمهلات والتعويض",
+      "code": "\nusing MassTransit;\n\n/// <summary>الحالة المحفوظة — ★ حقول قليلة (لا كيانات كاملة)، وقابلة للتسلسل.</summary>\npublic sealed class OrderFulfillmentState : SagaStateMachineInstance, ISagaVersion\n{\n    public Guid CorrelationId { get; set; }              // = OrderId\n    public string CurrentState { get; set; } = default!; // ★ اسم الحالة (يُحفظ كنص)\n    public int Version { get; set; }                     // تنافس أمثل\n\n    public Guid CustomerId { get; set; }\n    public decimal TotalMinorUnits { get; set; }\n    public string Currency { get; set; } = \"EGP\";\n    public Guid? ReservationId { get; set; }\n    public Guid? ChargeId { get; set; }\n    public Guid? ShipmentId { get; set; }\n    public int StockAttempts { get; set; }\n    public string? FailureReason { get; set; }\n    public DateTimeOffset StartedAt { get; set; }\n    public DateTimeOffset UpdatedAt { get; set; }\n\n    // ★ معرّفات المهلات المجدولة (MassTransit بيحفظها ويلغيها عند الانتقال)\n    public Guid? StockTimeoutId { get; set; }\n    public Guid? PaymentTimeoutId { get; set; }\n    public Guid? SagaTimeoutId { get; set; }\n}\n\npublic sealed class OrderFulfillmentStateMachine : MassTransitStateMachine<OrderFulfillmentState>\n{\n    // ── الحالات ──\n    public State Pending { get; private set; } = null!;\n    public State StockReserved { get; private set; } = null!;\n    public State AwaitingShipment { get; private set; } = null!;\n    public State Compensating { get; private set; } = null!;\n    public State NeedsManual { get; private set; } = null!;\n    // الحالات النهائية تُعلن كذلك عشان الـsaga تُحذف/تُؤرشف\n    public State Completed { get; private set; } = null!;\n    public State Failed { get; private set; } = null!;\n\n    // ── الأحداث ──\n    public Event<OrderPlaced> OrderPlacedEvent { get; private set; } = null!;\n    public Event<StockReserved> StockReservedEvent { get; private set; } = null!;\n    public Event<StockReservationFailed> StockFailedEvent { get; private set; } = null!;\n    public Event<PaymentCaptured> PaymentCapturedEvent { get; private set; } = null!;\n    public Event<PaymentFailed> PaymentFailedEvent { get; private set; } = null!;\n    public Event<ShipmentScheduled> ShipmentScheduledEvent { get; private set; } = null!;\n\n    // ── المهلات (أحداث داخلية مجدولة) ──\n    public Event<StockTimeoutExpired> StockTimeoutEvent { get; private set; } = null!;\n    public Event<PaymentTimeoutExpired> PaymentTimeoutEvent { get; private set; } = null!;\n    public Event<SagaTimeoutExpired> SagaTimeoutEvent { get; private set; } = null!;\n\n    public Schedule<OrderFulfillmentState, StockTimeoutExpired> StockTimeout { get; private set; } = null!;\n    public Schedule<OrderFulfillmentState, PaymentTimeoutExpired> PaymentTimeout { get; private set; } = null!;\n    public Schedule<OrderFulfillmentState, SagaTimeoutExpired> SagaTimeout { get; private set; } = null!;\n\n    public OrderFulfillmentStateMachine()\n    {\n        // ① الحالة تُخزن كنص (أوضح في القاعدة والتقارير من رقم)\n        InstanceState(x => x.CurrentState);\n\n        // ② الربط: كل الأحداث ترتبط بنسخة saga عبر OrderId\n        // ★ ملاحظة: لو الرسالة بتنفّذ CorrelatedBy<Guid> (بخاصية اسمها CorrelationId) الربط تلقائي.\n        //   هنا نربط صراحة لأن اسم الحقل OrderId أوضح في لغة المجال (درس 4.2.1).\n        Event(() => OrderPlacedEvent, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => StockReservedEvent, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => StockFailedEvent, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => PaymentCapturedEvent, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => PaymentFailedEvent, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => ShipmentScheduledEvent, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => StockReleased, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => PaymentRefundedEvent, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => CompensationFailed, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => StockTimeoutEvent, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => PaymentTimeoutEvent, x => x.CorrelateById(m => m.Message.OrderId));\n        Event(() => SagaTimeoutEvent, x => x.CorrelateById(m => m.Message.OrderId));\n\n        // ★ ③ المهلات المجدولة (توقيع Schedule بيختلف قليلًا بين إصدارات MassTransit — راجع توثيق إصدارك)\n        Schedule(() => StockTimeout, x => x.StockTimeoutId, s =>\n        {\n            s.Delay = TimeSpan.FromMinutes(5);\n            s.Received = r => r.Any();               // لو وصل حدث المهلة متأخر → يُعالج (لا يُهمل)\n        });\n        Schedule(() => PaymentTimeout, x => x.PaymentTimeoutId, s => s.Delay = TimeSpan.FromMinutes(10));\n        Schedule(() => SagaTimeout, x => x.SagaTimeoutId, s => s.Delay = TimeSpan.FromMinutes(15));\n\n        // ④ عند الانتهاء: انشر حدثًا للمستهلكين الخارجيين\n        SetCompletedWhenFinalized();\n\n        // ═══ البداية ═══\n        Initially(\n            When(OrderPlacedEvent)\n                .Then(ctx =>\n                {\n                    var m = ctx.Message;\n                    ctx.Saga.CustomerId = m.CustomerId;\n                    ctx.Saga.TotalMinorUnits = m.TotalMinorUnits;\n                    ctx.Saga.Currency = m.Currency;\n                    ctx.Saga.StartedAt = m.OccurredAt;\n                    ctx.Saga.UpdatedAt = DateTimeOffset.UtcNow;\n                })\n                .Schedule(StockTimeout, ctx => new StockTimeoutExpired(ctx.Saga.CorrelationId))\n                .Schedule(SagaTimeout, ctx => new SagaTimeoutExpired(ctx.Saga.CorrelationId))\n                // ★ ابدأ بأرخص/أسهل خطوة قابلة للتراجع (الحجز) قبل الدفع\n                .Send(ctx => new Uri(\"queue:stock-service\"),\n                      ctx => new ReserveStock(ctx.Message.OrderId, ctx.Message.Lines))\n                .TransitionTo(Pending));\n\n        // ═══Pending ═══\n        During(Pending,\n            When(StockReservedEvent)\n                .Then(ctx => { ctx.Saga.ReservationId = ctx.Message.ReservationId; Touch(ctx.Saga); })\n                .Unschedule(StockTimeout)\n                .Schedule(PaymentTimeout, ctx => new PaymentTimeoutExpired(ctx.Saga.CorrelationId))\n                .Send(ctx => new Uri(\"queue:payments-service\"), ctx => new CapturePayment(\n                    ctx.Saga.CorrelationId, ctx.Saga.CustomerId, ctx.Saga.TotalMinorUnits, ctx.Saga.Currency))\n                .TransitionTo(StockReserved),\n\n            When(StockFailedEvent)\n                .Then(ctx => { ctx.Saga.FailureReason = ctx.Message.Reason; Touch(ctx.Saga); })\n                .Unschedule(StockTimeout).Unschedule(SagaTimeout)\n                .PublishAsync(ctx => ctx.Init<OrderFulfillmentFailed>(new\n                 {\n                     OrderId = ctx.Saga.CorrelationId, Reason = ctx.Message.Reason,\n                     FailedStep = \"ReserveStock\", At = DateTimeOffset.UtcNow,\n                 }))\n                .Finalize(),\n\n            // ✓ مهلة الحجز: أعد المحاولة **مرة واحدة** ثم فشل (لا دوران لانهائي)\n            When(StockTimeoutEvent)\n                .IfElse(ctx => ctx.Saga.StockAttempts < 1,        // ✓ إعادة محاولة واحدة فقط\n                    retry => retry\n                        .Then(ctx => { ctx.Saga.StockAttempts++; Touch(ctx.Saga); })\n                        .Schedule(StockTimeout, ctx => new StockTimeoutExpired(ctx.Saga.CorrelationId))\n                        .Send(ctx => new Uri(\"queue:stock-service\"), ctx => new ReserveStock(ctx.Saga.CorrelationId, []))),\n                    giveUp => giveUp\n                        .Then(ctx => { ctx.Saga.FailureReason = \"stock reservation timeout\"; Touch(ctx.Saga); })\n                        .Unschedule(SagaTimeout)\n                        .PublishAsync(ctx => ctx.Init<OrderFulfillmentFailed>(new\n                        {\n                            OrderId = ctx.Saga.CorrelationId, Reason = \"stock timeout\",\n                            FailedStep = \"ReserveStock\", At = DateTimeOffset.UtcNow,\n                        }))\n                        .Finalize()));\n\n        // ═══ StockReserved ═══\n        During(StockReserved,\n            When(PaymentCapturedEvent)\n                .Then(ctx => { ctx.Saga.ChargeId = ctx.Message.ChargeId; Touch(ctx.Saga); })\n                .Unschedule(PaymentTimeout)\n                .Send(ctx => new Uri(\"queue:shipping-service\"), ctx => new ScheduleShipment(\n                    ctx.Saga.CorrelationId, ctx.Saga.CustomerId))\n                .TransitionTo(AwaitingShipment),                 // ★ حالة وسيطة حتى يؤكد الشحن\n            // ✓ فشل الدفع → تعويض (تحرير الحجز)\n            When(PaymentFailedEvent)\n                .Then(ctx => { ctx.Saga.FailureReason = ctx.Message.Reason; Touch(ctx.Saga); })\n                .Unschedule(PaymentTimeout)\n                .Send(ctx => new Uri(\"queue:stock-service\"), ctx =>\n                    new ReleaseStock(ctx.Saga.CorrelationId, ctx.Saga.ReservationId!.Value))\n                .TransitionTo(Compensating),\n\n            // ✓ مهلة الدفع → نفس مسار التعويض\n            When(PaymentTimeoutEvent)\n                .Then(ctx => { ctx.Saga.FailureReason = \"payment timeout\"; Touch(ctx.Saga); })\n                .Send(ctx => new Uri(\"queue:stock-service\"), ctx =>\n                    new ReleaseStock(ctx.Saga.CorrelationId, ctx.Saga.ReservationId!.Value))\n                .TransitionTo(Compensating));\n\n        // ═══ AwaitingShipment: آخر خطوة (لا تعويض لها غالبًا — إلغاء الشحنة idempotent) ═══\n        During(AwaitingShipment,\n            When(ShipmentScheduledEvent)\n                .Then(ctx => { ctx.Saga.ShipmentId = ctx.Message.ShipmentId; Touch(ctx.Saga); })\n                .Unschedule(SagaTimeout)\n                .PublishAsync(ctx => ctx.Init<OrderFulfillmentCompleted>(new\n                 {\n                     OrderId = ctx.Saga.CorrelationId, CompletedAt = DateTimeOffset.UtcNow,\n                 }))\n                .TransitionTo(Completed)\n                .Finalize(),\n\n            When(SagaTimeoutEvent)\n                .Then(ctx => { ctx.Saga.FailureReason = \"shipment not confirmed\"; Touch(ctx.Saga); })\n                .Send(ctx => new Uri(\"queue:shipping-service\"), ctx => new CancelShipment(\n                    ctx.Saga.CorrelationId, \"saga timeout\"))\n                .TransitionTo(NeedsManual)\n                .PublishAsync(ctx => ctx.Init<SagaNeedsManualIntervention>(new\n                 {\n                     ctx.Saga.CorrelationId, State = ctx.Saga.CurrentState, Reason = ctx.Saga.FailureReason,\n                 })));\n\n        // ═══ Compensating: انتظر تأكيد التعويض ثم انهِ ═══\n        During(Compensating,\n            When(StockReleased)\n                .Then(ctx => { ctx.Saga.ReservationId = null; Touch(ctx.Saga); })\n                .Unschedule(SagaTimeout)\n                .PublishAsync(ctx => ctx.Init<OrderFulfillmentFailed>(new\n                 {\n                     OrderId = ctx.Saga.CorrelationId, Reason = ctx.Saga.FailureReason ?? \"compensated\",\n                     FailedStep = \"CapturePayment\", At = DateTimeOffset.UtcNow,\n                 }))\n                .TransitionTo(Failed)\n                .Finalize(),\n\n            // ★ التعويض نفسه فشل → حالة تحتاج تدخل بشري (لا تبتلعها!)\n            When(CompensationFailed)\n                .Then(ctx => { ctx.Saga.FailureReason = $\"compensation failed: {ctx.Message.Reason}\"; Touch(ctx.Saga); })\n                .TransitionTo(NeedsManual)\n                .PublishAsync(ctx => ctx.Init<SagaNeedsManualIntervention>(new\n                 {\n                     ctx.Saga.CorrelationId, State = ctx.Saga.CurrentState, Reason = ctx.Saga.FailureReason,\n                 })),\n\n            // ✓ شبكة الأمان الأخيرة: المهلة الكلية\n            When(SagaTimeoutEvent)\n                .Then(ctx => { ctx.Saga.FailureReason = \"saga overall timeout\"; Touch(ctx.Saga); })\n                .TransitionTo(NeedsManual)\n                .PublishAsync(ctx => ctx.Init<SagaNeedsManualIntervention>(new\n                 {\n                     ctx.Saga.CorrelationId, State = ctx.Saga.CurrentState, Reason = ctx.Saga.FailureReason,\n                 })));\n\n        // ── أي حدث غير متوقع في أي حالة: سجّله ولا تفشل بصمت ──\n        DuringAny(\n            When(StockReleased).Then(ctx => Touch(ctx.Saga)),\n            When(PaymentRefundedEvent).Then(ctx => { ctx.Saga.ChargeId = null; Touch(ctx.Saga); }));\n    }\n\n    private static void Touch(OrderFulfillmentState s) => s.UpdatedAt = DateTimeOffset.UtcNow;\n\n    // ★ الأحداث المتبقية مُعلنة هنا (الترتيب في C# لا يهم — الـconstructor بيستخدمها)\n    public Event<StockReleased> StockReleased { get; private set; } = null!;\n    public Event<PaymentRefunded> PaymentRefundedEvent { get; private set; } = null!;\n    public Event<CompensationFailed> CompensationFailed { get; private set; } = null!;\n}\n\n// أحداث المهلات والداخلية\npublic sealed record StockTimeoutExpired(Guid OrderId);\npublic sealed record PaymentTimeoutExpired(Guid OrderId);\npublic sealed record SagaTimeoutExpired(Guid OrderId);\npublic sealed record CompensationFailed(Guid OrderId, string Reason);\npublic sealed record PaymentRefunded(Guid OrderId, Guid RefundId);\npublic sealed record SagaNeedsManualIntervention(Guid OrderId, string? State, string? Reason);\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) الحفظ في EF Core + التسجيل"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Services/Orders/Persistence/SagaMap.cs",
+      "title": "تخطيط الحالة + تسجيل الـsaga",
+      "code": "\n// ═══ تخطيط EF (جدول واحد لكل saga) ═══\npublic sealed class OrderFulfillmentStateMap : IEntityTypeConfiguration<OrderFulfillmentState>\n{\n    public void Configure(EntityTypeBuilder<OrderFulfillmentState> b)\n    {\n        b.ToTable(\"order_fulfillment_sagas\", \"orders\");\n        b.HasKey(x => x.CorrelationId);\n        b.Property(x => x.CurrentState).HasMaxLength(64).IsRequired();\n        b.Property(x => x.Currency).HasMaxLength(3);\n        b.Property(x => x.TotalMinorUnits).HasPrecision(18, 2);\n        b.Property(x => x.FailureReason).HasMaxLength(2000);\n        b.Property(x => x.Version).IsConcurrencyToken();     // ★ تنافس أمثل (نسخ متزامنة)\n\n        // فهرس للمراقبة: الحالات العالقة\n        b.HasIndex(x => new { x.CurrentState, x.UpdatedAt })\n         .HasDatabaseName(\"ix_sagas_state_updated\");\n    }\n}\n\n// ═══ التسجيل ═══\npublic static class SagaRegistration\n{\n    public static IServiceCollection AddOrderFulfillmentSaga(this IServiceCollection services, IConfiguration config)\n    {\n        services.AddMassTransit(x =>\n        {\n            x.AddSagaStateMachine<OrderFulfillmentStateMachine, OrderFulfillmentState>()\n             .EntityFrameworkRepository(r =>\n             {\n                 r.ConcurrencyMode = ConcurrencyMode.Optimistic;   // ★ أساسي مع مستهلكين متوازيين\n                 r.AddDbContext<DbContext, AppDbContext>((provider, builder) =>\n                     builder.UseNpgsql(config.GetConnectionString(\"Orders\"),\n                         npgsql => npgsql.MigrationsHistoryTable(\"__migrations\", \"orders\")));\n             });\n\n            x.AddConsumers(typeof(OrderFulfillmentStateMachine).Assembly);\n\n            x.UsingRabbitMq((context, cfg) =>\n            {\n                cfg.Host(new Uri(config[\"RabbitMq:Host\"]!));\n                cfg.UseMessageRetry(r => r.Interval(3, TimeSpan.FromSeconds(2)));\n                cfg.UseDelayedRedelivery(r => r.Intervals(\n                    TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5)));\n                cfg.ConfigureEndpoints(context);\n            });\n        });\n\n        return services;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) المراقبة: الـsagas العالقة"
+    },
+    {
+      "type": "code",
+      "lang": "sql",
+      "filename": "db/saga-monitoring.sql",
+      "title": "استعلامات الإنذار (شغّلها كل دقيقة)",
+      "code": "\n-- ① توزيع الحالات (لوحة): كم نسخة في كل حالة؟\nSELECT current_state, count(*) AS sagas,\n       min(updated_at) AS oldest, max(updated_at) AS newest\nFROM orders.order_fulfillment_sagas\nGROUP BY current_state ORDER BY count(*) DESC;\n\n-- ② ★ sagas عالقة: في حالة غير نهائية بلا تحديث منذ 20 دقيقة\nSELECT correlation_id, current_state, failure_reason,\n       now() - updated_at AS stuck_for, stock_attempts\nFROM orders.order_fulfillment_sagas\nWHERE current_state NOT IN ('Completed', 'Failed', 'StockReservationFailed')\n  AND updated_at < now() - interval '20 minutes'\nORDER BY updated_at;\n-- أي صف = إنذار (page on-call)\n\n-- ③ حالات NeedsManual (تحتاج تدخل بشري)\nSELECT correlation_id, failure_reason, updated_at\nFROM orders.order_fulfillment_sagas\nWHERE current_state = 'NeedsManual'\nORDER BY updated_at DESC;\n\n-- ④ زمن التنفيذ (p50/p95 من البداية للنهاية)\nSELECT percentile_cont(0.5)  WITHIN GROUP (ORDER BY extract(epoch FROM updated_at - started_at)) AS p50_s,\n       percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM updated_at - started_at)) AS p95_s,\n       count(*) FILTER (WHERE current_state = 'Completed') AS completed,\n       count(*) FILTER (WHERE current_state IN ('Failed','NeedsManual')) AS failed\nFROM orders.order_fulfillment_sagas\nWHERE started_at > now() - interval '24 hours';\n\n-- ⑤ أرشفة المنتهية (بلا تنظيف، الجدول بيكبر للأبد)\n-- DELETE FROM orders.order_fulfillment_sagas\n-- WHERE current_state IN ('Completed','Failed') AND updated_at < now() - interval '30 days';\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.Orders.Tests/Sagas/OrderFulfillmentSagaTests.cs",
+      "title": "اختبار الـsaga: المسار السعيد، التعويض، المهلة، التكرار",
+      "code": "\npublic class OrderFulfillmentSagaTests\n{\n    private static readonly Guid OrderId = Guid.NewGuid();\n\n    private static async Task<(ITestHarness Harness, ISagaStateMachineTestHarness<OrderFulfillmentStateMachine, OrderFulfillmentState> Saga)>\n        StartAsync()\n    {\n        await using var provider = new ServiceCollection()\n            .AddMassTransitTestHarness(x =>\n            {\n                // ★ في الاختبارات: الحالة في الذاكرة (بلا EF) — أسرع وأبسط\n                x.AddSagaStateMachine<OrderFulfillmentStateMachine, OrderFulfillmentState>()\n                 .InMemoryInstance();\n            })\n            .BuildServiceProvider(true);\n\n        var harness = provider.GetRequiredService<ITestHarness>();\n        await harness.Start();\n        var saga = harness.GetSagaHarness<OrderFulfillmentStateMachine, OrderFulfillmentState>();\n        return (harness, saga);\n    }\n\n    [Fact]\n    public async Task Happy_path_reaches_Completed()\n    {\n        var (harness, saga) = await StartAsync();\n\n        await harness.Bus.Publish(new OrderPlaced(OrderId, Guid.NewGuid(), 25050, \"EGP\",\n                                                  [new StockLine(Guid.NewGuid(), 2)], DateTimeOffset.UtcNow));\n        await saga.Consumed.Any<StockReserved>(x => x.Context.Message.OrderId == OrderId);\n\n        await harness.Bus.Publish(new StockReserved(OrderId, Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(10)));\n        await saga.Consumed.Any<PaymentCaptured>(x => x.Context.Message.OrderId == OrderId);\n\n        await harness.Bus.Publish(new PaymentCaptured(OrderId, Guid.NewGuid()));\n        await harness.Bus.Publish(new ShipmentScheduled(OrderId, Guid.NewGuid(), \"aramex\"));\n\n        // ★ الحالة النهائية\n        Assert.True(await saga.Consumed.Any<ShipmentScheduled>(\n            x => x.Context.Message.OrderId == OrderId, TimeSpan.FromSeconds(10)));\n        var instance = await saga.Created.Any(x => x.CorrelationId == OrderId);\n        instance!.CurrentState.Should().Be(\"Completed\");\n\n        // ✓ حدث الانتهاء نُشر للمستهلكين الخارجيين\n        Assert.True(await harness.Published.Any<OrderFulfillmentCompleted>(TimeSpan.FromSeconds(5)));\n        await harness.Stop();\n    }\n\n    [Fact]\n    public async Task Payment_failure_compensates_by_releasing_stock()\n    {\n        var (harness, saga) = await StartAsync();\n\n        await harness.Bus.Publish(new OrderPlaced(OrderId, Guid.NewGuid(), 1000, \"EGP\", [], DateTimeOffset.UtcNow));\n        await harness.Bus.Publish(new StockReserved(OrderId, Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(10)));\n        await harness.Bus.Publish(new PaymentFailed(OrderId, \"card declined\", Retryable: false));\n\n        // ✓ التعويض أُرسل\n        Assert.True(await harness.Sent.Any<ReleaseStock>(TimeSpan.FromSeconds(10)));\n        var instance = await saga.Created.Any(x => x.CorrelationId == OrderId);\n        instance!.CurrentState.Should().BeOneOf(\"Compensating\", \"Failed\");\n\n        await harness.Bus.Publish(new StockReleased(OrderId));\n        Assert.True(await harness.Published.Any<OrderFulfillmentFailed>(TimeSpan.FromSeconds(10)));\n        await harness.Stop();\n    }\n\n    [Fact]\n    public async Task Duplicate_events_do_not_duplicate_transitions()\n    {\n        var (harness, saga) = await StartAsync();\n        var placed = new OrderPlaced(OrderId, Guid.NewGuid(), 1000, \"EGP\", [], DateTimeOffset.UtcNow);\n\n        await harness.Bus.Publish(placed);\n        await harness.Bus.Publish(placed);          // ★ إعادة تسليم\n        await harness.Bus.Publish(placed);\n\n        var sent = await harness.Sent.Select<ReserveStock>().ToListAsync();\n        sent.Should().HaveCount(1, \"correlation id واحد = نسخة saga واحدة = انتقال واحد\");\n\n        await harness.Stop();\n    }\n\n    [Fact]\n    public async Task Stock_timeout_retries_once_then_fails()\n    {\n        var (harness, saga) = await StartAsync();\n\n        await harness.Bus.Publish(new OrderPlaced(OrderId, Guid.NewGuid(), 1000, \"EGP\", [], DateTimeOffset.UtcNow));\n        // في الاختبارات: يمكن إطلاق المهلة يدويًا بدل الانتظار 5 دقائق\n        await harness.Bus.Publish(new StockTimeoutExpired(OrderId));\n        await harness.Bus.Publish(new StockTimeoutExpired(OrderId));\n\n        var instance = await saga.Created.Any(x => x.CorrelationId == OrderId);\n        instance!.StockAttempts.Should().Be(1);\n        instance.CurrentState.Should().Be(\"StockReservationFailed\");\n        Assert.True(await harness.Published.Any<OrderFulfillmentFailed>(TimeSpan.FromSeconds(5)));\n\n        await harness.Stop();\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الحالة",
+        "استخدم",
+        "لييه"
+      ],
+      "rows": [
+        [
+          "عملية عمل طويلة عبر ≥ 3 خدمات مع تعويضات",
+          "**Saga (orchestration)**",
+          "الحالة والانتقالات معلنة، والتتبع والاختبار أسهل"
+        ],
+        [
+          "خطوتان بلا تعويض معقد (إشعار بعد كتابة)",
+          "**حدث عبر outbox**",
+          "saga هنا تعقيد بلا فائدة"
+        ],
+        [
+          "قراءة لحظية من خدمة تانية",
+          "**نداء متزامن (gRPC/REST)**",
+          "لا حالة طويلة، ولا تعويض"
+        ],
+        [
+          "تدفق بسيط 2-3 خطوات وفرق مستقلة تمامًا",
+          "Choreography",
+          "اقتران أقل — لكن التدفق بيصير صعب التتبع"
+        ],
+        [
+          "عملية تحتاج تدخل بشري/موافقة (أيام)",
+          "Saga + مهلات طويلة + حالة `AwaitingApproval`",
+          "الحالة الدائمة ضرورية"
+        ],
+        [
+          "مزامنة بيانات مستمرة (CDC)",
+          "Projection/عامل، لا saga",
+          "بلا حالات عمل"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "7 قواعد Saga بتفرق بين نظام شغال وكارثة",
+      "md": "\n1. **ابدأ بأرخص خطوة قابلة للتراجع** (حجز مخزون) واختم بالأصعب (تحصيل مالي) — التعويض يبقى نادرًا.\n2. **الحالة صغيرة**: معرّفات وأرقام وحالات — لا كيانات كاملة ولا payloads ضخمة (كل انتقال بيحفظها).\n3. **مهلة لكل خطوة + مهلة كلية** — بلا مهلة، saga بيتعلّق للأبد ويحجز موارد.\n4. **كل خطوة idempotent** — المنسّق هيعيد المحاولة، والوسيط هيعيد التسليم.\n5. **فشل التعويض = `NeedsManual` + تنبيه حرج** (مش log وتحريك): ده معناه فلوس/مخزون في حالة مجهولة.\n6. **لا منطق عمل في الـsaga** — تنسيق فقط. القواعد في الخدمات (وإلا بقى monolith مخفي).\n7. **راقب الحالات العالقة من اليوم الأول** — استعلام `updated_at` + إنذار. أغلب كوارث الـsagas\n   هي نُسَخ عالقة اكتُشفت بعد أسابيع.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أصمم العملية أولًا (حالات، انتقالات، تعويضات، مهلات) كوثيقة قبل الكود.",
+        "أنفّذها بـMassTransit state machine محفوظة في EF Core بتنافس أمثل وcorrelation id.",
+        "أضع مهلة لكل خطوة ومهلة كلية، وأعيد المحاولة عددًا محدودًا ثم أفشل صراحة.",
+        "أراقب الحالات العالقة وNeedsManual باستعلامات وإنذارات، وأختبر المسار السعيد والتعويض والتكرار والمهلة."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "إيه اللي بيضمن إن حدث مكرر ما يعملش انتقالين في الـsaga؟",
+          "options": [
+            "الوسيط بيمنع التكرار",
+            "correlation id: كل الأحداث بترتبط بنفس نسخة الـsaga، والانتقال في حالة غير متوقعة لا يُنفَّذ",
+            "قاعدة البيانات",
+            "idempotency key في الرسالة"
+          ],
+          "answer": 1,
+          "explain": "ده أحد أكبر مكاسب الـsaga: idempotency بنيوية. كمان الحالة (CurrentState) بتمنع تكرار انتقال تم فعلًا."
+        },
+        {
+          "q": "ليه الحفظ في قاعدة البيانات مش اختياري؟",
+          "options": [
+            "للأداء",
+            "لأن العملية بتعيش دقائق/أيام: بلا حفظ، أي إعادة نشر أو انهيار بيمسح الحالة ويترك آثارًا بلا منسّق",
+            "مطلب MassTransit",
+            "للتقارير فقط"
+          ],
+          "answer": 1,
+          "explain": "كمان المهلات المجدولة بتُحفظ، فبتشتغل بعد إعادة التشغيل — وده اللي بيخلي `NeedsManual` مش حالة نظرية."
+        },
+        {
+          "q": "خطوة التعويض (رد المبلغ) فشلت. التصرف؟",
+          "options": [
+            "سجّل warning وأكمل",
+            "انتقل لحالة `NeedsManual` + انشر حدث إنذار + تنبيه on-call — الأموال في حالة مجهولة ويجب تدخل بشري",
+            "أعد المحاولة للأبد",
+            "احذف الـsaga"
+          ],
+          "answer": 1,
+          "explain": "فشل التعويض أخطر من فشل الخطوة الأصلية. لازم يبقى مرئيًا (استعلام SQL + إنذار + أداة معالجة)."
+        },
+        {
+          "q": "ليه تبدأ saga بحجز المخزون قبل تحصيل الدفع؟",
+          "options": [
+            "أسرع",
+            "لأن الحجز أرخص وأسهل في التراجع — فالتعويض (اللي هو أصعب وأخطر جزء) بيصير نادرًا",
+            "ترتيب إجباري",
+            "لأن الدفع يحتاج موافقة"
+          ],
+          "answer": 1,
+          "explain": "القاعدة العامة: رتّب الخطوات من الأسهل تراجعًا للأصعب. لو الدفع الأول، كل فشل مخزون يعني رد أموال."
+        },
+        {
+          "q": "متى تكفي outbox بلا saga؟",
+          "options": [
+            "دائمًا",
+            "لما الأثر الجانبي خطوة واحدة بلا تعويض معقد (إشعار/تسجيل) أو لما التعويض غير مطلوب",
+            "لما فيه 5 خدمات",
+            "أبدًا"
+          ],
+          "answer": 1,
+          "explain": "saga بيضيف حالة ومهلات ومراقبة — تكلفة حقيقية. استخدمه لما فيه ≥ 3 خطوات وتعويضات."
+        },
+        {
+          "q": "400 نسخة saga في حالة `StockReserved` من 3 أيام. التشخيص الأول؟",
+          "options": [
+            "احذفهم",
+            "هل خدمة الدفع واقفة/بطيئة؟ هل `PaymentTimeout` مجدول فعلًا (ومُخزَّن)؟ هل المستهلك بيستهلك قائمة الدفع؟",
+            "زد عدد المستهلكين",
+            "أعد تشغيل الوسيط"
+          ],
+          "answer": 1,
+          "explain": "ده بالظبط سيناريو «sagas عالقة». المهلة الكلية + استعلام المراقبة بيحوّلوه من كارثة صامتة لإنذار خلال دقائق."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "saga كامل بـMassTransit",
+          "md": "نفّذ saga لعملية عمل حقيقية في مشروعك (تنفيذ طلب، استرجاع، تفعيل اشتراك) بـ3 خطوات على الأقل وتعويض ومهلات، محفوظ في EF Core. اختبر المسارات الأربعة.",
+          "criteria": [
+            "وثيقة تصميم أولًا (حالات/انتقالات/تعويضات/مهلات) في `docs/sagas/`",
+            "حالة محفوظة في جدول مع `Version` كـconcurrency token وفهرس `(current_state, updated_at)`",
+            "مهلة لكل خطوة + مهلة كلية → `NeedsManual` عند تجاوزها",
+            "إعادة محاولة محدودة لخطوة واحدة ثم فشل صريح (لا دوران لانهائي)",
+            "4 اختبارات: المسار السعيد، التعويض، حدث مكرر، مهلة",
+            "حدث انتهاء يُنشر للمستهلكين الخارجيين (إشعارات/تقارير)"
+          ],
+          "hint": "لو اختبار المهلات بطيء: اجعل التأخيرات قابلة للضبط من الإعدادات (ثوانٍ في الاختبار، دقائق في الإنتاج) أو أطلق حدث المهلة يدويًا كما في المثال."
+        },
+        {
+          "id": "t2",
+          "title": "مراقبة ومعالجة الحالات العالقة",
+          "md": "أضف استعلامات المراقبة (توزيع الحالات، العالقة، NeedsManual، زمن التنفيذ) كمهمة مجدولة تنشر مقاييس وتنبّه، وأداة إدارية (endpoint داخلي) لإعادة دفع saga عالق أو إنهائه يدويًا.",
+          "criteria": [
+            "4 استعلامات مراقبة موثقة + مقياس منشور لكل واحد",
+            "إنذار: أي saga في حالة غير نهائية بلا تحديث > 20 دقيقة (مع اختبار يثبت الاكتشاف)",
+            "endpoint إداري (خلف تفويض داخلي) يعرض حالة saga ويعيد دفعه أو ينهيه مع سبب مسجّل",
+            "أرشفة/حذف المنتهية أقدم من N يومًا (مهمة دورية)",
+            "توثيق «إزاي تعالج saga عالق» بخطوات تشغيلية (runbook)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "MassTransit — Sagas (state machines)",
+          "url": "https://masstransit.io/documentation/concepts/sagas"
+        },
+        {
+          "label": "MassTransit — Scheduling",
+          "url": "https://masstransit.io/documentation/concepts/scheduling"
+        },
+        {
+          "label": "MassTransit — EF Core saga persistence",
+          "url": "https://masstransit.io/documentation/concepts/sagas/persistence"
+        },
+        {
+          "label": "Saga pattern (microservices.io)",
+          "url": "https://microservices.io/patterns/data/saga.html"
+        },
+        {
+          "label": "Life beyond distributed transactions",
+          "url": "https://learn.microsoft.com/azure/architecture/microservices/design/patterns"
+        },
+        {
+          "label": "MassTransit Testing",
+          "url": "https://masstransit.io/documentation/configuration/testing"
+        }
+      ]
+    }
+  ]
+}

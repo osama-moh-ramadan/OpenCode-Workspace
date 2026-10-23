@@ -1,0 +1,407 @@
+{
+  "id": "s4-m2-l1",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nDDD التكتيكي هو مجموعة أنماط بتجاوب على سؤال واحد: **فين تقع قاعدة العمل، وإيه حدود الوحدة اللي\nلازم تكون متسقة في لحظة واحدة؟**\n\nالأنماط دي (Value Object، Entity، Aggregate، Domain Event، Domain Service، Repository) مش زخرفة —\nكل واحد بيحل مشكلة حقيقية: Primitive Obsession بيخليك تكرر نفس التحقق في 12 مكان،\nوالـAggregate الكبير بيخلي كل طلب يقفل صفوف كتير، وبلا Domain Events بتوصل لاتصالات متشابكة بين الموديولات.\n\nهنا نبنيهم بكود حقيقي على Postgres/EF Core 10، مع الاختبارات اللي بتثبت القواعد.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "Ubiquitous Language",
+          "def": "لغة موحدة بين الفريق والكود. لو البيزنس بيقول «عميل» والكود فيه `User` → كل محادثة بتحتاج ترجمة، والأخطاء بتتسرب."
+        },
+        {
+          "term": "Value Object (VO)",
+          "def": "كائن بلا هوية: المساواة بالقيمة، غير قابل للتعديل، بيتحقق من نفسه. `Money`، `Address`، `DateRange`، `Email`."
+        },
+        {
+          "term": "Primitive Obsession",
+          "def": "استخدام `decimal`/`string` مكان المفاهيم → التحقق والتحويل والعمليات مبعثرة وبلا ضمان."
+        },
+        {
+          "term": "Entity",
+          "def": "كائن له هوية تستمر عبر الزمن؛ المساواة بالمعرّف مش بالخصائص."
+        },
+        {
+          "term": "Aggregate",
+          "def": "مجموعة كيانات وVOs تُعامل كوحدة **للتناسق** (consistency boundary). لها جذر واحد."
+        },
+        {
+          "term": "Aggregate Root",
+          "def": "الكيان الوحيد المسموح الوصول له من بره. كل التعديلات تمر به، وهو اللي بيحمي الـinvariants."
+        },
+        {
+          "term": "Invariant",
+          "def": "قاعدة لازم تفضل صحيحة دايمًا داخل الـaggregate (المجموع = مجموع السطور، الحالة تسمح بالعملية، الكمية ≥ 1)."
+        },
+        {
+          "term": "Transactional Boundary",
+          "def": "القاعدة الذهبية: **aggregate واحد لكل معاملة**. لو محتاج تعديل اتنين → اتساق eventual عبر حدث."
+        },
+        {
+          "term": "Domain Event",
+          "def": "حاجة حصلت في المجال (بصيغة الماضي): `OrderPlaced`. يُرفع من الجذر ويُكتب في outbox عند الالتزام."
+        },
+        {
+          "term": "Domain Service",
+          "def": "منطق مجال لا ينتمي لكيان واحد (يخص عدة aggregates أو قاعدة خارجية) — بلا حالة (stateless)."
+        },
+        {
+          "term": "Repository",
+          "def": "تجريد يشبه المجموعة **لجذر aggregate واحد** — لا repository لكل جدول."
+        },
+        {
+          "term": "Factory",
+          "def": "إنشاء aggregate معقد بطريقة صحيحة (غالبًا static factory method داخل الجذر)."
+        },
+        {
+          "term": "Eventual Consistency",
+          "def": "الاتساق عبر الـaggregates يتم لاحقًا عبر أحداث — مش في نفس المعاملة."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) Value Objects: نهاية Primitive Obsession"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Domain/Shared/Money.cs",
+      "title": "VO كامل: تحقق + عمليات + مساواة + تسلسل",
+      "code": "\nnamespace Shop.Domain.Shared;\n\n/// <summary>\n/// Value Object: بلا هوية، غير قابل للتعديل، بيتحقق من نفسه.\n/// `readonly record struct` = مساواة بالقيمة تلقائيًا + صفر تخصيص + لا يمكن تعديله.\n/// </summary>\npublic readonly record struct Money(decimal Amount, string Currency)\n    : IComparable<Money>, IFormattable\n{\n    public static readonly Money Zero = new(0m, \"EGP\");\n\n    // ★ التحقق في الـconstructor: مستحيل يوجد Money غير صالح في أي مكان في النظام\n    public Money\n    {\n        if (Amount < 0m) throw new ArgumentOutOfRangeException(nameof(Amount), \"المبلغ لا يمكن أن يكون سالبًا\");\n        if (string.IsNullOrWhiteSpace(Currency)) throw new ArgumentException(\"العملة مطلوبة\", nameof(Currency));\n        if (Currency.Length != 3) throw new ArgumentException(\"رمز العملة 3 أحرف (ISO 4217)\", nameof(Currency));\n\n        Currency = Currency.Trim().ToUpperInvariant();\n        Amount = Math.Round(Amount, 2, MidpointRounding.AwayFromZero);   // تطبيع: 10.005 → 10.01\n    }\n\n    // ── عمليات آمنة: تمنع خلط العملات في وقت الترجمة تقريبًا وفي التشغيل قطعًا ──\n    public Money Add(Money other) => WithSameCurrency(other, (a, b) => new Money(a.Amount + b.Amount, a.Currency));\n    public Money Subtract(Money other) => WithSameCurrency(other, (a, b) =>\n    {\n        var v = a.Amount - b.Amount;\n        return v < 0 ? throw new InvalidOperationException(\"الناتج سالب: استخدم Refund بدل الخصم\") : new Money(v, a.Currency);\n    });\n    public Money Multiply(decimal factor) => new(Amount * factor, Currency);\n    public Money Multiply(int quantity) => new(Amount * quantity, Currency);\n\n    public bool IsZero => Amount == 0m;\n    public int CompareTo(Money other) => WithSameCurrency(other, (a, b) => a.Amount.CompareTo(b.Amount));\n    public static bool operator >(Money a, Money b) => a.CompareTo(b) > 0;\n    public static bool operator <(Money a, Money b) => a.CompareTo(b) < 0;\n    public static bool operator >=(Money a, Money b) => a.CompareTo(b) >= 0;\n    public static bool operator <=(Money a, Money b) => a.CompareTo(b) <= 0;\n    public static Money operator +(Money a, Money b) => a.Add(b);\n    public static Money operator -(Money a, Money b) => a.Subtract(b);\n\n    private T WithSameCurrency<T>(Money other, Func<Money, Money, T> op) =>\n        Currency != other.Currency\n            ? throw new CurrencyMismatchException(Currency, other.Currency)\n            : op(this, other);\n\n    public string ToString(string? format, IFormatProvider? provider = null) =>\n        $\"{Amount.ToString(format ?? \"N2\", provider)} {Currency}\";\n\n    public override string ToString() => ToString(\"N2\", CultureInfo.InvariantCulture);\n\n    public static Money Parse(string text)\n    {\n        var parts = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);\n        return parts.Length == 2\n            ? new Money(decimal.Parse(parts[0], CultureInfo.InvariantCulture), parts[1])\n            : throw new FormatException($\"صيغة Money غير صالحة: '{text}' (المتوقع '10.50 EGP')\");\n    }\n}\n\npublic sealed class CurrencyMismatchException(string a, string b)\n    : InvalidOperationException($\"لا يمكن الجمع بين عملتين مختلفتين: {a} و{b}\");\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Domain/Shared/ValueObjects.cs",
+      "title": "VOs تانية: Email، DateRange، Address",
+      "code": "\n/// <summary>VO بنمط تحقق — بديل عن تكرار Regex في كل DTO.</summary>\npublic readonly record struct Email(string Value)\n{\n    public Email\n    {\n        if (string.IsNullOrWhiteSpace(Value)) throw new ArgumentException(\"البريد مطلوب\", nameof(Value));\n        Value = Value.Trim().ToLowerInvariant();\n        if (Value.Length > 320 || !Value.Contains('@') || Value.Contains(' '))\n            throw new FormatException($\"بريد غير صالح: {Value}\");\n    }\n    public string Domain => Value[(Value.IndexOf('@') + 1)..];\n    public static bool TryCreate(string? input, out Email email)\n    {\n        try { email = new Email(input ?? string.Empty); return true; }\n        catch (Exception) { email = default; return false; }\n    }\n}\n\n/// <summary>VO لفترة زمنية — القواعد (بداية قبل نهاية، لا فترات صفرية) مضمونة دائمًا.</summary>\npublic readonly record struct DateRange(DateOnly From, DateOnly To)\n{\n    public DateRange\n    {\n        if (To < From) throw new ArgumentException($\"النهاية {To} قبل البداية {From}\", nameof(To));\n    }\n    public int Days => To.DayNumber - From.DayNumber + 1;\n    public bool Contains(DateOnly d) => d >= From && d <= To;\n    public bool Overlaps(DateRange other) => From <= other.To && other.From <= To;\n    public static DateRange LastDays(int days, DateOnly today) => new(today.AddDays(-days + 1), today);\n}\n\n/// <summary>VO مركّب — لاحظ إن التحقق بيحمي القاعدة كاملة («مدينة بلا بلد» مستحيلة).</summary>\npublic readonly record struct Address(\n    string Line1, string City, string Country, string? PostalCode = null)\n{\n    public Address\n    {\n        ArgumentException.ThrowIfNullOrWhiteSpace(Line1);\n        ArgumentException.ThrowIfNullOrWhiteSpace(City);\n        ArgumentException.ThrowIfNullOrWhiteSpace(Country);\n        if (Country.Length != 2) throw new ArgumentException(\"رمز البلد حرفان (ISO 3166)\", nameof(Country));\n        Line1 = Line1.Trim(); City = City.Trim(); Country = Country.Trim().ToUpperInvariant();\n    }\n}\n\n// ✗ المقابل (Primitive Obsession): decimal total; string currency; string email; DateTime from, to;\n//    string addressLine1, city, country, postalCode;\n//    → نفس التحقق مكرر في 12 مكان، وممكن توصل حالة غير صالحة من أي مسار.\n"
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "Value Objects في EF Core 10: 3 طرق",
+      "md": "\n| الطريقة | الكود | متى |\n|---|---|---|\n| **Complex type** (EF 10) | `builder.ComplexProperty(o => o.Total)` → أعمدة مسطّحة `total_amount`, `total_currency` | ★ الأفضل للـVOs الصغيرة داخل الـaggregate (لا هوية، ولا تُقرأ منفصلة) |\n| **Owned entity** | `builder.OwnsOne(o => o.Address, a => a.Property(x => x.City).HasColumnName(\"city\"))` | VO له حقول كتير أو محتاج جدول خاص/JSON |\n| **JSON column** | `builder.OwnsOne(o => o.Address).ToJson()` | بيانات متغيرة الشكل/نادرة الفلترة |\n| **Value Converter** | `builder.Property(o => o.Total).HasConversion(...)` | VO بسيط يُخزَّن في عمود واحد (`Email` في `text`) |\n\nراجع درس 3.2.2 للمقارنة التفصيلية والقيود. الأهم: **الـVO يفضل VO في الـDomain** —\nالتخزين قرار بنية تحتية في `IEntityTypeConfiguration` داخل Infrastructure.\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Infrastructure/Persistence/Configurations/OrderConfiguration.cs",
+      "title": "تخطيط VO في البنية التحتية (Domain لا يعرف EF)",
+      "code": "\npublic sealed class OrderConfiguration : IEntityTypeConfiguration<Order>\n{\n    public void Configure(EntityTypeBuilder<Order> b)\n    {\n        b.ToTable(\"orders\", \"orders\");\n        b.HasKey(o => o.Id);\n        b.Property(o => o.Id).ValueGeneratedNever();\n\n        // ★ complex type (EF 10): أعمدة مسطّحة بلا كيان منفصل\n        b.ComplexProperty(o => o.Total, money =>\n        {\n            money.Property(m => m.Amount).HasColumnName(\"total_amount\").HasPrecision(18, 2);\n            money.Property(m => m.Currency).HasColumnName(\"total_currency\").HasMaxLength(3).IsFixedLength();\n        });\n\n        // ✓ VO بسيط في عمود واحد: value converter\n        b.Property(o => o.CustomerEmail)\n         .HasConversion(v => v.Value, v => new Email(v))\n         .HasMaxLength(320);\n\n        // ✓ Address مدمج كـJSON (يتغير شكله نادرًا ولا يُفلتر به)\n        b.ComplexProperty(o => o.ShippingAddress).ToJson();\n\n        b.Property(o => o.Status).HasConversion<string>().HasMaxLength(24);\n        b.HasIndex(o => new { o.Status, o.CreatedAt, o.Id })\n         .IncludeProperties(o => new { o.Total, o.CustomerId })       // فهرس مغطّي (درس 3.1.1)\n         .HasDatabaseName(\"ix_orders_status_created_covering\");\n\n        // الـaggregate الداخلي: owned collection (لا يُقرأ ولا يُكتب منفصلًا)\n        b.OwnsMany(o => o.Lines, line =>\n        {\n            line.ToTable(\"order_lines\", \"orders\");\n            line.WithOwner().HasForeignKey(\"OrderId\");\n            line.HasKey(\"OrderId\", \"ProductId\");\n            line.Property(l => l.Quantity);\n            line.ComplexProperty(l => l.UnitPrice, m =>\n            {\n                m.Property(x => x.Amount).HasColumnName(\"unit_price_amount\").HasPrecision(18, 2);\n                m.Property(x => x.Currency).HasColumnName(\"unit_price_currency\").HasMaxLength(3);\n            });\n        });\n        b.Navigation(o => o.Lines).UsePropertyAccessMode(PropertyAccessMode.Field);   // ✓ الوصول للحقل الخاص\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) Aggregates: حدود التناسق والمعاملة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Domain/Orders/Order.cs",
+      "title": "جذر aggregate يحمي الـinvariants ويرفع الأحداث",
+      "code": "\nnamespace Shop.Domain.Orders;\n\n/// <summary>\n/// Aggregate Root: `Order` + `OrderLine`s.\n/// الحدود: كل قواعد الطلب (الحالة، المجموع، عدم تكرار المنتج، حد السطور) مفروضة هنا **دائمًا**.\n/// ما خارج الحدود (`Customer`, `Product`, `Shipment`) = aggregates أخرى → **معرّفات فقط**، لا مراجع كائنات.\n/// </summary>\npublic class Order : AggregateRoot\n{\n    public const int MaxLines = 50;\n\n    private readonly List<OrderLine> _lines = [];\n\n    public Guid Id { get; private init; }\n    public Guid CustomerId { get; private init; }          // ★ معرّف فقط — لا `Customer Customer`\n    public Email CustomerEmail { get; private init; }\n    public OrderStatus Status { get; private set; }\n    public Money Total { get; private set; }\n    public Address ShippingAddress { get; private set; }\n    public DateTimeOffset CreatedAt { get; private init; }\n    public DateTimeOffset? CancelledAt { get; private set; }\n    public string? CancellationReason { get; private set; }\n    public int Version { get; private set; }               // ★ concurrency token (درس 3.1.2)\n\n    public IReadOnlyList<OrderLine> Lines => _lines;\n    public bool CanBeModified => Status == OrderStatus.Placed;\n\n    private Order() { }                                     // EF فقط\n\n    // ── Factory: الإنشاء الصحيح الوحيد ──\n    public static Order Place(\n        Guid customerId, Email customerEmail, Address shippingAddress,\n        IEnumerable<(Guid ProductId, string Name, int Quantity, Money UnitPrice)> lines, IClock clock)\n    {\n        if (customerId == Guid.Empty) throw new ArgumentException(\"معرّف العميل مطلوب\", nameof(customerId));\n\n        var order = new Order\n        {\n            Id = Guid.NewGuid(),\n            CustomerId = customerId,\n            CustomerEmail = customerEmail,\n            ShippingAddress = shippingAddress,\n            Status = OrderStatus.Placed,\n            CreatedAt = clock.UtcNow,\n            Version = 1,\n        };\n\n        var materialized = lines.ToList();\n        if (materialized.Count == 0) throw new EmptyOrderException(order.Id);\n        if (materialized.Count > MaxLines) throw new TooManyOrderLinesException(order.Id, materialized.Count, MaxLines);\n\n        foreach (var l in materialized) order.AddLine(l.ProductId, l.Name, l.Quantity, l.UnitPrice);\n        order.Recalculate();\n\n        order.Raise(new OrderPlaced(order.Id, order.CustomerId, order.Total, order.ShippingAddress, order.CreatedAt));\n        return order;\n    }\n\n    // ── السلوك: كل تعديل يمر بقاعدة ──\n    public void AddLine(Guid productId, string name, int quantity, Money unitPrice)\n    {\n        EnsureModifiable();\n        if (quantity < 1) throw new ArgumentOutOfRangeException(nameof(quantity), \"الكمية ≥ 1\");\n        if (_lines.Count >= MaxLines && _lines.All(l => l.ProductId != productId))\n            throw new TooManyOrderLinesException(Id, _lines.Count + 1, MaxLines);\n\n        var existing = _lines.Find(l => l.ProductId == productId);\n        if (existing is not null) existing.IncreaseQuantity(quantity);      // ★ invariant: لا تكرار منتج\n        else _lines.Add(new OrderLine(productId, name.Trim(), quantity, unitPrice));\n\n        Recalculate();\n        Version++;\n    }\n\n    public void ChangeShippingAddress(Address newAddress)\n    {\n        EnsureModifiable();\n        if (Status == OrderStatus.Placed && newAddress.Country != ShippingAddress.Country)\n            throw new InvalidOperationException(\"تغيير بلد الشحن بعد الطلب يحتاج إلغاء وإعادة إنشاء (تختلف الرسوم)\");\n\n        ShippingAddress = newAddress;\n        Version++;\n    }\n\n    public void Cancel(string reason, IClock clock)\n    {\n        if (Status is OrderStatus.Shipped or OrderStatus.Delivered)\n            throw new OrderCannotBeCancelledException(Id, Status);\n        ArgumentException.ThrowIfNullOrWhiteSpace(reason);\n\n        Status = OrderStatus.Cancelled;\n        CancelledAt = clock.UtcNow;\n        CancellationReason = reason.Trim();\n        Version++;\n\n        Raise(new OrderCancelled(Id, CustomerId, Total, CancellationReason, CancelledAt.Value));\n    }\n\n    public void Ship(IClock clock)\n    {\n        EnsureTransition(OrderStatus.Placed, OrderStatus.Shipped);\n        Status = OrderStatus.Shipped;\n        Version++;\n        Raise(new OrderShipped(Id, ShippingAddress, clock.UtcNow));\n    }\n\n    public void MarkDelivered(IClock clock)\n    {\n        EnsureTransition(OrderStatus.Shipped, OrderStatus.Delivered);\n        Status = OrderStatus.Delivered;\n        Version++;\n        Raise(new OrderDelivered(Id, Total, clock.UtcNow));\n    }\n\n    private void EnsureModifiable()\n    {\n        if (!CanBeModified)\n            throw new OrderCannotBeModifiedException(Id, Status);\n    }\n\n    private void EnsureTransition(OrderStatus from, OrderStatus to)\n    {\n        if (Status != from) throw new InvalidOrderTransitionException(Id, Status, to);\n    }\n\n    /// <summary>★ الـinvariant الأساسي: المجموع دايمًا = مجموع السطور (مستحيل يتفارق).</summary>\n    private void Recalculate() =>\n        Total = _lines.Aggregate(Money.Zero, (sum, l) => sum + l.Subtotal);\n}\n\n/// <summary>كيان داخل الـaggregate: له هوية محلية، لكن لا يُوصول له من بره الجذر.</summary>\npublic class OrderLine\n{\n    public Guid ProductId { get; private init; }\n    public string Name { get; private init; }\n    public int Quantity { get; private set; }\n    public Money UnitPrice { get; private init; }\n    public Money Subtotal => UnitPrice.Multiply(Quantity);\n    public const int MaxQuantity = 999;\n\n    internal OrderLine(Guid productId, string name, int quantity, Money unitPrice)\n    {\n        ProductId = productId; Name = name; UnitPrice = unitPrice; Quantity = quantity;\n    }\n    private OrderLine() { Name = string.Empty; }\n\n    internal void IncreaseQuantity(int by)\n    {\n        if (Quantity + by > MaxQuantity)\n            throw new InvalidOperationException($\"الحد الأقصى للكمية {MaxQuantity} لكل سطر\");\n        Quantity += by;\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الكائن",
+        "داخل aggregate الطلب؟",
+        "السبب",
+        "التكلفة لو غلط"
+      ],
+      "rows": [
+        [
+          "`OrderLine`",
+          "✓ داخل",
+          "المجموع invariant يعتمد عليه، ويتغير مع الطلب دائمًا",
+          "—"
+        ],
+        [
+          "`Address` (الشحن)",
+          "✓ داخل (VO)",
+          "لقطة تاريخية: لازم ما تتغيرش بعد الشحن",
+          "—"
+        ],
+        [
+          "`Customer`",
+          "✗ بره (معرّف فقط)",
+          "كيان مستقل بحياة أطول، يتعدل من مسارات تانية",
+          "لو داخل: كل طلب بيقفل صف العميل → تنازعات وأداء كارثي"
+        ],
+        [
+          "`Product`",
+          "✗ بره (معرّف + اسم منسوخ)",
+          "كتالوج مستقل، وحجمه كبير",
+          "لو داخل: تعديل سعر منتج يعدّل ملايين الطلبات"
+        ],
+        [
+          "`Shipment`",
+          "✗ بره (aggregate مستقل)",
+          "دورة حياة مختلفة (تتبع، ناقل، إعادة شحن)",
+          "لو داخل: تعديل شحنة يلمس aggregate الطلب كله"
+        ],
+        [
+          "`Payment`",
+          "✗ بره + حدث",
+          "مزود خارجي وحالة مستقلة، ومعاملة واحدة لكل aggregate",
+          "لو داخل: معاملة موزعة مخفية داخل معاملة قاعدة"
+        ],
+        [
+          "`Invoice`",
+          "✗ بره + حدث",
+          "يُنشأ بعد التسليم، وقد يُعاد إصداره",
+          "لو داخل: aggregate بيكبر بلا حدود"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "القاعدة الذهبية: aggregate واحد لكل معاملة",
+      "md": "\nلو معاملتك بتعدّل `Order` و`Shipment` و`Customer` معًا → حدودك غلط.\n\n**لييه؟** كل aggregate بيُقفل/يُتحقق من إصداره بشكل مستقل؛ تعديل اتنين في معاملة واحدة =\nتنازعات (deadlocks)، أقفال أطول، وصعوبة فصلهم لموديولات/خدمات لاحقًا.\n\n**الحل:** عدّل `Order` في المعاملة، وارفع `OrderShipped` → مستهلك في aggregate `Shipment` يعالجه لاحقًا\n(idempotent + outbox). ده **اتساق eventual مقصود**، مش خلل.\n\n**استثناء وحيد مقبول:** عمليات صغيرة جدًا ومتلازمة فعلًا (مثل `Order` وسطوره) — ودي داخل aggregate واحد أصلًا.\n\nولما تختار الحدود: **ابدأ صغيرًا**. aggregate كبير = أقفال أوسع وتنازعات أكتر، وتصغيره لاحقًا أصعب بكتير من تكبيره.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Domain Events وDomain Services"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Domain/Orders/Events.cs",
+      "title": "أحداث: ماضي، غير قابلة للتعديل، وتحمل ما يحتاجه المستهلك",
+      "code": "\nnamespace Shop.Domain.Orders;\n\n// ★ التسمية بصيغة الماضي (حاجة حصلت) — الأوامر بصيغة المصدر/المضارع (PlaceOrder)\npublic sealed record OrderPlaced(\n    Guid OrderId, Guid CustomerId, Money Total, Address ShippingAddress, DateTimeOffset OccurredAt) : IDomainEvent;\n\npublic sealed record OrderCancelled(\n    Guid OrderId, Guid CustomerId, Money Total, string Reason, DateTimeOffset OccurredAt) : IDomainEvent;\n\npublic sealed record OrderShipped(\n    Guid OrderId, Address ShippingAddress, DateTimeOffset OccurredAt) : IDomainEvent;\n\npublic sealed record OrderDelivered(\n    Guid OrderId, Money Total, DateTimeOffset OccurredAt) : IDomainEvent;\n\n// قواعد تصميم الأحداث:\n// ① الماضي: `OrderPlaced` لا `PlaceOrder`\n// ② غير قابل للتعديل: `sealed record` بلا setters\n// ③ ذاتي الاحتواء: يحمل البيانات اللي المستهلك محتاجها (بلا نداء رجوع للقاعدة في كل مستهلك)\n// ④ بلا تفاصيل تقنية: لا `DbContext` ولا `HttpRequest` ولا معرّفات اتصال\n// ⑤ عقد عام: لو الحدث بيخرج بره الموديول → يصير جزءًا من `Contracts` ولا يتغير تغييرًا كاسرًا\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "src/Shop.Domain/Pricing/PricingPolicy.cs",
+      "title": "Domain Service: قاعدة تخص أكتر من aggregate (بلا حالة)",
+      "code": "\nnamespace Shop.Domain.Pricing;\n\n/// <summary>\n/// Domain Service: خصم الشحن يعتمد على (إجمالي الطلب + بلد الوجهة + فئة العميل) —\n/// لا ينتمي لكيان واحد، ولا يجب أن يسكن في Application (ده **منطق مجال**).\n/// ★ بلا حالة (stateless) → يُسجَّل كـsingleton.\n/// </summary>\npublic sealed class ShippingPricingPolicy(IClock clock)\n{\n    private static readonly Dictionary<string, Money> BaseRates = new()\n    {\n        [\"EG\"] = new Money(35m, \"EGP\"),\n        [\"SA\"] = new Money(180m, \"EGP\"),\n        [\"AE\"] = new Money(210m, \"EGP\"),\n    };\n\n    public Money Calculate(Money orderTotal, Address destination, CustomerTier tier)\n    {\n        if (!BaseRates.TryGetValue(destination.Country, out var baseRate))\n            throw new UnsupportedDestinationException(destination.Country);    // ★ فشل صريح، لا صفر افتراضي\n\n        var rate = baseRate;\n\n        // قواعد المجال (مش إعدادات تقنية):\n        if (orderTotal >= new Money(1500m, orderTotal.Currency)) rate = Money.Zero;    // شحن مجاني فوق حد\n        if (tier == CustomerTier.Gold) rate = rate.Multiply(0.5m);                      // خصم فئة\n        if (IsPeakSeason(clock.UtcNow)) rate = rate.Multiply(1.25m);                    // موسم الذروة\n\n        return new Money(Math.Round(rate.Amount, 2), rate.Currency);\n    }\n\n    private static bool IsPeakSeason(DateTimeOffset now) =>\n        now.Month == 11 || (now.Month == 12 && now.Day <= 25);\n}\n\npublic enum CustomerTier { Standard, Silver, Gold }\npublic sealed class UnsupportedDestinationException(string country)\n    : InvalidOperationException($\"لا نشحن إلى {country}\");\n\n// ✗ متى لا تستخدم Domain Service:\n//   • لو القاعدة تخص كيانًا واحدًا → method في الكيان (الأفضل دائمًا)\n//   • لو الكود بيوصل قاعدة بيانات أو HTTP → ده Application/Infrastructure (مش Domain Service)\n//   • لو بقى «God Service» بيجمع كل المنطق → راجع حدود الـaggregates\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) اختبارات الـinvariants (أسرع وأهم اختبارات في مشروعك)"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "tests/Shop.UnitTests/Domain/OrderTests.cs",
+      "title": "بلا قاعدة، بلا mocks، بلا شبكة — أجزاء من الثانية",
+      "code": "\npublic class OrderTests\n{\n    private static readonly FixedClock Clock = new(new DateTimeOffset(2026, 10, 22, 10, 0, 0, TimeSpan.Zero));\n    private static readonly Address Cairo = new(\"12 Tahrir Sq\", \"Cairo\", \"EG\", \"11511\");\n    private static readonly Email Email = new(\"buyer@example.com\");\n\n    private static Order NewOrder(params (Guid, string, int, Money)[] lines) =>\n        Order.Place(Guid.NewGuid(), Email, Cairo,\n            lines.Length > 0 ? lines : [(Guid.NewGuid(), \"Keyboard\", 2, new Money(250m, \"EGP\"))], Clock);\n\n    [Fact]\n    public void Total_always_equals_sum_of_lines()\n    {\n        var order = NewOrder(\n            (Guid.NewGuid(), \"Mouse\", 2, new Money(100m, \"EGP\")),\n            (Guid.NewGuid(), \"Pad\", 1, new Money(50.5m, \"EGP\")));\n\n        order.Total.Should().Be(new Money(250.5m, \"EGP\"));\n    }\n\n    [Fact]\n    public void Adding_same_product_twice_merges_into_one_line()\n    {\n        var productId = Guid.NewGuid();\n        var order = NewOrder((productId, \"Mouse\", 2, new Money(100m, \"EGP\")));\n\n        order.AddLine(productId, \"Mouse\", 3, new Money(100m, \"EGP\"));\n\n        order.Lines.Should().HaveCount(1, \"لا تكرار لنفس المنتج في سطرين (invariant)\");\n        order.Lines[0].Quantity.Should().Be(5);\n        order.Total.Should().Be(new Money(500m, \"EGP\"));\n    }\n\n    [Fact]\n    public void Cannot_cancel_after_shipping()\n    {\n        var order = NewOrder();\n        order.Ship(Clock);\n\n        var act = () => order.Cancel(\"changed mind\", Clock);\n\n        act.Should().Throw<OrderCannotBeCancelledException>()\n           .Which.Status.Should().Be(OrderStatus.Shipped);\n        order.Status.Should().Be(OrderStatus.Shipped, \"العملية المرفوضة لا تغيّر الحالة\");\n        order.CancelledAt.Should().BeNull();\n    }\n\n    [Fact]\n    public void Cannot_exceed_line_limit()\n    {\n        var order = NewOrder();\n        var act = () => { for (var i = 0; i < Order.MaxLines + 1; i++)\n                order.AddLine(Guid.NewGuid(), $\"P{i}\", 1, new Money(1m, \"EGP\")); };\n\n        act.Should().Throw<TooManyOrderLinesException>();\n    }\n\n    [Fact]\n    public void Cannot_mix_currencies_in_one_order()\n    {\n        var order = NewOrder((Guid.NewGuid(), \"Mouse\", 1, new Money(100m, \"EGP\")));\n\n        var act = () => order.AddLine(Guid.NewGuid(), \"Imported\", 1, new Money(10m, \"USD\"));\n\n        act.Should().Throw<CurrencyMismatchException>();\n    }\n\n    [Fact]\n    public void Placing_raises_OrderPlaced_with_snapshot_data()\n    {\n        var order = NewOrder();\n\n        order.DomainEvents.Should().ContainSingle()\n             .Which.Should().BeOfType<OrderPlaced>()\n             .Which.Total.Should().Be(order.Total);\n    }\n\n    [Fact]\n    public void Every_mutation_bumps_version_for_optimistic_concurrency()\n    {\n        var order = NewOrder();\n        var before = order.Version;\n\n        order.AddLine(Guid.NewGuid(), \"Cable\", 1, new Money(20m, \"EGP\"));\n\n        order.Version.Should().Be(before + 1);\n    }\n}\n\n/// <summary>منفذ الزمن للاختبار — السبب الحقيقي إن IClock في Domain.</summary>\npublic sealed class FixedClock(DateTimeOffset now) : IClock\n{\n    public DateTimeOffset UtcNow { get; set; } = now;\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) أخطاء DDD التكتيكي الشائعة"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الخطأ",
+        "الشكل",
+        "الإصلاح"
+      ],
+      "rows": [
+        [
+          "Aggregate ضخم",
+          "`Order` فيه `Customer` و`Shipment` و`Payment` كمراجع كائنات",
+          "معرّفات فقط + أحداث؛ aggregate صغير بأقفل أقل"
+        ],
+        [
+          "Anemic model",
+          "كيانات بـgetters و`OrderService` بيعدّل كل حاجة",
+          "انقل القواعد لجوه الكيان (درس 4.1.1)"
+        ],
+        [
+          "VO بلا تحقق",
+          "`new Money(-5, \"EGPS\")` مقبول",
+          "تحقق في الـconstructor + `readonly record struct`"
+        ],
+        [
+          "VO له هوية",
+          "`Money` بيُقارن بـId",
+          "المساواة بالقيمة؛ الهوية للكيانات فقط"
+        ],
+        [
+          "حدث كأمر (RPC)",
+          "`PleaseCancelOrder` كـDomain Event",
+          "الأحداث ماضية وصفية؛ الأوامر عبر Application"
+        ],
+        [
+          "Repository لكل جدول",
+          "`IOrderLineRepository`, `IAddressRepository`",
+          "repository واحد لجذر الـaggregate فقط"
+        ],
+        [
+          "Domain Service بيوصل DB",
+          "الخدمة بتنادي `DbContext`",
+          "مرّر البيانات كمعاملات؛ الوصول للـInfrastructure في Application"
+        ],
+        [
+          "لغة غير موحدة",
+          "الكود `User`/`Client` والبيزنس «عميل»",
+          "اسم واحد في كل مكان (Glossary في README + مراجعة)"
+        ],
+        [
+          "تعديل aggregate تاني في نفس المعاملة",
+          "خصم مخزون + إنشاء طلب في معاملة",
+          "aggregate واحد + حدث (اتساق eventual)"
+        ],
+        [
+          "أحداث بلا outbox",
+          "نشر مباشر بعد `SaveChanges` → فقد عند الانهيار",
+          "outbox في نفس المعاملة (درس 4.2.3)"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أنمذج المفاهيم كـValue Objects بتحقق في الـconstructor وأتخلص من Primitive Obsession.",
+        "أحدد حدود الـaggregate بالـinvariants لا بالراحة، وأخلي كل معاملة تعدّل aggregate واحدًا.",
+        "أربط الـaggregates الأخرى بمعرّفات فقط وأتواصل بينها بأحداث ماضية غير قابلة للتعديل.",
+        "أكتب اختبارات وحدة للقواعد (بلا قاعدة ولا mocks) وأخزّن الـVOs في EF بـcomplex/owned types."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "إيه الفرق بين Entity وValue Object؟",
+          "options": [
+            "الـEntity أكبر",
+            "Entity له هوية تستمر مع تغير الخصائص (المساواة بالمعرّف)؛ VO بلا هوية والمساواة بالقيمة وغير قابل للتعديل",
+            "VO يتخزن في جدول",
+            "لا فرق"
+          ],
+          "answer": 1,
+          "explain": "مثال: `Order` كيان (نفس الطلب رغم تغير حالته)، و`Money(100, EGP)` VO (أي نسختين متساويتين = نفس القيمة)."
+        },
+        {
+          "q": "`Money` بـ`readonly record struct` بدل `class` — الفائدة؟",
+          "options": [
+            "أقل كودًا فقط",
+            "مساواة بالقيمة تلقائيًا + عدم قابلية للتعديل + صفر تخصيص على الكومة (قيمة على الـstack)",
+            "يسمح بالوراثة",
+            "أسرع في EF"
+          ],
+          "answer": 1,
+          "explain": "للـVOs الصغيرة دي مكاسب حقيقية: `Money a = b; a += x;` ينشئ نسخة جديدة ولا يعدّل الأصل — وده بالظبط اللي عايزينه."
+        },
+        {
+          "q": "ليه `Order` بيحمل `CustomerId` مش `Customer Customer`؟",
+          "options": [
+            "توفير ذاكرة",
+            "Customer aggregate مستقل: المرجع بالكائن بيجرّه لنفس حدود التناسق (أقفال أوسع، معاملات أكبر) ويمنع الفصل لاحقًا",
+            "EF لا يدعمه",
+            "أسهل في التسلسل"
+          ],
+          "answer": 1,
+          "explain": "القاعدة: عبر حدود الـaggregate → معرّفات فقط. لو محتاج بيانات العميل: استعلام منفصل أو انسخ ما يلزم (مثل اسم المنتج في السطر)."
+        },
+        {
+          "q": "معاملة محتاجة تنقص المخزون وتسجل الطلب. التصميم الصحيح؟",
+          "options": [
+            "aggregate واحد يحتوي الاثنين",
+            "تعديل `Order` في معاملته + رفع `OrderPlaced` → مستهلك في `Stock` aggregate ينقص المخزون (idempotent، عبر outbox)",
+            "تعديل الاثنين في معاملة واحدة على نفس DbContext",
+            "استخدام معاملة موزعة (2PC)"
+          ],
+          "answer": 1,
+          "explain": "اتساق eventual مقصود. التكلفة: المخزون ممكن يتأخر أجزاء من الثانية، ومحتاج تعويض لو فشل (حجز مؤقت + انتهاء صلاحية)."
+        },
+        {
+          "q": "متى تستخدم Domain Service؟",
+          "options": [
+            "لأي منطق عمل",
+            "لما القاعدة تخص أكتر من aggregate أو لا تنتمي لكيان واحد، وتبقى بلا حالة ولا تصل لقاعدة/شبكة",
+            "بدل الـhandlers",
+            "لما الكيان كبير"
+          ],
+          "answer": 1,
+          "explain": "الأفضل دايمًا method في الكيان. Domain Service حل استثنائي — ولو بدأ يجمع كل المنطق، فحدودك محتاجة مراجعة."
+        },
+        {
+          "q": "repository لـ`OrderLine` — حكم صحيح؟",
+          "options": [
+            "مطلوب للـCRUD",
+            "مرفوض: `OrderLine` جزء من aggregate الطلب، ويُوصول له عبر الجذر فقط (`order.AddLine(...)`) — repository واحد للجذر",
+            "مطلوب للأداء",
+            "اختياري دائمًا"
+          ],
+          "answer": 1,
+          "explain": "لو سمحت بتعديل السطور من بره الجذر، الـinvariant (المجموع = مجموع السطور) ممكن ينكسر بسهولة."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "3 Value Objects في مشروعك",
+          "md": "اختار 3 مفاهيم مستخدمة كـprimitives (مبلغ/عملة، بريد، فترة تاريخية، عنوان، كمية، مرجع طلب) وحوّلها لـVOs بتحقق كامل وعمليات آمنة. حدّث التخطيط في EF والـhandlers، وأضف اختبارات وحدة لكل قاعدة.",
+          "criteria": [
+            "كل VO بـ`readonly record struct` مع تحقق في الـconstructor (مستحيل تنشئ نسخة غير صالحة)",
+            "العمليات الآمنة (جمع/طرح/مقارنة) بترفض الحالات الغلط باستثناء واضح",
+            "تخطيط EF معرّف في Infrastructure (complex/owned/converter) وبلا attributes في Domain",
+            "≥ 8 اختبارات وحدة تغطي الحدود (سالب، عملة مختلفة، طول أقصى، فترة معكوسة)",
+            "حذف التحقق المكرر من الـDTOs/Validators (الدليل: عدد الأسطر المحذوفة)"
+          ],
+          "hint": "لو التسلسل JSON broke: اعمل `JsonConverter` لكل VO في طبقة Api (مش في Domain)، أو استخدم constructor parameter matching في System.Text.Json."
+        },
+        {
+          "id": "t2",
+          "title": "أعد رسم حدود aggregate",
+          "md": "ارسم aggregate الحالي في مشروعك (كيانات + علاقات)، وحدد: أنهي كائنات لازم تخرج (معرّف فقط)، أنهي invariant داخل الحدود، وأنهي تعديل بيحصل عبر aggregate تاني في نفس المعاملة. نفّذ التغيير واختبره.",
+          "criteria": [
+            "رسم قبل/بعد (نص أو صورة) مع مبرر لكل كائن (داخل/خارج) مبني على invariant",
+            "لا معاملة تعدّل أكتر من aggregate واحد (اختبار/مراجعة يثبتها)",
+            "كل الآثار الجانبية عبر aggregates أخرى صارت أحداثًا تُكتب في outbox",
+            "اختبار وحدة لكل invariant + اختبار idempotency لمستهلك حدث واحد",
+            "قياس: عدد الصفوف المقفولة/زمن المعاملة قبل وبعد (لو انطبق)"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "DDD — Domain model design (MS Learn)",
+          "url": "https://learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/ddd-oriented-microservice"
+        },
+        {
+          "label": "Effective Aggregate Design (Vaughn Vernon)",
+          "url": "https://www.dddcommunity.org/library/vernon_2011/"
+        },
+        {
+          "label": "Value Objects explained",
+          "url": "https://learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/implement-value-objects"
+        },
+        {
+          "label": "EF Core — Owned & complex types",
+          "url": "https://learn.microsoft.com/ef/core/modeling/owned-entities"
+        },
+        {
+          "label": "Domain events design & implementation",
+          "url": "https://learn.microsoft.com/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation"
+        },
+        {
+          "label": "Refactoring Guru — domain logic patterns",
+          "url": "https://refactoring.guru/design-patterns"
+        }
+      ]
+    }
+  ]
+}

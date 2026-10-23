@@ -1,0 +1,227 @@
+{
+  "id": "s1-m1-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nالإعدادات (Configuration) أكتر مكان بيتكتب فيه كود سريع وبينفجر لاحقًا: connection strings في الـrepo،\n`IConfiguration[\"...\"]` منتشر في كل ملف، وإعداد بيتغير في الإنتاج من غير ما حد ياخد باله.\n\nالحل في .NET بسيط وموجود من زمان: **Options Pattern** — كائنات strongly-typed، متحقَّق منها عند الإقلاع،\nومحقونة بالـDI. والأسرار بره الكود تمامًا: User Secrets محليًا، وKey Vault/متغيرات بيئة في السحابة.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "IConfiguration",
+          "def": "قراءة قيم مباشرة بمفتاح نصي. مرن لكنه stringly-typed — استخدمه في الـComposition Root فقط."
+        },
+        {
+          "term": "IOptions<T>",
+          "def": "كائن إعدادات مُحقن، **Singleton**، بيتحسب مرة واحدة ولا يتغير بعد الإقلاع."
+        },
+        {
+          "term": "IOptionsSnapshot<T>",
+          "def": "**Scoped** — بيتعاد حسابه لكل request، فبيلتقط التغيير في الملفات أثناء التشغيل."
+        },
+        {
+          "term": "IOptionsMonitor<T>",
+          "def": "**Singleton** مع إشعار تغيير (`OnChange`) — مناسب للخدمات الطويلة العمر."
+        },
+        {
+          "term": "User Secrets",
+          "def": "أسرار التطوير مخزّنة بره مجلد المشروع (وبره git) ومرتبطة بـ`UserSecretsId`."
+        },
+        {
+          "term": "ValidateOnStart",
+          "def": "التحقق من صحة الإعدادات عند الإقلاع — يفشل التطبيق بدري بدل ما يفشل أول طلب."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "filename": "appsettings.json",
+      "title": "أقسام واضحة، ولا سر هنا",
+      "code": "\n{\n  \"ConnectionStrings\": {\n    \"Shop\": \"\"\n  },\n  \"Payments\": {\n    \"Provider\": \"stripe\",\n    \"TimeoutSeconds\": 10,\n    \"RetryCount\": 3,\n    \"WebhookPath\": \"/hooks/payments\"\n  },\n  \"Email\": {\n    \"From\": \"no-reply@shop.example\",\n    \"Host\": \"smtp.example\",\n    \"Port\": 587\n  },\n  \"Serilog\": {\n    \"MinimumLevel\": { \"Default\": \"Information\" }\n  }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "الأسرار: User Secrets محليًا (وبره git)",
+      "code": "\n# مرة واحدة لكل مشروع\ndotnet user-secrets init\n\n# القيم الحساسة\ndotnet user-secrets set \"ConnectionStrings:Shop\" \"Host=localhost;Database=shop;Username=dev;Password=dev-only\"\ndotnet user-secrets set \"Payments:ApiKey\" \"sk_test_...\"\ndotnet user-secrets set \"Email:Password\" \"...\"\n\n# مكان التخزين (بره مجلد المشروع):\n#   Linux/macOS: ~/.microsoft/usersecrets/<UserSecretsId>/secrets.json\n#   Windows:     %APPDATA%\\Microsoft\\UserSecrets\\<UserSecretsId>\\secrets.json\ndotnet user-secrets list\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "ترتيب المصادر (الأخير يكسب)",
+      "md": "\n`appsettings.json` ← `appsettings.{Environment}.json` ← **User Secrets** (Development) ← متغيرات البيئة ← سطر الأوامر.\nيعني متغير البيئة `ConnectionStrings__Shop` بيتجاوز كل حاجة — وده بالظبط اللي تستخدمه في Docker/Kubernetes/Azure.\n**ما تحطش أسرار في `appsettings.Production.json`** — ده ملف في الـrepo.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Options قوية الأنواع + تحقق عند الإقلاع"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Configuration/PaymentOptions.cs",
+      "title": "كلاس الإعدادات مع DataAnnotations",
+      "code": "\nusing System.ComponentModel.DataAnnotations;\n\nnamespace Shop.Configuration;\n\n[OptionsName]\npublic sealed class PaymentOptions\n{\n    public const string SectionName = \"Payments\";\n\n    [Required]\n    public string Provider { get; init; } = \"stripe\";\n\n    [Range(1, 120)]\n    public int TimeoutSeconds { get; init; } = 10;\n\n    [Range(0, 10)]\n    public int RetryCount { get; init; } = 3;\n\n    public Uri WebhookUrl { get; init; } = new(\"https://localhost/hooks/payments\");\n\n    // السر نفسه: يُحقن من البيئة/Key Vault، ومش بيتسجل في اللوج أبدًا\n    public string ApiKey { get; init; } = \"\";\n}\n\npublic sealed class EmailOptions\n{\n    public const string SectionName = \"Email\";\n    [Required, EmailAddress] public string From { get; init; } = \"\";\n    [Required] public string Host { get; init; } = \"\";\n    [Range(1, 65535)] public int Port { get; init; } = 587;\n}\n\n// Attribute اختياري للتوثيق الذاتي\n[AttributeUsage(AttributeTargets.Class)]\npublic sealed class OptionsNameAttribute : Attribute;\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Program.cs",
+      "title": "الربط + التحقق + الفشل المبكر",
+      "code": "\nusing Shop.Configuration;\n\nvar builder = WebApplication.CreateBuilder(args);\n\nbuilder.Services\n    .AddOptions<PaymentOptions>()\n    .Bind(builder.Configuration.GetSection(PaymentOptions.SectionName))\n    .ValidateDataAnnotations()\n    .ValidateOnStart();                       // ✓ يفشل عند الإقلاع مش وقت أول طلب\n\nbuilder.Services\n    .AddOptions<EmailOptions>()\n    .Bind(builder.Configuration.GetSection(EmailOptions.SectionName))\n    .ValidateDataAnnotations()\n    .Validate(o => o.Port is > 0 and < 65536, \"Port out of range\")\n    .ValidateOnStart();\n\n// تحقق مخصص أعقد\nbuilder.Services\n    .AddOptions<PaymentOptions>()\n    .Validate(o => !string.IsNullOrWhiteSpace(o.ApiKey) || builder.Environment.IsDevelopment(),\n              \"Payments:ApiKey is required outside Development\");\n\nbuilder.Services.AddScoped<PaymentGateway>();\nvar app = builder.Build();\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Payments/PaymentGateway.cs",
+      "title": "الاستهلاك: حقن IOptions<T>",
+      "code": "\npublic sealed class PaymentGateway(\n    IOptions<PaymentOptions> options,\n    IHttpClientFactory httpFactory,\n    ILogger<PaymentGateway> log)\n{\n    private readonly PaymentOptions _options = options.Value;\n    private readonly HttpClient _http = httpFactory.CreateClient(\"payments\");\n\n    public async Task<ChargeResult> ChargeAsync(ChargeRequest request, CancellationToken ct)\n    {\n        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);\n        cts.CancelAfter(TimeSpan.FromSeconds(_options.TimeoutSeconds));\n\n        using var msg = new HttpRequestMessage(HttpMethod.Post, \"/v1/charges\");\n        msg.Headers.Authorization = new(\"Bearer\", _options.ApiKey);   // السر من Environment/Key Vault\n        msg.Content = JsonContent.Create(request);\n\n        try\n        {\n            var res = await _http.SendAsync(msg, cts.Token);\n            res.EnsureSuccessStatusCode();\n            return await res.Content.ReadFromJsonAsync<ChargeResult>(cts.Token)\n                   ?? throw new InvalidOperationException(\"empty charge response\");\n        }\n        catch (Exception ex)\n        {\n            // ⚠ لا تسجلApiKey أو الترويسة — سجل السياق الآمن فقط\n            log.LogError(ex, \"charge failed for {OrderId} via {Provider}\", request.OrderId, _options.Provider);\n            throw;\n        }\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الواجهة",
+        "Lifetime",
+        "بتتحدث؟",
+        "إمتى تستخدمها"
+      ],
+      "rows": [
+        [
+          "`IOptions<T>`",
+          "Singleton",
+          "لا",
+          "الافتراضي: إعداد ثابت طول عمر التطبيق"
+        ],
+        [
+          "`IOptionsSnapshot<T>`",
+          "Scoped",
+          "نعم (كل request)",
+          "عايز تغيير الملف ينعكس بدون إعادة تشغيل — في خدمات مرتبطة بطلب"
+        ],
+        [
+          "`IOptionsMonitor<T>`",
+          "Singleton",
+          "نعم (+OnChange)",
+          "خدمات طويلة العمر (Worker/Kestrel) محتاجة تعرف بالتغيير"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "لما تنتقل للسحابة",
+      "md": "\nفي Azure استخدم **Managed Identity + Key Vault** (من غير أسرار في الكود أو في الـCI)، وفي Kubernetes استخدم\n**Secrets** مع `envFrom`، وفي Docker استخدم متغيرات البيئة. كود التطبيق ما بيتغيرش — بيقرأ من `IConfiguration`\nاللي بيوصل له القيم من المصدر المناسب. وده بالظبط مكسب الـOptions Pattern.\n"
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أقدر أحوّل أي `IConfiguration[\"...\"]` منتشر إلى كلاس Options قوي الأنواع.",
+        "أخلي التطبيق يفشل عند الإقلاع لو إعداد ناقص أو غلط.",
+        "أخزّن أسرار التطوير خارج المستودع وأضبط الإنتاج بمتغيرات بيئة/Key Vault.",
+        "أختار بين IOptions وIOptionsSnapshot وIOptionsMonitor بمبرر."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "خدمة Singleton طويلة العمر محتاجة تعرف لو ملف الإعداد اتغير وقت التشغيل. تستخدم إيه؟",
+          "options": [
+            "IOptions<T>",
+            "IOptionsSnapshot<T>",
+            "IOptionsMonitor<T>",
+            "IConfiguration مباشرة"
+          ],
+          "answer": 2,
+          "explain": "`IOptionsSnapshot` Scoped (مش هيشتغل في Singleton)، بينما `IOptionsMonitor` Singleton وبيدعم `OnChange`."
+        },
+        {
+          "q": "إيه فايدة `ValidateOnStart()`؟",
+          "options": [
+            "بيسرّع الإقلاع",
+            "بيفشل التطبيق بدري لو إعداد غلط، بدل فشل وقت أول طلب",
+            "بيمنع تغيير الإعدادات",
+            "بيشفّر الأسرار"
+          ],
+          "answer": 1,
+          "explain": "فشل مبكر وواضح = نشر سيء ما يوصلش الإنتاج. من غيره، الخطأ يظهر كـ500 لأول مستخدم."
+        },
+        {
+          "q": "أفضل مكان لـconnection string الخاص بـProduction في تطبيق منشور على Azure؟",
+          "options": [
+            "appsettings.Production.json في المستودع",
+            "متغير بيئة / Key Vault مع Managed Identity",
+            "مكتوب في Program.cs",
+            "في ملف .env داخل صورة Docker"
+          ],
+          "answer": 1,
+          "explain": "الأسرار بره الكود وبره المستودع وبره الصورة. Key Vault + Managed Identity يلغي الحاجة لأي سر مخزّن."
+        },
+        {
+          "q": "ترتيب المصادر في .NET: أنهي بيتجاوز التاني؟",
+          "options": [
+            "appsettings.json يتجاوز متغيرات البيئة",
+            "متغيرات البيئة تتجاوز appsettings.json",
+            "User Secrets تتجاوز متغيرات البيئة في الإنتاج",
+            "الترتيب أبجدي"
+          ],
+          "answer": 1,
+          "explain": "المصادر اللاحقة تكسب: appsettings ← appsettings.{Env} ← User Secrets (Development) ← Environment ← CLI."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "حوّل إعدادات مشروعك لـOptions",
+          "md": "اختار قسم إعدادات حقيقي في مشروعك (Email/Payments/Jwt/Storage) وحوّله لكلاس Options مع DataAnnotations و`ValidateOnStart`، وامسح كل استخدام مباشر لـ`IConfiguration` برا الـComposition Root.",
+          "criteria": [
+            "كلاس Options واحد لكل قسم مع `const string SectionName`",
+            "تحقق DataAnnotations + قاعدة مخصصة واحدة على الأقل",
+            "مفيش `IConfiguration[\"key\"]` في خدمات العمل",
+            "التطبيق يفشل عند الإقلاع لو حذفت قيمة مطلوبة (جرّب)"
+          ],
+          "hint": "ابدأ بـ`builder.Services.AddOptions<T>().Bind(section).ValidateDataAnnotations().ValidateOnStart();` وبعدين حقن `IOptions<T>` في الخدمة."
+        },
+        {
+          "id": "t2",
+          "title": "أسرار نظيفة",
+          "md": "أخرج كل الأسرار من المستودع إلى User Secrets، وأضف `.gitignore` للتأكد، واكتب في README كيف يضبط مطور جديد أسراره المحلية.",
+          "criteria": [
+            "`dotnet user-secrets list` يعرض القيم والتطبيق يشتغل",
+            "لا يوجد سر في أي ملف متتبع بـgit (تحقق بـ`git grep -i password`)",
+            "README فيه خطوة `dotnet user-secrets set ...` جاهزة للنسخ"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "Options pattern in .NET",
+          "url": "https://learn.microsoft.com/dotnet/core/extensions/options"
+        },
+        {
+          "label": "Configuration in ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/fundamentals/configuration/"
+        },
+        {
+          "label": "Safe storage of app secrets in development",
+          "url": "https://learn.microsoft.com/aspnet/core/security/app-secrets"
+        },
+        {
+          "label": "Azure Key Vault",
+          "url": "https://learn.microsoft.com/azure/key-vault/"
+        }
+      ]
+    }
+  ]
+}

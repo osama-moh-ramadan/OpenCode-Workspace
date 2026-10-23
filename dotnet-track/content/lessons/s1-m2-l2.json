@@ -1,0 +1,280 @@
+{
+  "id": "s1-m2-l2",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\n**xUnit** هو الاختيار الافتراضي في سوق .NET (ومعظم مشاريع Microsoft نفسها بتستخدمه). ومن **xUnit v3** بقى\nمبنيًا على **Microsoft.Testing.Platform (MTP)** — runner جديد بيحل محل VSTest، أسرع في الـCI، وبيسمح إن مشروع\nالاختبارات نفسه يتبني كـ**executable** تشتغله مباشرة.\n\nالدرس ده عملي: مشروع اختبارات منظم، `Fact` مقابل `Theory`، مشاركة الإعداد بالـ**fixtures**، تصنيف\nالاختبارات بـ**Traits**، وإعدادات التشغيل في `xunit.runner.json` — وبعدين تشغيل كل ده في CI.\n"
+    },
+    {
+      "type": "terms",
+      "items": [
+        {
+          "term": "[Fact]",
+          "def": "اختبار بلا مدخلات: حالة واحدة ثابتة."
+        },
+        {
+          "term": "[Theory]",
+          "def": "اختبار بمجموعة حالات: `InlineData` / `MemberData` / `ClassData` — كل حالة بتظهر كنتيجة مستقلة."
+        },
+        {
+          "term": "IClassFixture<T>",
+          "def": "إعداد مشترك يُنشأ مرة واحدة لكل كلاس اختبار (مثال: قاعدة بيانات) ويُتخلص منه في النهاية."
+        },
+        {
+          "term": "ICollectionFixture<T>",
+          "def": "نفس الفكرة لكن على مستوى collection — مشاركة أوسع مع تحكم في التوازي."
+        },
+        {
+          "term": "Trait",
+          "def": "وسم للاختبار (`Category=Integration`) تستخدمه في الفلترة بـ`dotnet test --filter`."
+        },
+        {
+          "term": "Microsoft.Testing.Platform",
+          "def": "runner الجديد (بديل VSTest): أسرع، قابل للتوسيع، ومشروع الاختبار بيبقى تطبيق قائم بذاته."
+        },
+        {
+          "term": "xunit.runner.json",
+          "def": "ملف إعدادات التشغيل: التوازي، عدد الـthreads، شكل أسماء الاختبارات، وshadow copy."
+        }
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "إنشاء مشروع الاختبارات وربطه",
+      "code": "\n# مشروع اختبارات xUnit (القالب الحالي في .NET 10 SDK)\ndotnet new xunit -n Shop.Tests\ndotnet sln Shop.sln add Shop.Tests\n\n# ربط المشروعات تحت الاختبار\ndotnet add Shop.Tests reference Shop.Domain Shop.Api Shop.Infrastructure\n\n# الحزم الأساسية\ndotnet add Shop.Tests package xunit.v3                       # xUnit v3 (MTP)\ndotnet add Shop.Tests package NSubstitute                    # doubles\ndotnet add Shop.Tests package Shouldly                       # assertions (بديل مفتوح)\ndotnet add Shop.Tests package coverlet.collector             # التغطية\ndotnet add Shop.Tests package Microsoft.AspNetCore.Mvc.Testing   # WebApplicationFactory\n\n# تشغيل\ndotnet test Shop.Tests\ndotnet test Shop.Tests --filter \"Category=Unit\"\ndotnet test Shop.Tests --logger \"console;verbosity=detailed\"\ndotnet test Shop.Tests --collect:\"XPlat Code Coverage\"\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "ملاحظة على مكتبات الـassertions",
+      "md": "\n`FluentAssertions` من الإصدار 8 بقى بترخيص تجاري للشركات، فكتير من الفرق انتقلت لبدائل مفتوحة:\n**`Shouldly`** (أسلوب `x.ShouldBe(5)`) أو **AwesomeAssertions** (fork مجتمعي بنفس أسلوب `.Should()`).\nأمثلة الدرس بتستخدم أسلوب `.Should()` — لو اخترت Shouldly، الاستبدال ميكانيكي:\n`result.IsValid.Should().BeFalse()` ← `result.IsValid.ShouldBeFalse()`.\nالمهم: **مكتبة واحدة في المشروع كله** عشان رسائل الفشل تفضل متسقة.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Fact وTheory: حالات مش نسخ"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Domain/TaxPolicyTests.cs",
+      "title": "InlineData / MemberData / ClassData",
+      "code": "\npublic sealed class TaxPolicyTests\n{\n    [Fact]\n    public void Egypt_applies_14_percent_vat()\n    {\n        var order = AnOrder.WithSubTotal(100m).WithCountry(\"EG\");\n\n        order.ApplyTax(new EgyptTaxPolicy());\n\n        order.Total.Should().Be(114m);\n    }\n\n    [Theory]\n    [InlineData(\"EG\", 100, 114)]\n    [InlineData(\"SA\", 100, 115)]\n    [InlineData(\"AE\", 100, 105)]\n    [InlineData(\"US\", 100, 100)]\n    public void Tax_by_country(string country, decimal subTotal, decimal expected)\n    {\n        var order = AnOrder.WithSubTotal(subTotal).WithCountry(country);\n\n        order.ApplyTax(TaxPolicyResolver.Resolve(country));\n\n        order.Total.Should().Be(expected);\n    }\n\n    // حالات معقّدة: MemberData بترجع IEnumerable<object[]>\n    public static TheoryData<string, decimal[]> DiscountMatrix => new()\n    {\n        { \"GOLD_1Y\",   [200m, 170m] },     // 15%\n        { \"SILVER\",    [200m, 186m] },     // 7%\n        { \"NONE\",      [200m, 200m] },\n    };\n\n    [Theory]\n    [MemberData(nameof(DiscountMatrix))]\n    public void Discount_tiers(string tier, decimal[] amounts)\n    {\n        var order = AnOrder.WithTier(tier).WithSubTotal(amounts[0]);\n\n        order.ApplyDiscount();\n\n        order.Total.Should().Be(amounts[1]);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Fixtures: إعداد ثقيل مرة واحدة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Infrastructure/DatabaseFixture.cs",
+      "title": "IAsyncLifetime + fixture مشترك للكلاس",
+      "code": "\npublic sealed class DatabaseFixture : IAsyncLifetime\n{\n    private NpgsqlDataSource? _dataSource;\n\n    public string ConnectionString { get; private set; } = \"\";\n\n    public async ValueTask InitializeAsync()\n    {\n        // في الواقع: Testcontainers (الدرس الجاي). هنا الشكل العام.\n        var container = new PostgreSqlBuilder()\n            .WithImage(\"postgres:17-alpine\")\n            .WithDatabase(\"shop_tests\")\n            .Build();\n        await container.StartAsync();\n\n        ConnectionString = container.GetConnectionString();\n        _dataSource = NpgsqlDataSource.Create(ConnectionString);\n        await using var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()\n            .UseNpgsql(ConnectionString).Options);\n        await db.Database.MigrateAsync();          // ✓ نفس مسار الإنتاج\n    }\n\n    public async ValueTask DisposeAsync()\n    {\n        if (_dataSource is not null) await _dataSource.DisposeAsync();\n    }\n\n    /// <summary>سياق جديد لكل استخدام — الاختبارات ما تشاركش DbContext.</summary>\n    public AppDbContext CreateContext() =>\n        new(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(ConnectionString).Options);\n}\n\npublic sealed class OrderPersistenceTests(DatabaseFixture db) : IClassFixture<DatabaseFixture>\n{\n    [Fact]\n    public async Task Saved_order_can_be_read_back()\n    {\n        var id = Guid.NewGuid();\n        await using (var ctx = db.CreateContext())\n        {\n            ctx.Orders.Add(AnOrder.WithId(id).WithTotal(228m).Build());\n            await ctx.SaveChangesAsync();\n        }\n\n        await using var verify = db.CreateContext();\n        var loaded = await verify.Orders.SingleAsync(o => o.Id == id);\n\n        loaded.Total.Should().Be(228m);\n    }\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "قواعد الـfixtures",
+      "md": "\n- الـfixture بيتشارك **الحالة** — فالاختبارات اللي بتستخدمه لازم تكون مستقلة البيانات (معرّفات فريدة لكل اختبار).\n- xUnit بيشغّل الاختبارات **داخل الكلاس الواحد بالتسلسل**، لكن الكلاسات المختلفة **بالتوازي**. fixture مشارك بين\n  كلاسات (CollectionFixture) + توازي = تعارض. استخدم `[Collection(\"Database\")]` لضبط التوازي.\n- **ما تشاركش `DbContext` بين اختبارين** — التغييرات المتتبعة هتتلوث. اعمل context جديد لكل عملية.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "التصنيف والفلترة والتوازي"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "filename": "Traits.cs",
+      "title": "وسوم ثابتة بدل السلاسل المكتوبة بإيدك",
+      "code": "\npublic static class Categories\n{\n    public const string Unit = \"Unit\";\n    public const string Integration = \"Integration\";\n    public const string Slow = \"Slow\";\n}\n\n[Trait(\"Category\", Categories.Unit)]\npublic sealed class OrderTotalTests { /* ... */ }\n\n[Trait(\"Category\", Categories.Integration)]\n[Trait(\"Category\", Categories.Slow)]\npublic sealed class OrdersApiTests(CustomWebApplicationFactory f) : IClassFixture<CustomWebApplicationFactory> { /* ... */ }\n\n// تجميع الكلاسات اللي بتشارك fixture + إلغاء التوازي بينها\n[CollectionDefinition(\"Database\", DisableParallelization = true)]\npublic sealed class DatabaseCollection : ICollectionFixture<DatabaseFixture>;\n\n[Collection(\"Database\")]\npublic sealed class OrderPersistenceTests { /* ... */ }\n"
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "filename": "Shop.Tests/xunit.runner.json",
+      "title": "إعدادات التشغيل (انسخه لمجلد الإخراج)",
+      "code": "\n{\n  \"$schema\": \"https://xunit.net/schema/current/xunit.runner.schema.json\",\n  \"parallelizeAssembly\": false,\n  \"parallelizeTestCollections\": true,\n  \"maxParallelThreads\": 4,\n  \"methodDisplay\": \"method\",\n  \"methodDisplayOptions\": \"replaceUnderscoreWithSpace\",\n  \"diagnosticMessages\": false,\n  \"shadowCopy\": false\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "filename": "Shop.Tests/Shop.Tests.csproj",
+      "title": "نسخ ملف الإعداد + تفعيل MTP",
+      "code": "\n<ItemGroup>\n  <None Update=\"xunit.runner.json\" CopyToOutputDirectory=\"PreserveNewest\" />\n</ItemGroup>\n\n<!-- xUnit v3 بيشتغل على Microsoft.Testing.Platform.\n     لما تفعّل وضع MTP، مشروع الاختبارات بيتبني كتطبيق مستقل تشتغله مباشرة\n     (أسرع في الـCI من طبقة dotnet test). راجع التوثيق للتفاصيل والضبط. -->\n<PropertyGroup>\n  <TargetFramework>net10.0</TargetFramework>\n  <Nullable>enable</Nullable>\n  <ImplicitUsings>enable</ImplicitUsings>\n  <IsPackable>false</IsPackable>\n</PropertyGroup>\n"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "filename": "terminal",
+      "title": "الفلترة في التطوير والـCI",
+      "code": "\n# سريع أثناء التطوير: Unit فقط\ndotnet test --filter \"Category=Unit\"\n\n# قبل الدمج: كل حاجة\ndotnet test\n\n# استبعاد البطيء مؤقتًا\ndotnet test --filter \"Category!=Slow\"\n\n# فلترة بالاسم\ndotnet test --filter \"FullyQualifiedName~OrdersApiTests\"\n\n# إعادة تشغيل الفاشل فقط (xUnit v3 / MTP)\ndotnet test -- --report-trx\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "filename": ".github/workflows/ci.yml",
+      "title": "تشغيل الاختبارات في CI مع تغطية",
+      "code": "\nname: ci\non: [push, pull_request]\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n\n      - uses: actions/setup-dotnet@v4\n        with:\n          dotnet-version: '10.0.x'\n\n      - name: Restore\n        run: dotnet restore\n\n      - name: Build (warnings as errors)\n        run: dotnet build --no-restore -warnaserror\n\n      - name: Unit tests (fast)\n        run: dotnet test --no-build --filter \"Category=Unit\"\n\n      - name: Integration tests\n        run: dotnet test --no-build --filter \"Category=Integration\" --collect:\"XPlat Code Coverage\"\n\n      - name: Upload coverage\n        uses: actions/upload-artifact@v4\n        with:\n          name: coverage\n          path: '**/coverage.cobertura.xml'\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الاحتياج",
+        "الأداة",
+        "ملاحظة"
+      ],
+      "rows": [
+        [
+          "اختبار حالة واحدة",
+          "`[Fact]`",
+          "بلا مدخلات"
+        ],
+        [
+          "اختبار عدة حالات",
+          "`[Theory]` + `InlineData`",
+          "كل حالة نتيجة مستقلة في التقرير"
+        ],
+        [
+          "حالات معقدة/مولّدة",
+          "`MemberData`/`ClassData`",
+          "`TheoryData<T>` أقوى أنواعًا"
+        ],
+        [
+          "إعداد ثقيل مشترك",
+          "`IClassFixture<T>`",
+          "مرة واحدة لكل كلاس"
+        ],
+        [
+          "مشاركة أوسع + تحكم توازي",
+          "`ICollectionFixture<T>` + `[Collection]`",
+          "`DisableParallelization` عند اللزوم"
+        ],
+        [
+          "إعداد لكل اختبار",
+          "`IAsyncLifetime` على الكلاس نفسه",
+          "أبطأ لكن معزول تمامًا"
+        ],
+        [
+          "فلترة في CI",
+          "`[Trait]` + `--filter`",
+          "وسوم ثابتة في كلاس `Categories`"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أنشئ مشروع اختبارات xUnit v3 مرتبط بالمشروعات الصحيحة والحزم المطلوبة.",
+        "أحوّل الاختبارات المكررة إلى `[Theory]` بحالات واضحة.",
+        "أستخدم fixtures للإعداد الثقيل مع الحفاظ على استقلالية البيانات.",
+        "أصنّف الاختبارات بـTraits وأشغّل الفئات المختلفة في أوقات مختلفة (محليًا وفي CI)."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "عندك 6 حالات لسعر الشحن حسب المنطقة. أفضل كتابة؟",
+          "options": [
+            "6 دوال `[Fact]` بأسماء مختلفة",
+            "`[Theory]` واحدة بـ6 `InlineData`",
+            "حلقة `foreach` جوه `[Fact]` واحد",
+            "اختبار واحد بأول حالة بس"
+          ],
+          "answer": 1,
+          "explain": "`[Theory]` بتظهر كل حالة كنتيجة مستقلة في التقرير (فشل حالة ما يخفيش الباقي)، وبتقلل التكرار. الـforeach جوه Fact بتفشل الكل عند أول حالة."
+        },
+        {
+          "q": "إيه الفرق الجوهري بين `IClassFixture` و`IAsyncLifetime` على كلاس الاختبار؟",
+          "options": [
+            "لا فرق",
+            "الـfixture يُنشأ مرة للكلاس كله، و`IAsyncLifetime` على الكلاس بيشتغل قبل/بعد كل اختبار",
+            "الـfixture أبطأ",
+            "`IAsyncLifetime` للتوازي فقط"
+          ],
+          "answer": 1,
+          "explain": "الـfixture = إعداد مشترك مرة واحدة (أرخص). `IAsyncLifetime` على كلاس الاختبار نفسه = إعداد/تنظيف لكل اختبار (أعزل وأغلى). (ملاحظة: الـfixture نفسه ممكن ينفّذ IAsyncLifetime لبدء/إنهاء غير متزامن.)"
+        },
+        {
+          "q": "كلاسات اختبارات مختلفة بتشارك قاعدة بيانات واحدة والاختبارات بتفشل عشوائيًا. السبب الأرجح؟",
+          "options": [
+            "xUnit مش بيدعم التوازي",
+            "التوازي بين الكلاسات + بيانات غير معزولة → تعارض",
+            "قاعدة البيانات بطيئة",
+            "الـfixtures مش شغالة"
+          ],
+          "answer": 1,
+          "explain": "xUnit بيشغّل collections بالتوازي. الحل: `[CollectionDefinition(..., DisableParallelization = true)]` أو عزل البيانات بمعرّفات فريدة لكل اختبار."
+        },
+        {
+          "q": "عايز تشغّل الاختبارات السريعة في كل commit والبطيئة قبل الدمج. تستخدم إيه؟",
+          "options": [
+            "مشروعين اختبار منفصلين دائمًا",
+            "`[Trait(\"Category\", ...)]` + `dotnet test --filter`",
+            "تعطيل التوازي",
+            "`xunit.runner.json` بـ`parallelizeAssembly:false`"
+          ],
+          "answer": 1,
+          "explain": "التصنيف بـTraits هو الأداة المصممة للفلترة الانتقائية، محليًا وفي الـCI."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "بنية اختبارات نظيفة",
+          "md": "أنشئ مشروع `Shop.Tests` (أو في مشروعك) بالحزم المذكورة، وحوّل 3 اختبارات مكررة إلى `[Theory]`، وأضف fixture واحدًا لإعداد مشترك، وصنّف كل الاختبارات بـ`Category`.",
+          "criteria": [
+            "`dotnet test --filter \"Category=Unit\"` يشغّل مجموعة فرعية فعلًا",
+            "فيه `[Theory]` واحدة بـ3 حالات على الأقل",
+            "فيه fixture واحد (`IClassFixture` أو `ICollectionFixture`) مستخدم في اختبارين على الأقل",
+            "`xunit.runner.json` منسوخ لمجلد الإخراج",
+            "ملف CI يشغّل Unit ثم Integration كخطوتين"
+          ],
+          "hint": "لو `--filter` ما أثرش، تأكد إن الـ`[Trait]` على مستوى الكلاس أو الدالة (مش جوه الـfixture) وإن الاسم مطابق حرفيًا."
+        },
+        {
+          "id": "t2",
+          "title": "اجعل الفشل مقروءًا",
+          "md": "شغّل `dotnet test --logger \"console;verbosity=detailed\"` بعد كسر متعمد في الكود، وحسّن أسماء الاختبارات ورسائل الـassertions لحد ما تعرف سبب الفشل من الرسالة وحدها.",
+          "criteria": [
+            "أسماء الاختبارات تصف السلوك (مش `Test1`)",
+            "رسالة الفشل توضح المتوقع مقابل الفعلي",
+            "وثّقت في ملاحظاتك قاعدة تسمية فريقك"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "xUnit.net",
+          "url": "https://xunit.net/"
+        },
+        {
+          "label": "Microsoft.Testing.Platform",
+          "url": "https://learn.microsoft.com/dotnet/core/testing/unit-testing-platform"
+        },
+        {
+          "label": "Unit testing in .NET",
+          "url": "https://learn.microsoft.com/dotnet/core/testing/unit-testing-best-practices"
+        },
+        {
+          "label": "Shouldly",
+          "url": "https://docs.shouldly.io/"
+        }
+      ]
+    }
+  ]
+}

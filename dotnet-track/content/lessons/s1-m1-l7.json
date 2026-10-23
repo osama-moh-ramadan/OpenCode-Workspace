@@ -1,0 +1,232 @@
+{
+  "id": "s1-m1-l7",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "\nفيه ميزات في C# الحديث بقت **افتراضية** في أي Code Review محترم: `record` للـDTOs،\n`nullable reference types` لإلغاء فئة كاملة من الباجات، `pattern matching` بدل سلاسل `if`،\nو`collection expressions` للقوائم. وفي C# 14 (.NET 10) إضافات بتقلل كود boilerplate فعلًا:\n`field` keyword، extension members، و`?.=`.\n\nالدرس ده عملي: لكل ميزة — **قبل/بعد** ومتى **ما** تستخدمهاش.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1) records للقيم والـDTOs"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "قبل / بعد",
+      "code": "\n// قبل: كلاس فيه مساواة يدوية وEquals/GetHashCode\npublic class MoneyDto\n{\n    public decimal Amount { get; set; }\n    public string Currency { get; set; } = \"EGP\";\n    public override bool Equals(object? o) => o is MoneyDto m && m.Amount == Amount && m.Currency == Currency;\n    public override int GetHashCode() => HashCode.Combine(Amount, Currency);\n}\n\n// بعد: positional record — مساواة قيمية وDeconstruct وwith expression\npublic sealed record Money(decimal Amount, string Currency = \"EGP\")\n{\n    public Money\n    {\n        if (Amount < 0) throw new ArgumentOutOfRangeException(nameof(Amount));\n        Currency = Currency.ToUpperInvariant();\n    }\n}\n\nvar egp = new Money(250m);\nvar usd = egp with { Currency = \"USD\" };      // نسخة معدّلة — الأصل ما اتغيرش\nvar (amount, currency) = usd;                  // Deconstruct\nConsole.WriteLine(usd == new Money(250m, \"usd\"));   // True (مساواة قيمية)\n"
+    },
+    {
+      "type": "callout",
+      "kind": "note",
+      "title": "record class مقابل record struct",
+      "md": "\n`record` = نوع مرجعي بمساواة قيمية (الأنسب للـDTOs). `readonly record struct` = قيمة على الـstack،\nممتازة للأنواع الصغيرة الساخنة (إحداثيات، معرّفات مركّبة) — لكن انتبه لنسخ الكائنات الكبيرة.\n**كيانات الـDomain** اللي لها هوية (Order, Customer) خليك مع `class` + معرّف: المساواة بالهوية مش بالقيم.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2) Nullable reference types"
+    },
+    {
+      "type": "code",
+      "lang": "xml",
+      "filename": "Shop.csproj",
+      "title": "فعّلها على المشروع كله",
+      "code": "\n<PropertyGroup>\n  <TargetFramework>net10.0</TargetFramework>\n  <Nullable>enable</Nullable>\n  <TreatWarningsAsErrors>true</TreatWarningsAsErrors>\n  <ImplicitUsings>enable</ImplicitUsings>\n  <InvariantGlobalization>false</InvariantGlobalization>\n</PropertyGroup>\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "الأنماط اللي بتظهر كل يوم",
+      "code": "\npublic sealed class Customer\n{\n    public required Guid Id { get; init; }              // required: لا يمكن إنشاء الكائن بدونها\n    public required string Email { get; init; }\n    public string? PhoneNumber { get; init; }           // اختياري صراحةً\n    public Address? Address { get; init; }\n}\n\n// التعامل مع الاختياري بدون ! (اللي بيخفي الباج)\nstring dial = customer.PhoneNumber ?? \"no-phone\";\nint? zip = customer.Address?.PostalCode;\n\n// C# 14: null-conditional assignment\ncustomer.Address?.City = \"Cairo\";          // بدل if (customer.Address is not null) { ... }\n\n// التحذير CS8602/CS8604 مش «ضوضاء» — ده باج محتمل. عالج السبب مش التحذير.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3) Pattern matching بدل if المتسلسلة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "switch expression + أنماط مركّبة",
+      "code": "\npublic static string Describe(PaymentResult result) => result switch\n{\n    { Status: PaymentStatus.Succeeded, Amount: > 0 } success => $\"paid {success.Amount:C}\",\n    { Status: PaymentStatus.Pending }                 => \"waiting for confirmation\",\n    { Status: PaymentStatus.Failed, Error.Code: \"card_declined\" } => \"card declined\",\n    { Status: PaymentStatus.Failed, Error: { } err }  => $\"failed: {err.Message}\",\n    null                                              => \"no result\",\n    _                                                 => throw new ArgumentOutOfRangeException(nameof(result)),\n};\n\n// list patterns (C# 11)\nstatic string Classify(int[] scores) => scores switch\n{\n    []                    => \"empty\",\n    [var only]            => $\"single: {only}\",\n    [>= 90, .., >= 90]    => \"strong start and end\",\n    [.., < 50]            => \"weak finish\",\n    _                     => \"mixed\",\n};\n\n// type patterns + relational patterns\nstatic decimal Discount(Customer c, DateTime now) => c switch\n{\n    { Tier: Tier.Gold, Joined: var d } when (now - d).TotalDays > 365 => 0.15m,\n    { Tier: Tier.Silver } => 0.07m,\n    { Tier: Tier.Bronze } => 0.03m,\n    _ => 0m,\n};\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4) Collection expressions وprimary constructors"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "أقل ضوضاء في التعريف والحقن",
+      "code": "\n// collection expressions\nstring[] allowed = [\"EG\", \"SA\", \"AE\"];\nList<OrderLine> lines = [new(ProductId, 1, 10m), new(ProductId2, 2, 5m)];\nint[] all = [..first, ..second, 99];                   // spread\n\n// primary constructors (C# 12) — الحقن في سطر واحد\npublic sealed class EfOrderStore(AppDbContext db, ILogger<EfOrderStore> log) : IOrderStore\n{\n    public async Task SaveAsync(Order order, CancellationToken ct = default)\n    {\n        db.Orders.Add(order);\n        await db.SaveChangesAsync(ct);\n        log.LogInformation(\"saved {OrderId}\", order.Id);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5) C# 14 في .NET 10: field, extensions, partial constructors"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "الميزات الجديدة اللي تقلل الـboilerplate",
+      "code": "\n// field keyword: خاصية بـgetter/setter مخصص بدون backing field يدوي\npublic sealed class Registration\n{\n    public string Email\n    {\n        get => field;                                   // field = الحقل المُولَّد تلقائيًا\n        set => field = Normalize(value);\n    }\n\n    private static string Normalize(string v) => v.Trim().ToLowerInvariant();\n}\n\n// extension members: إضافة خصائص/دوال لأنواع لا تملكها\npublic static class EnumerableExtensions\n{\n    extension<T>(IEnumerable<T> source)\n    {\n        public bool IsEmpty => !source.Any();\n        public IEnumerable<T> WhereNotNull() => source.Where(x => x is not null)!;\n    }\n}\n\n// null-conditional assignment\norder.Shipping?.Phone = phone;\n\n// nameof مع أنواع generic غير مقيّدة\nlog.LogWarning(\"unsupported {Type}\", nameof(List<>));\n\n// partial constructors/events: توقيع هنا، وتوليد كود في مكان آخر (source generators)\npublic partial class GeneratedDto\n{\n    public partial GeneratedDto(string raw);\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "إمتى ما تستخدمهاش",
+      "md": "\n- **`record` لكيان Domain له هوية** → المساواة القيمية هتعمل باجات مقارنة (اتنين Order بنفس القيم مش نفس الطلب).\n- **`with` على كائن ضخم/فيه مراجع** → نسخ سطحي؛ المراجع الداخلية مشتركة.\n- **`!` (null-forgiving)** كحل دائم → إنت بتخفي التحذير مش بتصلح السبب.\n- **primary constructor مع منطق معقد في الـctor** → لو محتاج تحقق/تهيئة متعددة الأسطر، اكتب constructor عادي.\n- **switch expression بدون `_`** على نوع مفتوح → خطر `MatchLookupException` وقت التشغيل.\n"
+    },
+    {
+      "type": "table",
+      "head": [
+        "الميزة",
+        "المكسب",
+        "احذر"
+      ],
+      "rows": [
+        [
+          "records",
+          "مساواة قيمية + with + deconstruct في سطر",
+          "مش لكيانات لها هوية"
+        ],
+        [
+          "nullable + required",
+          "إلغاء NullReferenceException عمليًا",
+          "التحذير باج — ما تكتموش"
+        ],
+        [
+          "pattern matching",
+          "شروط معقدة بتتقرأ بسهولة",
+          "لازم تغطي كل الحالات (`_`)"
+        ],
+        [
+          "collection expressions",
+          "تعريف مختصر ومنتظم",
+          "الأنواع الكبيرة: انتبه للنسخ"
+        ],
+        [
+          "primary constructors",
+          "حقن بدون 5 أسطر",
+          "مش بديل للـctors المعقدة"
+        ],
+        [
+          "C# 14 field/extensions",
+          "خصائص ذكية وامتدادات أقوى",
+          "اقرأ سلوك الـgetter/setter قبل ما تعتمد عليه"
+        ]
+      ]
+    },
+    {
+      "type": "checkpoints",
+      "items": [
+        "أستخدم records للـDTOs وأعرف متى أرفضها لكيانات الـDomain.",
+        "أفعّل nullable وأصلح التحذيرات بدون `!`.",
+        "أستبدل سلاسل if بـswitch expression شاملة لكل الحالات.",
+        "أكتب كود C# 14 (field, extension members, ?.=) وأفهم أثره."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "questions": [
+        {
+          "q": "عندك كيان `Order` له `Id` وحالة متغيرة. تستخدم `record`؟",
+          "options": [
+            "نعم — records أحدث",
+            "لا — class بمساواة بالهوية",
+            "نعم مع record struct",
+            "لا — استخدم tuple"
+          ],
+          "answer": 1,
+          "explain": "كيانات الـDomain لها هوية: طلبان بنفس القيم ليسا نفس الطلب. المساواة القيمية لـrecords هتعمل مقارنات مضللة."
+        },
+        {
+          "q": "`customer.Address.City = x` مع `Address` نوع nullable — التحذير `CS8602`. أفضل إصلاح؟",
+          "options": [
+            "`customer.Address!.City = x`",
+            "`customer.Address?.City = x` (null-conditional assignment في C# 14)",
+            "تعطيل nullable في الملف",
+            "جعل Address غير nullable دائمًا"
+          ],
+          "answer": 1,
+          "explain": "`?.=` بيعبّر عن النية: حدّث لو موجود. `!` بيخفي الباج، وتعطيل nullable بيخسرك حماية المشروع كله."
+        },
+        {
+          "q": "`switch expression` على نوع `object` من غير `_ => …`. إيه الخطر؟",
+          "options": [
+            "خطأ ترجمة",
+            "استثناء وقت التشغيل لو الحالة مش مغطاة",
+            "إرجاع null دائمًا",
+            "أداء أبطأ"
+          ],
+          "answer": 1,
+          "explain": "لو مفيش نمط مطابق ولا arm افتراضي، بيرمي استثناء. دايمًا غطي الحالة العامة بـ`_`."
+        },
+        {
+          "q": "أنهي استخدام صحيح لـ`with`؟",
+          "options": [
+            "تعديل كائن record بإنشاء نسخة محدّثة",
+            "تعديل كائن class عادي في المكان",
+            "نسخ عميق لأي كائن",
+            "مقارنة كائنين"
+          ],
+          "answer": 0,
+          "explain": "`with` بيعمل نسخة غير قابلة للتغيير مع التعديلات المحددة — وهو نمط records (وstructs). النسخ سطحي: المراجع تُشارك."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهام الدرس",
+      "items": [
+        {
+          "id": "t1",
+          "title": "تحديث مشروعك لـC# الحديث",
+          "md": "فعّل `<Nullable>enable</Nullable>` و`TreatWarningsAsErrors`، حوّل كل DTOs إلى records، واستبدل 3 سلاسل if بـswitch expressions — وأصلح كل التحذيرات من غير `!`.",
+          "criteria": [
+            "البناء ينجح بصفر تحذيرات (وصفر `!`)",
+            "كل الـDTOs records مع validation في الـcompact constructor",
+            "3 switch expressions على الأقل تغطي كل الحالات مع `_`",
+            "الاختبارات كلها ناجحة"
+          ],
+          "hint": "ابدأ بمشروع واحد (مش الحل كله) وقيس عدد التحذيرات قبل/بعد. لو العدد ضخم، استخدم `<Nullable>annotations</Nullable>` مؤقتًا ثم ارفعها لـenable."
+        },
+        {
+          "id": "t2",
+          "title": "بطاقة مرجعية لنفسك",
+          "md": "اكتب صفحة واحدة (في ملاحظات الدرس) فيها 6 أنماط هتستخدمها يوميًا مع مثال سطر واحد لكل نمط.",
+          "criteria": [
+            "6 أنماط",
+            "مثال كود لكل نمط",
+            "سطر «متى لا تستخدمه» لكل نمط"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "items": [
+        {
+          "label": "What's new in C# 14",
+          "url": "https://learn.microsoft.com/dotnet/csharp/whats-new/csharp-14"
+        },
+        {
+          "label": "Records (C# reference)",
+          "url": "https://learn.microsoft.com/dotnet/csharp/fundamentals/types/records"
+        },
+        {
+          "label": "Nullable reference types",
+          "url": "https://learn.microsoft.com/dotnet/csharp/nullable-references"
+        },
+        {
+          "label": "Pattern matching overview",
+          "url": "https://learn.microsoft.com/dotnet/csharp/fundamentals/functional/pattern-matching"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,469 @@
+{
+  "id": "s9-m1-l3",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "خدمة الإشعارات هي **الاختبار الحقيقي لأي مطور خلفي**: فيها كل شيء — طابور · مستهلكون · idempotency · إعادة محاولة · dead-letter · تفضيلات المستخدم · قنوات متعددة · خصوصية · ولا يجوز أن تُفشل العملية الأصلية.\n\nالطلب في السوق على «Senior .NET» بيختبر فهمك لها عمليًا: أي نظام فيه بريد/OTP/push. الدرس بيوصلك لتصميم كامل + كود المكوّن الأساسي."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات",
+      "items": [
+        {
+          "term": "Notification vs Message",
+          "def": "الإشعار **حدث موجّه للمستخدم** عبر قناة (بريد/SMS/push/داخل التطبيق). الرسالة هي **محتوى** قد يُعاد استخدامه في أكثر من قناة."
+        },
+        {
+          "term": "Fan-out",
+          "def": "توزيع حدث واحد على عدة مستلمين/قنوات. هنا: مستخدم واحد → 3 قنوات محتملة، أو حدث → 1000 مستخدم."
+        },
+        {
+          "term": "Template + Render",
+          "def": "قوالب ({{name}}، {{orderId}}) تُدمج ببيانات لحظية لإنتاج نص لكل لغة/قناة. لا نصوص مكتوبة في الكود."
+        },
+        {
+          "term": "Provider abstraction",
+          "def": "واجهة موحّدة (`IChannelSender`) يتحقق منها SendGrid/SES/Twilio/Firebase — فيسهل التبديل والتجربة والاختبار."
+        },
+        {
+          "term": "Exponential backoff + jitter",
+          "def": "تأخير متزايد مع عشوائية: 1s, 4s, 16s… + jitter يمنع تزامن آلاف المحاولات. مع حد أقصى وحد زمني."
+        },
+        {
+          "term": "Dead-letter queue (DLQ)",
+          "def": "وجهة للرسائل التي فشلت بعد كل المحاولات — تُراجع يدويًا/آليًا بدل أن تُفقد صامتة."
+        },
+        {
+          "term": "Poison message",
+          "def": "رسالة تفشل دائمًا (بيانات تالفة) — إعادة المحاولة لا تفيد؛ تحتاج تمييزًا مبكرًا إلى DLQ."
+        },
+        {
+          "term": "Quiet hours / Rate limit per user",
+          "def": "احترام ساعات الهدوء (توقيت المستخدم) وسقف إشعارات لكل مستخدم/يوم — مسألة تجربة واحتفاظ لا تقنية فقط."
+        },
+        {
+          "term": "Deliverability",
+          "def": "فرص وصول البريد: SPF/DKIM/DMARC + نطاق فرعي + سمعة IP. بدونها كل الكود يذهب للسبام."
+        },
+        {
+          "term": "Dedup key",
+          "def": "مفتاح يمنع نفس الحدث من إنتاج إشعارين (مثلاً `order-123:shipped:email`)."
+        },
+        {
+          "term": "Preference center",
+          "def": "تفضيلات المستخدم لكل (نوع حدث × قناة) + unsubscribe تشريعي."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① المتطلبات والأرقام"
+    },
+    {
+      "type": "table",
+      "caption": "ما نبنيه",
+      "head": [
+        "البند",
+        "القرار"
+      ],
+      "rows": [
+        [
+          "المصدر",
+          "أحداث من خدمات أخرى (OrderPlaced · PaymentFailed · PasswordChanged)"
+        ],
+        [
+          "القنوات",
+          "بريد (الأساس) · push · SMS (للحساس فقط) · داخل التطبيق"
+        ],
+        [
+          "المتطلبات",
+          "at-least-once · تأخير ≤ 30 ثانية للأحداث العادية · OTP ≤ 3 ثوانٍ"
+        ],
+        [
+          "ممنوع",
+          "أن تُفشل عملية الطلب بسبب فشل إشعار · إرسال إشعار مكرر · إرسال ليلًا للعادي"
+        ],
+        [
+          "الاحتفاظ",
+          "سجل التسليم 90 يومًا · المحتوى 30 يومًا (PII)"
+        ],
+        [
+          "الأرقام",
+          "500 حدث/ثانية ذروة · متوسط 2.2 إشعار/حدث · 1,100 إرسال/ثانية · 60% بريد"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "التدفق الكامل",
+      "filename": "docs/notification-flow.txt",
+      "code": "\n Service A ──(outbox)──► Bus ──► [notification-worker]\n                                    │\n                         ┌──────────┴───────────┐\n                   1) تحقق dedup (Redis/DB)       │\n                   2) اقرأ التفضيلات               │\n                   3) اختر القنوات                 │\n                   4) Render من قالب + لغة         │\n                         │\n              ┌──────────┼──────────┬─────────────┐\n           Email      Push        SMS        InApp\n           provider   provider    provider    DB\n              │          │           │           │\n              └──── سجل النتيجة (delivery) ───────┘\n                    │\n              فشل قابل للإعادة ──► retry (backoff)\n              فشل دائم/بعد 5 محاولات ──► DLQ + تنبيه\n"
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "قاعدة الحدود (Bounded Context)",
+      "md": "خدمة الإشعارات **لا تعرف** معنى «الطلب»: بتستقبل حدثًا ببيانات لازمة للعرض فقط. لو بدأت تسأل `Orders` عن تفاصيل إضافية في وقت الإرسال، فأنت خلقت اقترانًا وتحمّلت تعقيدًا بلا داعٍ (4.x).\nالحل: **الحدث يحمل بيانات كافية** (Event-carried state) — أو تُخزَّن نسخة قراءة (materialized view) عند الاستقبال.\nالثمن: الحدث أكبر. الفائدة: لا استدعاء متزامن في مسار التسليم، ولا سلسلة فشل."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② الكود: مستهلك idempotent + قنوات + إعادة محاولة"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Notifications/NotificationWorker.cs — المستهلك الأساسي",
+      "filename": "src/Notifier/NotificationWorker.cs",
+      "code": "using Microsoft.EntityFrameworkCore;\nusing Microsoft.Extensions.Options;\n\n/// <summary>\n/// مستهلك أحداث: يقرأ حزمة، يُنتج إشعارًا لكل (مستخدم × قناة مسموحة)، يسجّل النتيجة.\n/// الضمانات: at-least-once + dedup + retry مع backoff + DLQ.\n/// </summary>\npublic sealed class NotificationWorker(\n    IMessageBus bus,\n    NotifierDb db,\n    IPreferenceService prefs,\n    ITemplateRenderer renderer,\n    IEnumerable<IChannelSender> senders,\n    IDedupeStore dedupe,\n    IOptions<NotifierOptions> options,\n    ILogger<NotificationWorker> log) : BackgroundService\n{\n    private readonly Dictionary<Channel, IChannelSender> _byChannel =\n        senders.ToDictionary(s => s.Channel);\n\n    protected override async Task ExecuteAsync(CancellationToken stoppingToken)\n    {\n        await foreach (var message in bus.ConsumeAsync<IncomingEvent>(\"notifications\", stoppingToken))\n        {\n            try\n            {\n                await HandleAsync(message, stoppingToken);\n                await bus.AckAsync(message, stoppingToken);\n            }\n            catch (Exception ex) when (ex is not OperationCanceledException)\n            {\n                // إعادة التسليم تتولاها الباص؛ نسجّل المحاولة فقط\n                log.LogError(ex, \"فشل معالجة الحدث {EventId} ({Type})\",\n                    message.Id, message.TemplateKey);\n            }\n        }\n    }\n\n    private async Task HandleAsync(IncomingEvent evt, CancellationToken ct)\n    {\n        var recipients = await ResolveRecipientsAsync(evt, ct);\n        var opts = options.Value;\n\n        foreach (var recipient in recipients)\n        {\n            var preferences = await prefs.GetAsync(recipient.UserId, ct);\n\n            foreach (var channel in SelectChannels(evt, preferences))\n            {\n                // ✅ مفتاح منع التكرار: نفس الحدث + نفس المستخدم + نفس القناة = إشعار واحد\n                var dedupeKey = $\"{evt.Id}:{recipient.UserId}:{channel}\";\n                if (!await dedupe.TryAcquireAsync(dedupeKey, TimeSpan.FromHours(24), ct))\n                {\n                    log.LogDebug(\"تخطّي مكرر {Key}\", dedupeKey);\n                    continue;\n                }\n\n                if (!QuietHours.Allows(evt.Severity, preferences, recipient.TimeZone,\n                        DateTimeOffset.UtcNow, opts.QuietHours))\n                {\n                    // جدولة للصباح بدل الإسقاط\n                    await bus.ScheduleAsync(evt, RunAt: QuietHours.NextAllowed(\n                        recipient.TimeZone, opts.QuietHours), ct);\n                    continue;\n                }\n\n                var content = await renderer.RenderAsync(new RenderRequest(\n                    TemplateKey: evt.TemplateKey,\n                    Channel: channel,\n                    Culture: preferences.Culture,\n                    Data: evt.Data), ct);\n\n                await SendWithRetryAsync(evt, recipient, channel, content, ct);\n            }\n        }\n    }\n\n    private async Task SendWithRetryAsync(\n        IncomingEvent evt, Recipient recipient, Channel channel, RenderedContent content, CancellationToken ct)\n    {\n        var sender = _byChannel[channel];\n        var opts = options.Value;\n\n        for (var attempt = 1; attempt <= opts.MaxAttempts; attempt++)\n        {\n            var record = DeliveryRecord.Start(evt.Id, recipient.UserId, channel);\n            try\n            {\n                var result = await sender.SendAsync(new OutboundMessage(\n                    recipient.Address(channel), content.Subject, content.Body, content.Meta), ct);\n\n                record.Succeed(result.ProviderId);\n                await db.DeliveryRecords.AddAsync(record, ct);\n                await db.SaveChangesAsync(ct);\n                return;\n            }\n            catch (PermanentSendException ex)\n            {\n                // بريد غير صالح/رقم محظور: إعادة المحاولة بلا فائدة → DLQ فورًا\n                record.Fail(ex.Message, isPermanent: true);\n                await db.SaveChangesAsync(ct);\n                await bus.DeadLetterAsync(evt, $\"دائم: {ex.Message}\", ct);\n                return;\n            }\n            catch (TransientSendException ex) when (attempt < opts.MaxAttempts)\n            {\n                record.Retry(ex.Message, attempt);\n                await db.SaveChangesAsync(ct);\n\n                var delay = Backoff.Delay(attempt, opts.BaseDelay, opts.MaxDelay);\n                log.LogWarning(\"محاولة {Attempt} فشلت ({Channel}) — إعادة بعد {Delay}\",\n                    attempt, channel, delay);\n                await Task.Delay(delay, ct);\n            }\n            catch (TransientSendException ex)\n            {\n                record.Fail(ex.Message, isPermanent: false);\n                await db.SaveChangesAsync(ct);\n                await bus.DeadLetterAsync(evt, $\"استنفدت المحاولات: {ex.Message}\", ct);\n                return;\n            }\n        }\n    }\n\n    private static IEnumerable<Channel> SelectChannels(IncomingEvent evt, Preferences p)\n    {\n        // تفضيل المستخدم يحكم — إلا ما كان إلزاميًا (أمني)\n        if (evt.IsSecurityCritical) return [Channel.Email];\n        return evt.AllowedChannels.Where(c => p.IsEnabled(evt.Kind, c));\n    }\n\n    private Task<List<Recipient>> ResolveRecipientsAsync(IncomingEvent evt, CancellationToken ct) =>\n        evt.AudienceKind switch\n        {\n            AudienceKind.Single => db.Users\n                .Where(u => u.Id == evt.UserId)\n                .Select(u => new Recipient(u.Id, u.Email, u.Phone, u.PushToken, u.TimeZone))\n                .ToListAsync(ct),\n            AudienceKind.OrderOwners => db.OrderOwners /* نسخة قراءة محلية */\n                .Where(o => o.OrderId == evt.OrderId)\n                .Select(o => new Recipient(o.UserId, o.Email, o.Phone, o.PushToken, o.TimeZone))\n                .ToListAsync(ct),\n            _ => Task.FromResult(new List<Recipient>()),\n        };\n}\n\n/// <summary>تأخير أسّي مع jitter — بلا jitter كل النسخ تعيد في نفس اللحظة.</summary>\npublic static class Backoff\n{\n    private static readonly double[] Jitter = [0.85, 1.0, 1.15];\n\n    public static TimeSpan Delay(int attempt, TimeSpan baseDelay, TimeSpan max)\n    {\n        var raw = baseDelay * Math.Pow(2, attempt - 1);\n        var capped = raw > max ? max : raw;\n        var factor = Jitter[Random.Shared.Next(Jitter.Length)];\n        return TimeSpan.FromMilliseconds(capped.TotalMilliseconds * factor);\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Notifications/ChannelSender.cs — تجريد المزوّد + تصنيف الأخطاء",
+      "filename": "src/Notifier/Channels/ChannelSender.cs",
+      "code": "public enum Channel { Email, Push, Sms, InApp }\n\npublic interface IChannelSender\n{\n    Channel Channel { get; }\n    Task<SendResult> SendAsync(OutboundMessage message, CancellationToken ct);\n}\n\npublic sealed record OutboundMessage(string To, string? Subject, string Body, IReadOnlyDictionary<string, string> Meta);\npublic sealed record SendResult(string ProviderId);\n\n/// <summary>فشل يستحق إعادة المحاولة (5xx، مهلة، حد معدل).</summary>\npublic sealed class TransientSendException(string message, Exception? inner = null)\n    : Exception(message, inner);\n\n/// <summary>فشل لا يُصلَح بإعادة المحاولة (بريد غير صالح، 550، رقم موقوف).</summary>\npublic sealed class PermanentSendException(string message, Exception? inner = null)\n    : Exception(message, inner);\n\n/// <summary>مثال: مزوّد بريد بـHTTP. يصنّف الأخطاء بدقة — وهذا أهم سطر في الملف.</summary>\npublic sealed class EmailSender(HttpClient http, IOptions<EmailOptions> opts) : IChannelSender\n{\n    public Channel Channel => Channel.Email;\n\n    public async Task<SendResult> SendAsync(OutboundMessage message, CancellationToken ct)\n    {\n        using var response = await http.PostAsJsonAsync(\"/v3/mail/send\", new\n        {\n            personalizations = new[] { new { to = new[] { new { email = message.To } } } },\n            from = new { email = opts.Value.FromAddress, name = opts.Value.FromName },\n            subject = message.Subject,\n            content = new[] { new { type = \"text/html\", value = message.Body } },\n        }, ct);\n\n        if (response.IsSuccessStatusCode)\n            return new SendResult(response.Headers.TryGetValues(\"X-Message-Id\", out var ids)\n                ? ids.First() : Guid.NewGuid().ToString(\"N\"));\n\n        var status = (int)response.StatusCode;\n        var body = await response.Content.ReadAsStringAsync(ct);\n\n        throw status switch\n        {\n            // 429: تجاوز حد → إعادة محاولة مع انتظار Retry-After\n            429 => new TransientSendException($\"rate limited: {body}\"),\n            >= 500 => new TransientSendException($\"provider {status}: {body}\"),\n            // 400 مع بريد غير صالح = دائم. 401/403 = خطأ إعداد (يُنبه لا يُعاد)\n            400 or 422 => new PermanentSendException($\"invalid recipient: {body}\"),\n            401 or 403 => new PermanentSendException($\"auth misconfigured: {status}\"),\n            _ => new TransientSendException($\"unexpected {status}: {body}\"),\n        };\n    }\n}\n"
+    },
+    {
+      "type": "table",
+      "caption": "تصنيف الأخطاء = نصف تصميم الإشعارات",
+      "head": [
+        "الحالة",
+        "نوع الخطأ",
+        "الإجراء الصحيح",
+        "لو أعدت المحاولة"
+      ],
+      "rows": [
+        [
+          "5xx من المزوّد",
+          "مؤقت",
+          "إعادة مع backoff",
+          "تنجح عادةً — صحيح"
+        ],
+        [
+          "429 / حد معدل",
+          "مؤقت",
+          "احترام `Retry-After` + تهدئة",
+          "تنجح — لكن بلا احترام الرأس تُعاقب"
+        ],
+        [
+          "مهلة شبكة",
+          "مؤقت",
+          "إعادة (رسالة قد تكون وصلت ⇒ idempotency عند المزوّد)",
+          "قد تُرسل مرتين — استخدم مفتاح رسالة"
+        ],
+        [
+          "بريد غير صالح (550)",
+          "دائم",
+          "DLQ فورًا + تعليم العنوان",
+          "تفشل 5 مرات بلا فائدة"
+        ],
+        [
+          "401/403",
+          "إعداد",
+          "تنبيه تشغيلي + إيقاف الدفعة",
+          "تستهلك الحصة وتفشل"
+        ],
+        [
+          "بيانات قالب ناقصة",
+          "دائم",
+          "DLQ + إصلاح القالب",
+          "تفشل دائمًا"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ اختيار المزوّد: ما لا يقوله التسويق"
+    },
+    {
+      "type": "table",
+      "caption": "معايير القرار (بريد)",
+      "head": [
+        "المعيار",
+        "ما تسأل عنه",
+        "لماذا يهم"
+      ],
+      "rows": [
+        [
+          "Deliverability",
+          "SPF/DKIM/DMARC؟ نطاق فرعي؟ سمعة IP مشترك أم مخصص؟",
+          "أكبر سبب لفشل البريد ليس الكود بل السمعة"
+        ],
+        [
+          "Idempotency",
+          "هل يقبل `Idempotency-Key`/رسالة مفتاح؟",
+          "يمنع إرسالًا مزدوجًا عند إعادة المحاولة"
+        ],
+        [
+          "Webhooks",
+          "bounce · complaint · delivered · opened؟",
+          "لتحديث سجل التسليم وتعطيل العناوين السيئة"
+        ],
+        [
+          "التسعير",
+          "لكل 1000 أم اشتراك؟",
+          "قد يكون الفرق 10× بين مزوّدين"
+        ],
+        [
+          "الموقع",
+          "منطقة الإرسال/الاحتفاظ",
+          "متطلبات خصوصية (PDPL) وكمون"
+        ],
+        [
+          "الحصة",
+          "حد يومي/ثانية وهل قابل للزيادة؟",
+          "الذروة قد تصطدم بحد غير معلن"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "tip",
+      "title": "الاختيار العملي",
+      "md": "**البريد**: مزوّد يقوم بالتحقق من SPF/DKIM/DMARC ويدعم Webhooks للـbounce — والبدء بنطاق فرعي (`mail.yoursite.com`) يحمي نطاقك الأساسي.\n**SMS**: الأغلى والأدق: احجزه لـOTP/الأمان فقط، مع مزوّد يدعم أرقامًا محلية في مصر (`EG`) وتأكيد التسليم.\n**Push**: FCM/APNs مباشرة أو عبر مزوّد؛ تذكّر أن **حالة الإذن** عند المستخدم متقلّبة — اعمل fallback للبريد.\n**داخل التطبيق**: أسهل وأرخص قناة، ويجب أن تكون دائمًا موجودة كسجل (inbox) — حتى لو القنوات الأخرى فشلت."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ OTP: حالة خاصة صارمة"
+    },
+    {
+      "type": "table",
+      "caption": "فروق OTP عن الإشعار العادي",
+      "head": [
+        "الجانب",
+        "الإشعار العادي",
+        "OTP"
+      ],
+      "rows": [
+        [
+          "الزمن",
+          "≤ 30 ثانية",
+          "**≤ 3 ثوانٍ** (مسار متزامن) وليس عبر الطابور نفسه"
+        ],
+        [
+          "التكرار",
+          "مسموح مع dedup",
+          "**ممنوع** إرسال عند كل ضغطة — rate limit لكل رقم/جهاز"
+        ],
+        [
+          "التخزين",
+          "سجل 90 يومًا",
+          "**الرمز مُهشَّر** في Redis/DB بـTTL 5 دقائق ولا يُسجَّل في اللوج"
+        ],
+        [
+          "المحاولات",
+          "5",
+          "3 محاولات تحقق ثم إبطال الرمز"
+        ],
+        [
+          "التكلفة",
+          "منخفضة لمعظم القنوات",
+          "كل رسالة تكلفة — حد أقصى 5/ساعة/رقم"
+        ],
+        [
+          "الأمان",
+          "PII في القالب",
+          "لا تذكر الرمز في اللوج/التحليلات · حماية من التعداد"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "csharp",
+      "title": "Otp/OtpService.cs — توليد آمن + حد معدل + تحقق بثبات زمني",
+      "filename": "src/Notifier/Otp/OtpService.cs",
+      "code": "using System.Security.Cryptography;\nusing System.Text;\nusing Microsoft.Extensions.Caching.Distributed;\n\npublic sealed class OtpService(IDistributedCache cache, ISmsSender sms, ILogger<OtpService> log)\n{\n    private const int MaxAttempts = 3;\n    private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(5);\n\n    public async Task<OtpRequestResult> RequestAsync(string phone, CancellationToken ct)\n    {\n        // ① حد معدل: 5/ساعة لكل رقم (يمنع استنزاف الرصيد والانتحال)\n        var hourlyKey = $\"otp:rl:{phone}:{DateTimeOffset.UtcNow:yyyyMMddHH}\";\n        var count = await cache.GetStringAsync(hourlyKey, ct);\n        var sent = string.IsNullOrEmpty(count) ? 0 : int.Parse(count);\n        if (sent >= 5) return OtpRequestResult.TooMany();\n\n        // ② رمز عشوائي آمن (لا Random)\n        var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString(\"D6\");\n\n        // ③ نخزّن (salt + هش) لا الرمز، وTTL قصير\n        var salt = RandomNumberGenerator.GetBytes(16);\n        var hash = Hash(salt, code);\n        await cache.SetStringAsync($\"otp:{phone}\", $\"{Convert.ToHexString(salt)}:{hash}\",\n            new DistributedCacheEntryOptions\n        {\n            AbsoluteExpirationRelativeToNow = Ttl,\n        }, ct);\n        await cache.SetStringAsync($\"otp:att:{phone}\", \"0\", new DistributedCacheEntryOptions\n        {\n            AbsoluteExpirationRelativeToNow = Ttl,\n        }, ct);\n\n        // ④ إرسال + سجل بلا رمز\n        await sms.SendAsync(phone, $\"رمز التحقق: {code}. صالح 5 دقائق. لا تشاركه.\", ct);\n        log.LogInformation(\"OTP أُرسل لرقم ينتهي بـ{suffix}\", phone[^4..]);\n\n        await cache.SetStringAsync(hourlyKey, (sent + 1).ToString(), new DistributedCacheEntryOptions\n        {\n            AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1),\n        }, ct);\n\n        return OtpRequestResult.Sent();\n    }\n\n    public async Task<bool> VerifyAsync(string phone, string candidate, CancellationToken ct)\n    {\n        var storedHash = await cache.GetStringAsync($\"otp:{phone}\", ct);\n        if (storedHash is null) return false;\n\n        var attempts = int.Parse(await cache.GetStringAsync($\"otp:att:{phone}\", ct) ?? \"0\");\n        if (attempts >= MaxAttempts)\n        {\n            await cache.RemoveAsync($\"otp:{phone}\", ct);   // إبطال بعد 3 محاولات\n            return false;\n        }\n\n        await cache.SetStringAsync($\"otp:att:{phone}\", (attempts + 1).ToString(), ct);\n\n        // نستعيد الـsalt من المخزون ونعيد حساب الهش بنفس الطريقة\n        var parts = storedHash.Split(':');\n        if (parts.Length != 2) return false;\n        var salt = Convert.FromHexString(parts[0]);\n        var expected = parts[1];\n        var actual = Hash(salt, candidate);\n\n        // مقارنة ثابتة الزمن (تمنع timing attack)\n        var ok = CryptographicOperations.FixedTimeEquals(\n            Encoding.ASCII.GetBytes(actual),\n            Encoding.ASCII.GetBytes(expected));\n\n        if (ok) await cache.RemoveAsync($\"otp:{phone}\", ct);   // استعمال واحد\n        return ok;\n    }\n\n    private static string Hash(byte[] salt, string code) =>\n        Convert.ToHexString(SHA256.HashData([.. salt, .. Encoding.UTF8.GetBytes(code)]));\n}\n"
+    },
+    {
+      "type": "callout",
+      "kind": "danger",
+      "title": "5 أخطاء OTP شائعة",
+      "md": "**① `Random` بدل `RandomNumberGenerator`** — قابل للتنبؤ ⇒ اختراق.\n**② تخزين الرمز نصًا مع تسجيله** — أي وصول للسجلات = اختراق حسابات.\n**③ مقارنة `==`** — تسريب زمني (نظريًا)؛ الأصح `FixedTimeEquals`.\n**④ بلا حد معدل** — فاتورة SMS ضخمة + إزعاج + تعداد أرقام.\n**⑤ رمز صالح للأبد** — TTL 5 دقائق + استعمال واحد + إبطال بعد 3 محاولات."
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "تفصل «الإشعار» عن «الحدث» وتربط بينهما قالبيًا.",
+        "تصمّم تدفقًا كاملًا: حدث → worker → dedupe → تفضيلات → render → قناة → سجل.",
+        "تضمن idempotency بمفتاح (حدث+مستخدم+قناة) لا بمنطق عرضي.",
+        "تصنّف أخطاء المزوّد إلى مؤقت/دائم/إعداد وتتعامل مع كل نوع صحيحًا.",
+        "تطبّق backoff أسّي مع jitter وحد أقصى للمحاولات.",
+        "تعرف متى تذهب الرسالة إلى DLQ وتضع تنبيهًا له.",
+        "تختار مزوّد البريد بمعايير deliverability وwebhooks لا بالسعر فقط.",
+        "تخصّص مسارًا مختلفًا لـOTP (تحقق متزامن، الهش، حد معدل، استعمال واحد).",
+        "تحترم ساعات الهدوء والتفضيلات، وتجدول بدل الإسقاط."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "7 أسئلة.",
+      "questions": [
+        {
+          "q": "أين يقع مفتاح منع التكرار الصحيح؟",
+          "options": [
+            "معرّف الرسالة فقط",
+            "مزيج (الحدث + المستخدم + القناة) — لأن نفس الحدث قد ينتج عدة إشعارات مشروعة",
+            "عنوان البريد",
+            "وقت الإرسال"
+          ],
+          "answer": 1,
+          "explain": "لو استخدمت معرّف الحدث فقط، فأول قناة تنجح ستمنع الباقي. المفتاح المزيّن يضمن قناة واحدة لكل مستخدم لكل حدث، مع السماح بقنوات مختلفة."
+        },
+        {
+          "q": "مزوّد البريد أعاد 429 — ما التصرف؟",
+          "options": [
+            "إعادة فورية",
+            "إعادة بعد احترام `Retry-After` مع backoff وتهدئة",
+            "إلى DLQ فورًا",
+            "تجاهل الرسالة"
+          ],
+          "answer": 1,
+          "explain": "429 مؤقت لكنه رسالة صريحة: أنت تتجاوز الحد. الإعادة الفورية تضاعف العقوبة. القرار: انتظار الرأس (أو backoff) ثم إعادة — ومع تكرار ذلك، طلب رفع الحصة."
+        },
+        {
+          "q": "لماذا jitter في backoff؟",
+          "options": [
+            "لتقليل التكلفة",
+            "لمنع تزامن آلاف المحاولات عند تعافي الخدمة (thundering herd)",
+            "لزيادة السرعة",
+            "لأسباب تجميلية"
+          ],
+          "answer": 1,
+          "explain": "بدون jitter، كل النسخ/الرسائل تعيد في نفس الثانية فتسقط الخدمة المتعافية مرة أخرى. العشوائية ±15% توزّع الحمل."
+        },
+        {
+          "q": "ما دلالة خطأ 550 من مزوّد البريد؟",
+          "options": [
+            "مؤقت",
+            "دائم (بريد غير صالح) — لا تُعِد المحاولة، أرسل لـDLQ وعلّم العنوان",
+            "خطأ إعداد",
+            "مهلة"
+          ],
+          "answer": 1,
+          "explain": "550 = mailbox unavailable. إعادة المحاولة 5 مرات تستهلك الحصة وتضر السمعة. الصح: تسجيل الفشل النهائي وتعطيل العنوان حتى يحدّثه المستخدم."
+        },
+        {
+          "q": "أين يجب أن يكون مفتاح OTP؟",
+          "options": [
+            "plain text في Redis",
+            "plain text في القاعدة",
+            "**هش** مع TTL قصير واستعمال واحد",
+            "في الـJWT"
+          ],
+          "answer": 2,
+          "explain": "أي رمز حساس يُخزَّن هشًا (بـsalt). مع TTL 5 دقائق واستعمال واحد وإبطال بعد 3 محاولات، تصبح قيمة أي تسريب محدودة جدًا."
+        },
+        {
+          "q": "حدث «طلب تم شحنه» يحتاج اسم العميل والمنتج. أين تأتي البيانات؟",
+          "options": [
+            "استدعاء خدمة الطلبات وقت الإرسال",
+            "الحدث يحمل البيانات اللازمة (event-carried state) أو تُبنى نسخة قراءة محلية",
+            "من ذاكرة المستهلك",
+            "من قاعدة التطبيق مباشرة"
+          ],
+          "answer": 1,
+          "explain": "الاستدعاء وقت الإرسال يخلق اقترانًا زمنيًا ونقطة فشل جديدة. حمل البيانات في الحدث أو بناء projection عند الاستقبال يحافظ على استقلال الخدمة (4.x)."
+        },
+        {
+          "q": "ما القناة التي يجب أن تعمل دائمًا كسجل حتى لو فشل البريد؟",
+          "options": [
+            "SMS",
+            "Push",
+            "In-App (inbox داخل التطبيق)",
+            "لا شيء"
+          ],
+          "answer": 2,
+          "explain": "قناة داخلية مخزّنة في القاعدة ليست معتمدة على مزوّد خارجي، فتضمن أن المستخدم يرى ما فاته. كثير من الأنظمة تعتبرها الأساس وتجعل البقية إشعارات إضافية."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "خدمة إشعارات تعمل فعلًا + OTP آمن.",
+      "items": [
+        {
+          "id": "s9-m1-l3-t1",
+          "title": "مهمة 1: خدمة إشعارات بمستهلك idempotent",
+          "md": "نفّذ worker يستهلك حدثًا وينتج إشعارات على قناتين (بريد + in-app) مع dedupe وتفضيلات وسجل تسليم وDLQ.",
+          "criteria": [
+            "حدث واحد ينتج إشعارًا واحدًا لكل (مستخدم × قناة) — إثبات بإعادة تسليم نفس الحدث 3 مرات.",
+            "تصنيف أخطاء المزوّد إلى مؤقت/دائم مع اختبارات لكل نوع (500، 429، 550).",
+            "backoff أسّي مع jitter وحد أقصى، وانتقال إلى DLQ بعد الاستنفاد.",
+            "احترام التفضيلات + ساعات الهدوء (جدولة بدل إسقاط).",
+            "سجل تسليم (`DeliveryRecord`) لكل محاولة: الحالة، المحاولة، سبب الفشل.",
+            "قناة in-app تعمل دائمًا كسجل حتى لو فشل البريد.",
+            "قالب واحد على الأقل بلغتين مع بيانات لحظية.",
+            "3 اختبارات على الأقل: تكرار الحدث · فشل مؤقت ثم نجاح · فشل دائم إلى DLQ."
+          ],
+          "hint": "ابدأ بجدول `DeliveryRecords` ومفتاح dedupe في Redis — لو لم يوجدا، ستُنتج إشعارات مكررة عند أول إعادة تسليم. لاختبار الفشل المؤقت: موك `IChannelSender` يرمي `TransientSendException` مرتين ثم ينجح — وتحقّق من عدد المحاولات والأزمنة.",
+          "solution": "النتيجة النموذجية: مستهلك ~150 سطرًا + مزوّد بريد مصنِّف للأخطاء + قناة in-app. أصعب جزء: التمييز بين المؤقت والدائم — إعادة المحاولة على 550 تحرق السمعة، وعدم إعادة المحاولة على 503 تُفقد إشعارات. وثّق جدول التصنيف في README.",
+          "resources": [
+            "https://learn.microsoft.com/azure/architecture/patterns/retry",
+            "https://learn.microsoft.com/azure/architecture/patterns/queue-based-load-leveling",
+            "https://www.pollydocs.org/"
+          ]
+        },
+        {
+          "id": "s9-m1-l3-t2",
+          "title": "مهمة 2: OTP آمن بحدود",
+          "md": "نفّذ خدمة OTP: توليد آمن، هش، TTL، استعمال واحد، 3 محاولات، حد معدل 5/ساعة، ولا رمز في اللوج.",
+          "criteria": [
+            "`RandomNumberGenerator` فقط — لا `Random`.",
+            "التخزين هش بـsalt، ولا يُسجَّل الرمز في أي لوج (فحص grep).",
+            "TTL 5 دقائق + استعمال واحد + إبطال بعد 3 محاولات فاشلة.",
+            "حد معدل لكل رقم/ساعة + رسالة واضحة عند التجاوز.",
+            "`FixedTimeEquals` للمقارنة.",
+            "اختبارات: صحيح ينجح مرة واحدة · خاطئ 3 مرات يُبطل · تجاوز الحد يمنع الإرسال.",
+            "صفحة/أمر لتنظيف مفاتيح OTP المنتهية (أو TTL كافٍ موثّق)."
+          ],
+          "hint": "انتبه إلى أن إعادة إرسال رمز جديد يجب أن تُبطل القديم (تخزين قيمة واحدة لكل رقم). وفي الاختبارات، اعزل الوقت (`TimeProvider`) حتى لا تنتظر 5 دقائق فعلية.",
+          "solution": "النتيجة: خدمة ~120 سطرًا و4 اختبارات. النقطة اللي بيغفلها الكثيرون: **إعادة الإرسال** — إذا لم تُبطل الرمز القديم، يصبح لديك رمزان صالحان (ثقب أمني). الحل: مفتاح واحد لكل رقم + استبدال دائم.",
+          "resources": [
+            "https://learn.microsoft.com/dotnet/api/system.security.cryptography.randomnumbergenerator",
+            "https://learn.microsoft.com/aspnet/core/performance/caching/distributed",
+            "https://owasp.org/www-project-authentication-cheat-sheet/"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Queue-Based Load Leveling",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/queue-based-load-leveling"
+        },
+        {
+          "label": "Retry pattern",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/retry"
+        },
+        {
+          "label": "Circuit Breaker",
+          "url": "https://learn.microsoft.com/azure/architecture/patterns/circuit-breaker"
+        },
+        {
+          "label": "Polly (المرونة في .NET)",
+          "url": "https://www.pollydocs.org/"
+        },
+        {
+          "label": "DistributedCache في ASP.NET Core",
+          "url": "https://learn.microsoft.com/aspnet/core/performance/caching/distributed"
+        },
+        {
+          "label": "DMARC وSPF/DKIM",
+          "url": "https://learn.microsoft.com/microsoft-365/security/office-365-security/email-authentication-dmarc-configure"
+        }
+      ]
+    }
+  ]
+}

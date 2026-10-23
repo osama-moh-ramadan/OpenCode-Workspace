@@ -1,0 +1,435 @@
+{
+  "id": "s7-m1-l4",
+  "updatedAt": "2026-10-22",
+  "blocks": [
+    {
+      "type": "text",
+      "md": "لوحة المراقبة مش زينة — هي **أداة تشخيص**: لازم تجاوب في ثانيتين على «هل فيه مشكلة؟ أين؟ ما حجمها؟ هل بتزيد؟». في الدرس ده: بنية Prometheus (scrape مقابل OTLP push) · **PromQL** بالاستعلامات الـ12 اللي هتستخدمهم فعلًا · لوحة RED + USE مصممة على الأسئلة · **recording rules** للسرعة · لوحات runtime لـ.NET (GC · thread pool · exceptions) · وأخطاء الإعداد اللي بتخلي الأرقام غلط (وإنت مصدقها)."
+    },
+    {
+      "type": "terms",
+      "title": "مصطلحات الدرس",
+      "items": [
+        {
+          "term": "Pull/scrape مقابل Push",
+          "def": "**Pull**: Prometheus بيجيب `/metrics` من كل هدف كل فترة (scrape). **Push**: التطبيق بيبعت OTLP لـCollector أو لـPrometheus OTLP receiver. الاتنين مدعومين؛ الاختيار بيأثر على service discovery والأمان."
+        },
+        {
+          "term": "Series (سلسلة زمنية)",
+          "def": "اسم مقياس + مجموعة labels محددة. كل مجموعة قيم جديدة = سلسلة جديدة = ذاكرة وتكلفة (cardinality — 7.1.1)."
+        },
+        {
+          "term": "Counter مقابل Gauge مقابل Histogram",
+          "def": "**Counter** يزيد فقط (يُقرأ بـ`rate`) · **Gauge** يزيد وينقص (يُقرأ مباشرة) · **Histogram** يوزع القيم على buckets (يُقرأ بـ`histogram_quantile`)."
+        },
+        {
+          "term": "`rate()` و`increase()`",
+          "def": "`rate(m[5m])` = متوسط الزيادة في الثانية (بيتعامل مع إعادة ضبط العدّاد). `increase(m[5m])` = الزيادة الكلية. **لا تستخدم `irate` للوحات** (حساس جدًا ومتقلب)."
+        },
+        {
+          "term": "`histogram_quantile`",
+          "def": "يقدّر النسبة المئوية من الـbuckets. الدقة تعتمد على حدود الـbuckets — لو p99 خارج أعلى bucket هترجع قيمة خاطئة."
+        },
+        {
+          "term": "Recording rule",
+          "def": "استعلام محسوب مسبقًا يُخزَّن كسلسلة جديدة (`job:http_requests:rate5m`) — بيسرّع اللوحات والتنبيهات ويوحّد التعريفات."
+        },
+        {
+          "term": "Alerting rule + Alertmanager",
+          "def": "القاعدة بتقيّم في Prometheus وتبعت تنبيهًا لـAlertmanager اللي بيتولى التجميع (grouping) · الكبت (inhibition) · الصمت (silence) · التوجيه (routing)."
+        },
+        {
+          "term": "Annotation على اللوحة",
+          "def": "خط رأسي على الرسم يوضح حدثًا (نشر · تغيير إعداد · حادث) — بدونه بتقرا تغييرًا في الرسم من غير ما تعرف سببه."
+        },
+        {
+          "term": "Exemplars",
+          "def": "ربط نقطة في الـhistogram بـ`trace_id` → من اللوحة للرحلة مباشرة (7.1.2)."
+        },
+        {
+          "term": "kube-state-metrics / node_exporter",
+          "def": "مصدرا مقاييس جاهزان: حالة موارد Kubernetes (pods/deployments) ومقاييس النظام (CPU/ذاكرة/قرص/شبكة)."
+        },
+        {
+          "term": "Managed Prometheus",
+          "def": "خدمة مُدارة (مثلًا Azure Monitor Managed Prometheus) بتستقبل remote write/OTLP وتوفر الاستعلام لـGrafana — بلا تشغيل TSDB بنفسك."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "① البنية: من عداد في كودك لرسم على الشاشة"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "مسار المقاييس + نقاط القرار",
+      "filename": "docs/metrics-pipeline.txt",
+      "code": "  التطبيق (.NET)                 الجمع                   التخزين/الاستعلام        العرض/التنبيه\n ┌───────────────────┐   ┌──────────────────────┐   ┌────────────────┐   ┌──────────────────┐\n │ Meter + instruments│  │ MeterProvider         │   │ Prometheus TSDB │   │ Grafana          │\n │  (Counter/Histogram│─▶│  • readers (Periodic) │──▶│  • series + labels│──▶│  • لوحات RED/USE │\n │   /ObservableGauge)│  │  • views (buckets/    │OTLP│  • retention    │   │  • متغيرات       │\n │                    │  │    TagKeys/limits)    │4317│  • recording rules│ │  • annotations   │\n │ ASP.NET Core/Kestrel│ │                       │   └───────┬────────┘   └──────────────────┘\n │ Runtime (.NET)     │  └──────────┬───────────┘           │ rules\n │ SqlClient/HttpClient│            │                        ▼\n └───────────────────┘             │              ┌────────────────────┐\n        │                          │              │ Alertmanager       │\n        │  (بديل: /metrics pull)   ▼              │ grouping/inhibition │\n        └────────────────▶ Prometheus scrape      │ silence/routing    │\n                                                   └─────────┬──────────┘\n                                                             ▼\n                                                    PagerDuty/Slack/Email/Teams\n\n قرارات:\n   ① pull مقابل push(OTLP): pull أبسط للـVMs/service discovery؛ push أفضل خلف NAT/للسيرفرلس ومع Collector.\n   ② buckets: لازم تغطي نطاق p95/p99 الحقيقي (وإلا histogram_quantile بيكذب).\n   ③ labels: قليلة ومحدودة (service · route · status · instance · version · env).\n   ④ recording rules: لكل استعلام مستخدم في ≥2 مكان (لوحة + تنبيه) — تعريف واحد.\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": "observability/prometheus.yml + rules.yml",
+      "filename": "observability/prometheus.yml",
+      "code": "global:\n  scrape_interval: 15s          # 15s كفاية لأغلب الاستخدامات؛ 5s يضاعف الحجم\n  evaluation_interval: 30s      # تقييم القواعد\n  external_labels:\n    cluster: local\n    environment: dev\n\n# استقبال OTLP من التطبيق/الـCollector (بديلًا عن الـscrape):\notlp:\n  # يحتاج تفعيل receiver في الإصدار المثبت (تحقق من توثيق إصدارك):\n  #   --web.enable-otlp-receiver   أو قسم otlp في الإعداد\n  promote_resource_attributes:\n    - service.name\n    - service.version\n    - deployment.environment.name\n  keep_identifying_resource_attributes: true\n\nrule_files:\n  - /etc/prometheus/rules.yml\n\nscrape_configs:\n  # ① أهداف ثابتة (التطبيقات اللي بتكشف /metrics):\n  - job_name: shop-services\n    metrics_path: /metrics\n    static_configs:\n      - targets: [\"host.docker.internal:5001\"]\n        labels: { service: orders-api, environment: dev }\n      - targets: [\"host.docker.internal:5002\"]\n        labels: { service: catalog-api, environment: dev }\n\n  # ② Prometheus نفسه (لمراقبة المراقبة):\n  - job_name: prometheus\n    static_configs: [{ targets: [\"localhost:9090\"] }]\n\n  # ③ Kubernetes: اكتشاف تلقائي للـpods بتعليمة (لو على cluster):\n  # - job_name: kubernetes-pods\n  #   kubernetes_sd_configs: [{ role: pod }]\n  #   relabel_configs:\n  #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]\n  #       action: keep\n  #       regex: \"true\"\n  #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]\n  #       action: replace\n  #       target_label: __metrics_path__\n\nalerting:\n  alertmanagers:\n    - static_configs: [{ targets: [\"alertmanager:9093\"] }]\n"
+    },
+    {
+      "type": "code",
+      "lang": "yaml",
+      "title": "observability/rules.yml — recording + alerting",
+      "filename": "observability/rules.yml",
+      "code": "groups:\n  # ── Recording rules: تعريف واحد يُستخدم في اللوحات والتنبيهات ──\n  - name: shop-red\n    interval: 30s\n    rules:\n      - record: job:http_requests:rate5m\n        expr: sum by (service, http_route) (rate(http_server_request_duration_seconds_count[5m]))\n\n      - record: job:http_errors:ratio_rate5m\n        expr: |\n          sum by (service, http_route) (\n            rate(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\"}[5m]))\n          /\n          sum by (service, http_route) (rate(http_server_request_duration_seconds_count[5m]))\n\n      - record: job:http_p95_seconds:rate5m\n        expr: |\n          histogram_quantile(0.95,\n            sum by (service, http_route, le) (\n              rate(http_server_request_duration_seconds_bucket[5m])))\n\n      - record: job:http_p99_seconds:rate5m\n        expr: |\n          histogram_quantile(0.99,\n            sum by (service, http_route, le) (\n              rate(http_server_request_duration_seconds_bucket[5m])))\n\n      # SLI جاهز لـ7.1.5: نسبة الطلبات الناجحة\n      - record: job:sli_success:ratio_rate5m\n        expr: 1 - job:http_errors:ratio_rate5m\n\n  # ── قواعد تشبع/موارد ──\n  - name: shop-use\n    interval: 30s\n    rules:\n      - record: job:queue_oldest_age_seconds:max\n        # gauge بوحدات ثوانٍ → الاسم في Prometheus يأخذ _seconds:\n        expr: max by (service) (shop_outbox_oldest_age_seconds)\n\n      - record: job:dotnet_gc_heap_bytes:sum\n        # الاسم يختلف بين إصدارات instrumentation:\n        #   قديم: process_runtime_dotnet_gc_heap_size\n        #   حديث: dotnet_gc_heap_size   ← تحقق من مخرجاتك الفعلية\n        expr: sum by (service, dotnet_gc_heap_generation) (dotnet_gc_heap_size)\n\n  # ── تنبيهات (الأعراض، لا الأسباب — 7.1.5) ──\n  - name: shop-alerts\n    rules:\n      - alert: ServiceDown\n        expr: absent(up{job=\"shop-services\"} == 1)\n        for: 2m\n        labels: { severity: critical, team: platform }\n        annotations:\n          summary: \"خدمة {{ $labels.service }} لا تُصدر مقاييس\"\n          description: \"لا توجد سلسلة up==1 لمدة دقيقتين — تحقق من النسخ و/أو الـscrape.\"\n          runbook: \"docs/runbooks/service-down.md\"\n\n      - alert: HighErrorRate\n        expr: job:http_errors:ratio_rate5m > 0.01\n        for: 5m\n        labels: { severity: warning }\n        annotations:\n          summary: \"نسبة 5xx أعلى من 1% على {{ $labels.service }}{{ $labels.http_route }}\"\n          runbook: \"docs/runbooks/high-error-rate.md\"\n\n      - alert: QueueLagGrowing\n        expr: job:queue_oldest_age_seconds:max > 300\n        for: 5m\n        labels: { severity: critical }\n        annotations:\n          summary: \"أقدم رسالة في outbox عمرها > 5 دقائق — الناشر متوقف غالبًا\"\n          runbook: \"docs/runbooks/queue-lag.md\"\n\n      - alert: HighLatencyP95\n        expr: job:http_p95_seconds:rate5m > 0.5\n        for: 10m\n        labels: { severity: warning }\n        annotations:\n          summary: \"p95 تجاوز 500ms على {{ $labels.service }}\"\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "② PromQL: 12 استعلامًا هتستخدمهم فعلًا"
+    },
+    {
+      "type": "code",
+      "lang": "text",
+      "title": "observability/promql-cheatsheet.txt",
+      "filename": "observability/promql-cheatsheet.txt",
+      "code": "# ملاحظة أسماء (مهمة جدًا — اطبع الأسماء الفعلية أولًا):\n#   النقاط → شرطات سفلية:   http.server.request.duration → http_server_request_duration\n#   الوحدة بتُلحق بالاسم:    _seconds · _bytes · _ratio\n#   الـcounter بياخد _total: shop.orders.placed → shop_orders_placed_total\n#   السمة بتبقى label:       http.route → http_route\n#   الـhistogram بينتج:      _bucket{le=…} · _sum · _count\n\n# ── RED ──────────────────────────────────────────────────────────────\n# 1) Rate: طلب/ثانية لكل مسار\nsum by (service, http_route) (rate(http_server_request_duration_seconds_count[5m]))\n\n# 2) Errors: نسبة 5xx\nsum by (service) (rate(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\"}[5m]))\n/\nsum by (service) (rate(http_server_request_duration_seconds_count[5m]))\n\n# 3) Duration: p95 (لاحظ sum by le — بدونه histogram_quantile بيرجع NaN)\nhistogram_quantile(0.95,\n  sum by (service, http_route, le) (rate(http_server_request_duration_seconds_bucket[5m])))\n\n# 4) متوسط الزمن (احتياطي — الـpercentiles أفضل)\nsum by (service) (rate(http_server_request_duration_seconds_sum[5m]))\n/\nsum by (service) (rate(http_server_request_duration_seconds_count[5m]))\n\n# 5) أبطأ 5 مسارات حاليًا\ntopk(5,\n  histogram_quantile(0.95,\n    sum by (service, http_route, le) (rate(http_server_request_duration_seconds_bucket[5m]))))\n\n# 6) مقارنة بالأمس (هل ده طبيعي في هذا الوقت؟)\nsum(rate(http_server_request_duration_seconds_count[5m]))\n/\nsum(rate(http_server_request_duration_seconds_count[5m] offset 1d))\n\n# ── USE / موارد ─────────────────────────────────────────────────────\n# 7) تشبع: طلبات نشطة مقابل الحد\nsum by (service) (http_server_active_requests)\n\n# 8) طابور thread pool في .NET\nmax by (service, service_instance_id) (dotnet_thread_pool_queue_length)\n\n# 9) GC: حجم الـheap حسب الجيل + عدد تجميعات الجيل الثاني (الأغلى)\nsum by (service, dotnet_gc_heap_generation) (dotnet_gc_heap_size)\nincrease(dotnet_gc_collection_count{dotnet_gc_generation=\"gen2\"}[15m])\n\n# 10) استثناءات حسب النوع (أشهر أسباب الضجيج)\ntopk(5, sum by (exception_type) (increase(dotnet_exceptions_count[15m])))\n\n# ── الطوابير والأعمال ───────────────────────────────────────────────\n# 11) lag بالعمر (أهم من العدد — 7.1.1) — لاحظ _seconds المضافة من الوحدة\nmax by (service) (shop_outbox_oldest_age_seconds)\n\n# 12) طلبات أعمال مقابل أمس (كشف انخفاض غير مبرر)\nsum(increase(shop_orders_placed_total[1h]))\n/\nsum(increase(shop_orders_placed_total[1h] offset 1d))\n\n# ── صيانة/تشخيص ─────────────────────────────────────────────────────\n# هل الهدف مفقود؟                 absent(up{job=\"shop-services\"} == 1)\n# كم سلسلة زمنية نشطة (cardinality)? prometheus_tsdb_head_series\n# أعلى المقاييس تكلفة:              topk(10, count by (__name__)({__name__=~\".+\"}))\n# هل فيه churn (سلاسل بتظهر وتختفي)? rate(prometheus_tsdb_head_series_created_total[5m])\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "③ لوحة تُصمم على الأسئلة (مش على المقاييس المتاحة)"
+    },
+    {
+      "type": "table",
+      "caption": "ترتيب اللوحة من الأعلى للأسفل = ترتيب أسئلتك وقت الحادث",
+      "head": [
+        "الصف",
+        "السؤال",
+        "اللوحات",
+        "الاستعلام"
+      ],
+      "rows": [
+        [
+          "1",
+          "هل فيه مشكلة الآن؟",
+          "نسبة 5xx · p95 · rate (3 أرقام كبيرة مع عتبات لونية)",
+          "`job:http_errors:ratio_rate5m` · `job:http_p95_seconds:rate5m` · `job:http_requests:rate5m`"
+        ],
+        [
+          "2",
+          "أين؟ (أي مسار/نسخة)",
+          "تقسيم حسب `http_route` و`service_instance_id` · topk الأبطأ",
+          "`topk(5, …)` + `sum by (http_route)`"
+        ],
+        [
+          "3",
+          "هل الموارد مشبعة؟",
+          "GC heap · thread pool queue · اتصالات DB المستخدمة · active requests",
+          "استعلامات 7–9 + مقياس اتصالات من الـpool"
+        ],
+        [
+          "4",
+          "هل الطوابير بتتراكم؟",
+          "عمر أقدم رسالة · عدد الرسائل · DLQ",
+          "`job:queue_oldest_age_seconds:max`"
+        ],
+        [
+          "5",
+          "هل الأثر على الأعمال؟",
+          "طلبات مكتملة مقابل أمس · فشل حسب السبب",
+          "استعلام 12 + `sum by (shop_failure_kind)`"
+        ],
+        [
+          "6",
+          "إيه اللي اتغير؟",
+          "**annotations**: نشر · تغيير إعداد · حوادث",
+          "من `deployments.log` أو datasource للأحداث"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "lang": "json",
+      "title": "observability/grafana/dashboards/shop-red.json (مختصر)",
+      "filename": "observability/grafana/dashboards/shop-red.json",
+      "code": "{\n  \"title\": \"Shop — RED & USE\",\n  \"uid\": \"shop-red\",\n  \"tags\": [\"shop\", \"red\", \"use\"],\n  \"timezone\": \"browser\",\n  \"refresh\": \"30s\",\n  \"time\": { \"from\": \"now-3h\", \"to\": \"now\" },\n  \"templating\": {\n    \"list\": [\n      {\n        \"name\": \"service\",\n        \"type\": \"query\",\n        \"datasource\": { \"type\": \"prometheus\", \"uid\": \"prometheus\" },\n        \"query\": \"label_values(http_server_request_duration_seconds_count, service)\",\n        \"includeAll\": true,\n        \"multi\": true,\n        \"current\": { \"text\": \"All\", \"value\": \"$__all\" }\n      },\n      {\n        \"name\": \"route\",\n        \"type\": \"query\",\n        \"query\": \"label_values(http_server_request_duration_seconds_count{service=~\\\"$service\\\"}, http_route)\",\n        \"includeAll\": true,\n        \"multi\": true\n      }\n    ]\n  },\n  \"annotations\": {\n    \"list\": [\n      {\n        \"name\": \"Deployments\",\n        \"datasource\": { \"type\": \"grafana\", \"uid\": \"-- Grafana --\" },\n        \"enable\": true,\n        \"iconColor\": \"blue\",\n        \"target\": {\n          \"limit\": 100,\n          \"matchAny\": false,\n          \"tags\": [\"deploy\", \"shop\"],\n          \"type\": \"dashboard\"\n        }\n      }\n    ]\n  },\n  \"panels\": [\n    {\n      \"id\": 1, \"type\": \"stat\", \"title\": \"نسبة 5xx (الآن)\",\n      \"gridPos\": { \"h\": 5, \"w\": 6, \"x\": 0, \"y\": 0 },\n      \"fieldConfig\": { \"defaults\": { \"unit\": \"percentunit\", \"thresholds\": {\n        \"mode\": \"absolute\",\n        \"steps\": [\n          { \"color\": \"green\", \"value\": null },\n          { \"color\": \"yellow\", \"value\": 0.005 },\n          { \"color\": \"red\", \"value\": 0.01 }\n        ] } } },\n      \"targets\": [ { \"expr\":\n        \"sum(job:http_errors:ratio_rate5m{service=~\\\"$service\\\"}) / count(job:http_errors:ratio_rate5m{service=~\\\"$service\\\"})\",\n        \"legendFormat\": \"5xx ratio\" } ]\n    },\n    {\n      \"id\": 2, \"type\": \"timeseries\", \"title\": \"Rate — طلب/ثانية لكل مسار\",\n      \"gridPos\": { \"h\": 8, \"w\": 12, \"x\": 6, \"y\": 0 },\n      \"fieldConfig\": { \"defaults\": { \"unit\": \"reqps\" } },\n      \"targets\": [ { \"expr\":\n        \"sum by (http_route) (job:http_requests:rate5m{service=~\\\"$service\\\", http_route=~\\\"$route\\\"})\",\n        \"legendFormat\": \"{{http_route}}\" } ]\n    },\n    {\n      \"id\": 3, \"type\": \"timeseries\", \"title\": \"Duration — p50/p95/p99\",\n      \"gridPos\": { \"h\": 8, \"w\": 12, \"x\": 18, \"y\": 0 },\n      \"fieldConfig\": { \"defaults\": { \"unit\": \"s\" } },\n      \"targets\": [\n        { \"expr\": \"histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket{service=~\\\"$service\\\"}[5m])))\", \"legendFormat\": \"p50\" },\n        { \"expr\": \"job:http_p95_seconds:rate5m{service=~\\\"$service\\\"}\", \"legendFormat\": \"p95\" },\n        { \"expr\": \"job:http_p99_seconds:rate5m{service=~\\\"$service\\\"}\", \"legendFormat\": \"p99\" }\n      ]\n    },\n    {\n      \"id\": 4, \"type\": \"timeseries\", \"title\": \"USE — GC heap حسب الجيل\",\n      \"gridPos\": { \"h\": 7, \"w\": 8, \"x\": 0, \"y\": 8 },\n      \"fieldConfig\": { \"defaults\": { \"unit\": \"bytes\" } },\n      \"targets\": [ { \"expr\":\n        \"sum by (dotnet_gc_heap_generation) (dotnet_gc_heap_size{service=~\\\"$service\\\"})\",\n        \"legendFormat\": \"{{dotnet_gc_heap_generation}}\" } ]\n    },\n    {\n      \"id\": 5, \"type\": \"timeseries\", \"title\": \"USE — طابور thread pool\",\n      \"gridPos\": { \"h\": 7, \"w\": 8, \"x\": 8, \"y\": 8 },\n      \"targets\": [ { \"expr\":\n        \"max by (service_instance_id) (dotnet_thread_pool_queue_length{service=~\\\"$service\\\"})\",\n        \"legendFormat\": \"{{service_instance_id}}\" } ]\n    },\n    {\n      \"id\": 6, \"type\": \"timeseries\", \"title\": \"طابور الأعمال — عمر أقدم رسالة\",\n      \"gridPos\": { \"h\": 7, \"w\": 8, \"x\": 16, \"y\": 8 },\n      \"fieldConfig\": { \"defaults\": { \"unit\": \"s\", \"thresholds\": { \"mode\": \"absolute\",\n        \"steps\": [ { \"color\": \"green\", \"value\": null }, { \"color\": \"red\", \"value\": 300 } ] } } },\n      \"targets\": [ { \"expr\": \"job:queue_oldest_age_seconds:max{service=~\\\"$service\\\"}\", \"legendFormat\": \"oldest\" } ]\n    },\n    {\n      \"id\": 7, \"type\": \"timeseries\", \"title\": \"أعمال — طلبات مقابل أمس\",\n      \"gridPos\": { \"h\": 7, \"w\": 12, \"x\": 0, \"y\": 15 },\n      \"targets\": [\n        { \"expr\": \"sum(increase(shop_orders_placed_total{service=~\\\"$service\\\"}[1h]))\", \"legendFormat\": \"اليوم\" },\n        { \"expr\": \"sum(increase(shop_orders_placed_total{service=~\\\"$service\\\"}[1h] offset 1d))\", \"legendFormat\": \"أمس\" }\n      ]\n    },\n    {\n      \"id\": 8, \"type\": \"table\", \"title\": \"أشهر الاستثناءات (15 دقيقة)\",\n      \"gridPos\": { \"h\": 7, \"w\": 12, \"x\": 12, \"y\": 15 },\n      \"targets\": [ { \"expr\":\n        \"topk(5, sum by (exception_type) (increase(dotnet_exceptions_count{service=~\\\"$service\\\"}[15m])))\",\n        \"format\": \"table\", \"instant\": true } ]\n    }\n  ]\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "④ مقاييس runtime في .NET: إيه اللي يقيس إيه"
+    },
+    {
+      "type": "table",
+      "caption": "الأسماء بتختلف بين إصدارات `OpenTelemetry.Instrumentation.Runtime` — تحقق من مخرجاتك",
+      "head": [
+        "المقياس",
+        "معناه",
+        "العتبة العملية",
+        "السؤال اللي بيجاوبه"
+      ],
+      "rows": [
+        [
+          "`dotnet_gc_heap_size` (بـlabel للجيل)",
+          "حجم الـheap لكل جيل",
+          "اقتراب من حد الذاكرة (6.1.5) = خطر OOMKill",
+          "هل الذاكرة بتكبر بلا رجوع (تسريب)؟"
+        ],
+        [
+          "`dotnet_gc_collection_count` (gen0/1/2)",
+          "عدد التجميعات لكل جيل",
+          "gen2 متكرر = ضغط ذاكرة/تصميم كائنات",
+          "هل الـGC بياكل CPU؟"
+        ],
+        [
+          "`dotnet_gc_duration` / `time_in_gc`",
+          "نسبة الوقت في GC",
+          "أكثر من ~10% = مشكلة",
+          "هل البطء من GC؟"
+        ],
+        [
+          "`dotnet_thread_pool_threads_count`",
+          "عدد خيوط الـpool",
+          "زيادة مستمرة = حظر خيوط (sync-over-async)",
+          "هل فيه كود متزامن بيخنق التطبيق؟ (3.3)"
+        ],
+        [
+          "`dotnet_thread_pool_queue_length`",
+          "طول طابور العمل",
+          "> 0 باستمرار = تشبع",
+          "هل الطلبات بتستنى قبل ما تبدأ؟"
+        ],
+        [
+          "`dotnet_monitor_lock_contention_count`",
+          "عدد مرات التنافس على الأقفال",
+          "زيادة حادة = اختناق تزامن",
+          "أين الاختناق في الكود المتزامن؟"
+        ],
+        [
+          "`dotnet_exceptions_count` (بـ`exception_type`)",
+          "عدد الاستثناءات",
+          "استثناء واحد مكرر = عطل صامت",
+          "هل فيه أخطاء مش بتظهر كـ5xx؟"
+        ],
+        [
+          "`dotnet_timer_count`",
+          "عدد المؤقتات",
+          "نمو مستمر = تسريب مؤشرات",
+          "هل فيه `Timer`/`CancellationTokenSource` بلا dispose؟"
+        ],
+        [
+          "`http_server_active_requests`",
+          "الطلبات الجارية الآن",
+          "اقتراب من حد الـpool/الاتصالات",
+          "هل التشبع في التطبيق أم في التبعيات؟"
+        ],
+        [
+          "`db_client_connection_count` / usage",
+          "اتصالات القاعدة المستخدمة",
+          "اقتراب من `Max Pool Size` = رفض اتصالات",
+          "هل الـpool هو الاختناق؟ (6.1.5)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "kind": "warn",
+      "title": "ست أخطاء بتخلي الأرقام غلط وإنت مصدقها",
+      "md": "**① `histogram_quantile` بلا `sum by (le)`** → NaN أو قيم غلط (الـ`le` لازم يُحفظ). **② buckets ما بتغطيش النطاق الحقيقي** → p99 مقدّر بأقل من الواقع (لو كل الطلبات فوق أعلى bucket، النتيجة = الحد الأقصى). **③ `rate()` على gauge** → أرقام بلا معنى (الـgauge يُقرأ مباشرة أو بـ`avg_over_time`). **④ `irate` في اللوحات** → رسم متقلب يصعب قراءته (استخدم `rate` بنافذة ≥ 4× فترة الـscrape). **⑤ مقارنة سلاسل مفقودة** (`/` على صفر) → NaN؛ استخدم `clamp_min` أو تحقق من وجود المقام. **⑥ أسماء مقاييس قديمة**: `process_runtime_dotnet_*` في إصدارات أقدم مقابل `dotnet_*` في الحديثة — لو اللوحة فاضية، اطبع الأسماء الفعلية أولًا (`count by (__name__)({__name__=~\"dotnet.+\"})`). **⑦ نسيان ترجمة OTLP إلى Prometheus**: الوحدة بتُلحق بالاسم (`_seconds`/`_bytes`) والـcounter بياخد `_total` — يعني `shop.orders.placed` بتظهر كـ`shop_orders_placed_total`. القاعدة: لا تكتب استعلامًا من مقال؛ اكتبه من أسماء المقاييس الفعلية عندك."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "⑤ التنصيب: محلي · Kubernetes · مُدار"
+    },
+    {
+      "type": "code",
+      "lang": "bash",
+      "title": "observability/setup.sh — ثلاثة مسارات",
+      "filename": "observability/setup.sh",
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\n\n# ═══ المسار أ) محلي بـDocker Compose (الأسرع) ═══\ndocker compose -f docker-compose.observability.yml up -d\n# التطبيق:\n#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317\n#   (أو /metrics مع scrape من prometheus.yml)\ncurl -s http://localhost:9090/-/ready && echo \" ✓ Prometheus\"\ncurl -s -o /dev/null -w \"Grafana: %{http_code}\\n\" http://localhost:3000/login\n\n# تحقق إن المقاييس وصلت:\ncurl -s \"http://localhost:9090/api/v1/label/__name__/values\" | tr ',' '\\n' | grep -c http_server || echo \"لا مقاييس HTTP بعد\"\n# وأشهر الأسماء الفعلية عندك (مهم قبل ما تكتب لوحة):\ncurl -s \"http://localhost:9090/api/v1/label/__name__/values\" | tr ',' '\\n' | grep -E \"dotnet|http_server\" | head -n 20\n\n# ═══ المسار ب) Kubernetes (kube-prometheus-stack أو Operator) ═══\nhelm repo add prometheus-community https://prometheus-community.github.io/helm-charts\nhelm repo update\nhelm upgrade --install monitoring prometheus-community/kube-prometheus-stack \\\n  --namespace monitoring --create-namespace \\\n  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \\\n  --set grafana.adminPassword=\"$(openssl rand -hex 16)\"\n# ServiceMonitor لخدماتك:\n#   kubectl apply -f observability/k8s/service-monitor.yaml\n# وتحقق من الأهداف:  kubectl -n monitoring port-forward svc/monitoring-prometheus 9090\n\n# ═══ المسار ج) مُدار (بلا تشغيل TSDB) ═══\n# Azure Monitor Managed Prometheus:\naz monitor metrics list --resource \"$(az containerapp show -n orders -g rg-shop-prod --query id -o tsv)\" \\\n  --interval PT1M --output table 2>/dev/null || echo \"راجع صفحة Metrics في الـPortal\"\n# الربط بـGrafana: أضف Azure Monitor كـdatasource (Managed Identity — بلا مفاتيح).\n# أو remote write لخدمة متوافقة مع Prometheus من الـCollector.\n\n# ═══ فحص صحة المراقبة نفسها (لا تنساه) ═══\ncurl -s http://localhost:9090/api/v1/targets | python3 -c \\\n  'import json,sys; d=json.load(sys.stdin); [print(t[\"labels\"].get(\"job\"), t[\"health\"], t.get(\"lastError\",\"\")) for t in d[\"data\"][\"activeTargets\"]]'\ncurl -s \"http://localhost:9090/api/v1/query?query=prometheus_tsdb_head_series\" | head -c 300; echo\n"
+    },
+    {
+      "type": "checkpoints",
+      "title": "وقفة تحقق",
+      "items": [
+        "أعرف الفرق بين pull/scrape وpush/OTLP وإمتى أختار كل واحد.",
+        "أقدر أكتب استعلامات RED الثلاثة صح (rate · نسبة الأخطاء · histogram_quantile مع `sum by (le)`).",
+        "أعرف أستخدم recording rules لتعريف واحد يُستخدم في اللوحة والتنبيه.",
+        "أقدر أصمم لوحة مرتبة على الأسئلة (مشكلة؟ أين؟ موارد؟ طوابير؟ أعمال؟ إيه اتغير؟).",
+        "أعرف مقاييس runtime في .NET وأفسر كل واحد (GC · thread pool · exceptions · timer).",
+        "أقدر أضيف annotations للنشر من `deployments.log` وأربطها بالرسوم.",
+        "أعرف الست أخطاء اللي بتخلي الأرقام غلط وأكتشفها (خصوصًا الأسماء القديمة للـruntime).",
+        "أقدر أتحقق من صحة المراقبة نفسها (targets · head_series · churn)."
+      ]
+    },
+    {
+      "type": "quiz",
+      "title": "اختبر نفسك",
+      "intro": "6 أسئلة على PromQL واللوحات.",
+      "questions": [
+        {
+          "q": "`histogram_quantile(0.95, rate(http_server_request_duration_seconds_bucket[5m]))` بيرجع NaN أو قيم غريبة. السبب الأشهر؟",
+          "options": [
+            "النافذة قصيرة",
+            "**ناقصة `sum by (le)`** — الـ`le` (حد الـbucket) لازم يُحفظ في التجميع عشان التقدير يشتغل",
+            "المقياس gauge",
+            "الـscrape interval كبير"
+          ],
+          "answer": 1,
+          "explain": "الصيغة: `histogram_quantile(0.95, sum by (service, http_route, le) (rate(..._bucket[5m])))`. وأي تجميع بيعمل `sum` لازم يحتفظ بـ`le`."
+        },
+        {
+          "q": "p99 الحقيقي 4 ثوانٍ لكن اللوحة بتقول 1.2 ثانية. ليه؟",
+          "options": [
+            "rate غلط",
+            "**حدود الـbuckets ما بتغطيش النطاق**: أعلى bucket أقل من 4s فالتقدير بيتشبّع عند الحد → اضبط Boundaries (7.1.2)",
+            "الـlabels غلط",
+            "Grafana بيخطئ"
+          ],
+          "answer": 1,
+          "explain": "الـhistogram بيقدّر داخل الـbuckets. لو كل الطلبات البطيئة فوق أعلى bucket، النتيجة هتكون قريبة من الحد الأقصى. الحل: حدود تغطي نطاقك الحقيقي (حتى 10s أو 30s لو فيه عمليات طويلة)."
+        },
+        {
+          "q": "ليه `rate()` على counter وليس القيمة الخام؟",
+          "options": [
+            "أسرع",
+            "**لأن العدّاد بيتصفّر عند إعادة التشغيل، و`rate` بيتعامل مع إعادة الضبط ويحول المجموع التراكمي لمعدل في الثانية**",
+            "أدق",
+            "بيقلل السلاسل"
+          ],
+          "answer": 1,
+          "explain": "قراءة العدّاد الخام بلا معنى بعد restart. و`rate` تحتاج نافذة ≥ 4× فترة الـscrape (وإلا هترجع NaN بعد restart)."
+        },
+        {
+          "q": "لوحة .NET runtime فاضية تمامًا رغم إن المقاييس بتصدر. السبب الأشهر؟",
+          "options": [
+            "Grafana",
+            "**أسماء المقاييس اختلفت بين إصدارات instrumentation (`process_runtime_dotnet_*` مقابل `dotnet_*`)**",
+            "الـsampling",
+            "الـCollector"
+          ],
+          "answer": 1,
+          "explain": "اطبع الأسماء الفعلية أولًا: `count by (__name__)({__name__=~\".+\"})` أو من `/api/v1/label/__name__/values`. القاعدة: لا تكتب لوحة من مقال — اكتبها من مخرجاتك."
+        },
+        {
+          "q": "إيه فايدة recording rules؟",
+          "options": [
+            "تقليل عدد المقاييس",
+            "**تعريف واحد محسوب مسبقًا يُستخدم في اللوحات والتنبيهات: أسرع، وأدق (لا اختلاف بين استعلام اللوحة واستعلام التنبيه)، وأسهل صيانة**",
+            "بديل للـscrape",
+            "تقليل الـcardinality"
+          ],
+          "answer": 1,
+          "explain": "القاعدة الذهبية: أي استعلام مستخدم في مكانين أو أكتر يبقى recording rule (مثلًا `job:http_errors:ratio_rate5m`). وكمان بتقلل الحمل وقت الاستعلام لأنها محسوبة."
+        },
+        {
+          "q": "annotations للنشر على اللوحة — ليه مهمة؟",
+          "options": [
+            "جمالية",
+            "**بدونها بتشوف تغيرًا في الرسم من غير ما تعرف سببه؛ الربط بين «ارتفاع p95» و«نشر قبل 3 دقائق» بيختصر التشخيص من دقائق لثوانٍ**",
+            "بتقلل التنبيهات",
+            "بتحسن الأداء"
+          ],
+          "answer": 1,
+          "explain": "أغلب التغيرات في الإنتاج سببها تغيير (نشر/إعداد/بنية). سجّل النشر من `deployments.log` (6.3.5) كمصدر للـannotations."
+        }
+      ]
+    },
+    {
+      "type": "tasks",
+      "title": "مهمتان",
+      "intro": "لوحة تجاوب + تنبيهات تعمل.",
+      "items": [
+        {
+          "id": "t1",
+          "title": "مهمة 1: لوحة RED + USE لخدمتين (مصممة على الأسئلة)",
+          "md": "**السياق:** عندك مقاييس بتصدر (من 7.1.2) ومحتاج لوحة تُستخدم فعلًا وقت الحادث.\n\n**المطلوب:**\n1. `observability/prometheus.yml` + `rules.yml` بـ**recording rules** لـrate وerror ratio وp95/p99 وSLI، وتنبيهين على الأقل (ServiceDown بـ`absent` · QueueLag).\n2. لوحة Grafana (JSON مُصدَّر من الـUI ومرفوع للمستودع) فيها **6 صفوف مرتبة حسب الأسئلة** من جدول الدرس، مع متغيرين (`service`, `route`) ووحدات صحيحة (`percentunit`, `s`, `bytes`, `reqps`).\n3. **annotations للنشر**: مصدر (ملف/ـAPI) يضيف خطًا عند كل نشر من `deployments.log`.\n4. صف runtime لـ.NET: GC heap حسب الجيل · thread pool queue · أشهر 5 استثناءات (جدول).\n5. **تحقق من الأسماء الفعلية أولًا**: اطبع قائمة أسماء المقاييس من Prometheus وأرفقها في `docs/metrics-inventory.md` مع معنى كل واحد ووحدة كل واحد والسمات المسموحة.\n6. **اختبار اللوحة تحت حمل**: شغّل k6 (50 VU / دقيقتين) وأثبت إن اللوحة بتوضح: ارتفاع rate · ارتفاع p95 · تغير GC · (ولو حقنت عطلًا) ارتفاع نسبة 5xx — مع لقطات.\n7. `docs/dashboard-guide.md`: إزاي أقرأ اللوحة في 30 ثانية (ترتيب النظر) + إيه اللي يعمله كل رقم غير طبيعي.",
+          "criteria": [
+            "recording rules لأربعة استعلامات على الأقل + تنبيهين بـ`for` و`annotations` فيها رابط runbook.",
+            "اللوحة فيها 6 صفوف مرتبة حسب الأسئلة (مش مقاييس مبعثرة) + متغيرات + وحدات صحيحة.",
+            "كل لوحة p95/p99 بتستخدم `sum by (… , le)` (يُتحقق من الاستعلام).",
+            "annotations للنشر شغالة (خطوط ظاهرة على الرسم مع الإصدار).",
+            "صف runtime بثلاث لوحات على الأقل (GC · thread pool · exceptions).",
+            "`docs/metrics-inventory.md` بأسماء **فعلية** مأخوذة من Prometheus (مش من مقال) + وحدة وسمات لكل مقياس.",
+            "اختبار تحت حمل بلقطات تُظهر التغيرات الأربعة.",
+            "دليل قراءة اللوحة في 30 ثانية (ترتيب النظر + معنى كل شذوذ)."
+          ],
+          "hint": "أول شيء تعمله بعد ما توصل المقاييس: `curl -s 'http://localhost:9090/api/v1/label/__name__/values'` واقرأ الأسماء الحقيقية — ده بيوفر ساعات من لوحات فاضية. ولو `dotnet_*` مش موجودة، تأكد إن `AddRuntimeInstrumentation()` مُضاف وإن الـMeter مُسجل بـ`AddMeter`. وللـprovisioning التلقائي في Grafana: ملفات `datasources/*.yaml` و`dashboards/*.yaml` في مجلد الـprovisioning.",
+          "solution": "الترتيب: (1) اطبع أسماء المقاييس الفعلية (2) اكتب recording rules (3) ابنِ اللوحة من أعلى (الأعراض) لأسفل (التفاصيل) (4) أضف annotations من `deployments.log` (5) اختبر تحت حمل. النتيجة النموذجية: صف 1 بثلاث `stat` panels (نسبة 5xx بلون عند 0.5% و1% · p95 · rate)، صف 2 timeseries مقسمة على المسارات، صف 3 runtime، صف 4 طوابير، صف 5 أعمال مقابل أمس، صف 6 جدول استثناءات. تحت k6 بـ50 VU: rate من ~5 لـ~200 req/s · p95 من 40ms لـ250ms · GC gen0 collections بتزيد · thread pool queue يظهر لحظيًا. أهم درس: اللوحة اللي مبتبدأش بسؤال «هل فيه مشكلة؟» بتبقى أرشيف مش أداة تشخيص.",
+          "resources": [
+            "https://prometheus.io/docs/prometheus/latest/querying/basics/",
+            "https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/",
+            "https://grafana.com/docs/grafana/latest/dashboards/",
+            "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/built-in-metrics-runtime",
+            "https://opentelemetry.io/docs/specs/semconv/http/http-metrics/",
+            "https://k6.io/docs/"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "مهمة 2: صحة المراقبة نفسها + تقليل cardinality",
+          "md": "**السياق:** المراقبة شغالة، بس محتاج تتأكد إنها هتفضل شغالة لما النظام يكبر.\n\n**المطلوب:**\n1. **جرد التكلفة**: كم سلسلة زمنية نشطة (`prometheus_tsdb_head_series`) · أعلى 10 مقاييس بعدد السلاسل · معدل إنشاء السلاسل (churn) · حجم التخزين ومدة الاحتفاظ.\n2. **اكتشف الانفجار**: لو فيه مقياس بأكثر من 1,000 سلسلة، حدد السمة المسؤولة واصلحها (قَوْلبة مسار · إزالة معرّف · `TagKeys`/`CardinalityLimit`) وقِس الفرق.\n3. **راقب المراقبة**: لوحة صغيرة فيها `prometheus_tsdb_head_series` · `rate(prometheus_tsdb_head_series_created_total[5m])` · `prometheus_target_sync_length_seconds` · `otelcol_refused_metric_points` · أهداف بحالة `down` — وتنبيه لو أي واحدة شذّت.\n4. **تنبيهات بلا ضجيج**: راجع كل التنبيهات الحالية وصنّفها (page/ticket/لا) + أضف `for` مناسب + grouping/inhibition في Alertmanager (تنبيه واحد لكل حادث مش 20) + رابط runbook في كل annotation.\n5. **اختبار التنبيه**: حقن عطل متعمد (إيقاف خدمة · رفع معدل أخطاء) وثبّت إن التنبيه وصل بالشكل الصح (مجمّع، فيه runbook، واختفى بعد الإصلاح خلال مدة معقولة).\n6. `docs/alerting-review.md`: جدول التنبيهات (الاسم · الشرط · `for` · severity · page/ticket · runbook · آخر مرة اشتغل) + قرار لكل تنبيه: إبقاء/تعديل/حذف + **عدد التنبيهات قبل وبعد**.",
+          "criteria": [
+            "أرقام حقيقية: سلاسل نشطة · أعلى 10 مقاييس · churn · حجم التخزين.",
+            "إصلاح cardinality واحد على الأقل مقيس قبل/بعد (ولو ما كان فيه مشكلة، وثّق الفحص).",
+            "لوحة لصحة المراقبة بخمس مقاييس على الأقل + تنبيه عليها.",
+            "مراجعة تنبيهات بتصنيف page/ticket + `for` + grouping/inhibition في Alertmanager.",
+            "كل تنبيه فيه رابط runbook في الـannotations.",
+            "اختبار تنبيه متعمد: وصل مجمّعًا واختفى بعد الإصلاح (موثق بالأزمنة).",
+            "جدول مراجعة فيه قرار لكل تنبيه (إبقاء/تعديل/حذف) وعدد قبل/بعد.",
+            "ملاحظة عن المقايضة: تقليل cardinality مقابل فقدان تفاصيل، وكيف تعوضها بالسجلات/الـtraces."
+          ],
+          "hint": "لإيجاد السمة المسؤولة عن الانفجار: `topk(10, count by (__name__, job) ({__name__=~\".+\"}))` ثم لمقياس معين: `count by (http_route) (http_server_request_duration_seconds_count)` — لو القيم مسارات كاملة بدل قوالب، فالمشكلة في الـrouting match أو في السمة. وللـgrouping في Alertmanager: `group_by: ['alertname','service']` مع `group_wait: 30s` و`group_interval: 5m` و`repeat_interval: 4h`.",
+          "solution": "النتائج النموذجية: `head_series` ~5,000–20,000 لمشروع صغير؛ أعلى المقاييس عادةً `http_server_request_duration_seconds_bucket` (لأن كل bucket سلسلة) — وده طبيعي ما دامت المسارات مُقَوْلبة. الإصلاح الأشهر: مسار غير مُقَوْلَب (مثلًا `/orders/123`) بيوصل لآلاف السلاسل → `TagKeys` يسمح فقط بـ`http.route` أو ضبط الـrouting. لوحة صحة المراقبة: `head_series` (نمو) · `created_total` rate (churn) · `otelcol_refused_metric_points` (فقدان) · عدد الأهداف `down` · زمن الاحتفاظ/الحجم. مراجعة التنبيهات نموذجيًا بتقلل العدد من 15–20 لـ5–7 (page: ServiceDown · HighErrorRate/SLO burn · QueueLag · شهادة TLS قاربت الانتهاء؛ ticket: p95 مرتفع · موارد قربت الحد)، مع grouping بيخلي الحادث = تنبيه واحد. اختبار التنبيه: إيقاف الخدمة → `ServiceDown` بعد دقيقتين (`for: 2m`) → إرجاعها → اختفاء خلال ~3 دقائق.",
+          "resources": [
+            "https://prometheus.io/docs/prometheus/latest/querying/basics/",
+            "https://prometheus.io/docs/alerting/latest/alertmanager/",
+            "https://prometheus.io/docs/practices/naming/",
+            "https://grafana.com/blog/2020/05/18/when-to-use-recording-rules/",
+            "https://opentelemetry.io/docs/collector/internal-telemetry/",
+            "https://sre.google/workbook/alerting-on-slos/"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "resources",
+      "title": "مصادر",
+      "items": [
+        {
+          "label": "Prometheus: أساسيات الاستعلام",
+          "url": "https://prometheus.io/docs/prometheus/latest/querying/basics/"
+        },
+        {
+          "label": "Prometheus: Histograms والـsummaries",
+          "url": "https://prometheus.io/docs/concepts/metric_types/#histogram"
+        },
+        {
+          "label": "Prometheus: recording rules",
+          "url": "https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/"
+        },
+        {
+          "label": "Alertmanager: التجميع والكبت",
+          "url": "https://prometheus.io/docs/alerting/latest/alertmanager/"
+        },
+        {
+          "label": "مقاييس runtime المدمجة في .NET",
+          "url": "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/built-in-metrics-runtime"
+        },
+        {
+          "label": "اتفاقيات OTel لمقاييس HTTP",
+          "url": "https://opentelemetry.io/docs/specs/semconv/http/http-metrics/"
+        },
+        {
+          "label": "Grafana: اللوحات والـprovisioning",
+          "url": "https://grafana.com/docs/grafana/latest/dashboards/"
+        },
+        {
+          "label": "kube-prometheus-stack",
+          "url": "https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack"
+        }
+      ]
+    }
+  ]
+}
